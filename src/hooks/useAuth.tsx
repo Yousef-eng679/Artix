@@ -9,6 +9,7 @@ interface AuthContextType {
   sessionError: Error | null;
   signIn: (email: string, password: string) => Promise<{ error: Error | null }>;
   signUp: (email: string, password: string) => Promise<{ error: Error | null }>;
+  signInWithGoogle: () => Promise<{ error: Error | null }>;
   signOut: () => Promise<void>;
   updatePassword: (newPassword: string) => Promise<{ error: Error | null }>;
   refreshSession: () => Promise<Session | null>;
@@ -119,16 +120,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const signUp = async (email: string, password: string) => {
-    const origin = typeof window !== 'undefined' && window.location.origin
-      ? window.location.origin
-      : 'https://artix-mocha.vercel.app';
-    const redirectUrl = origin.endsWith('/') ? origin : `${origin}/`;
+    const redirectUrl = `${window.location.origin}/`;
     
     const { error } = await supabase.auth.signUp({
       email,
       password,
       options: {
         emailRedirectTo: redirectUrl,
+      },
+    });
+    return { error: error as Error | null };
+  };
+
+  const signInWithGoogle = async () => {
+    const redirectUrl = `${window.location.origin}/dashboard`;
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: 'google',
+      options: {
+        redirectTo: redirectUrl,
       },
     });
     return { error: error as Error | null };
@@ -157,6 +166,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       sessionError,
       signIn, 
       signUp, 
+      signInWithGoogle,
       signOut, 
       updatePassword,
       refreshSession
