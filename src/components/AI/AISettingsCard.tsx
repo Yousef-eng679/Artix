@@ -92,7 +92,9 @@ function ProviderSlot({ slot, label }: { slot: SlotKey; label: string }) {
           ...(needsBaseUrl ? { baseUrl: baseUrl.trim() || providerDef.defaultBaseUrl } : {}),
         },
       });
-      toast.success(`${label} provider saved`);
+      toast.success(`${label} provider saved`, {
+        description: 'Please keep a backup of your API key in a safe place. Keys are stored locally in your browser cache, and Artix does not store a copy on our servers.',
+      });
     } catch (err) {
       toast.error((err as Error).message);
     }
@@ -204,11 +206,16 @@ function ProviderSlot({ slot, label }: { slot: SlotKey; label: string }) {
                 type="button"
                 onClick={() => setShowKey((s) => !s)}
                 className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                aria-label={showKey ? 'Hide key' : 'Show key'}
               >
                 {showKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
               </button>
             </div>
           </div>
+          <p className="text-[11px] text-amber-400/90 flex items-center gap-1.5 mt-0.5">
+            <AlertCircle className="h-3.5 w-3.5 shrink-0" />
+            Keep a backup copy of your API key in a safe place. If your browser cache is cleared, Artix will not be able to recover it.
+          </p>
         </div>
       ) : (
         <div className="text-xs text-muted-foreground rounded-md border border-border bg-muted/30 p-3">
