@@ -1,90 +1,94 @@
-# Artix — Complete Platform & Technical Specification
+# Artix — Technical Specification and Architecture Document
 
-Artix is a modern, unified SaaS platform designed for software engineers, technical product leads, and system architects. It combines multi-format technical documentation, visual system design, algorithm visualization, and high-signal AI prompt engineering into a single high-performance workspace.
+Artix is a developer workspace platform that combines multi-format technical documentation, interactive system architecture diagrams, algorithm visualization, and structured AI prompt generation into a single web application.
 
 ---
 
 ## Table of Contents
-1. [Product Overview & Features](#1-product-overview--features)
+1. [Product Overview and Features](#1-product-overview-and-features)
 2. [System Architecture](#2-system-architecture)
 3. [API Reference](#3-api-reference)
-4. [Changelog & Release History](#4-changelog--release-history)
-5. [UI & UX Guidelines](#5-ui--ux-guidelines)
+4. [Changelog and Release History](#4-changelog-and-release-history)
+5. [UI and UX Guidelines](#5-ui-and-ux-guidelines)
 6. [Project File Structure](#6-project-file-structure)
-7. [Engineering Challenges & Technical Solutions](#7-engineering-challenges--technical-solutions)
-8. [Testing & Quality Assurance](#8-testing--quality-assurance)
+7. [Engineering Challenges and Technical Solutions](#7-engineering-challenges-and-technical-solutions)
+8. [Testing and Quality Assurance](#8-testing-and-quality-assurance)
 
 ---
 
-## 1. Product Overview & Features
+## 1. Product Overview and Features
 
 ### Core Capabilities
 
-- **Document Forge**: Multi-format technical editor powered by Monaco Editor supporting Markdown (`.md`), XML (`.xml`), and Plain Text (`.txt`). Features live split-pane rendering, debounced auto-save, multi-tab synchronization, and PDF/HTML/Markdown export capabilities.
-- **System Architect**: Interactive visual canvas powered by React Flow (`@xyflow/react`) for designing microservices, cloud infrastructure, and algorithm state machines. Features horizontal Left-to-Right (`LR`) Dagre rank layout with 1-click **Auto Layout** auto-spacing.
-- **AI Intelligence Suite**:
-  - **PRD Generator**: 4 specialized modes (Agile, Technical Spec, Lean MVP, Custom) powered by senior engineering personas.
-  - **Vibe Coding Engine**: Generates surgical, file-precise prompts with relative file actions (`[NEW]`, `[MODIFY]`) for Cursor, Artix, and Generic LLMs.
-  - **Agentic Workflow Designer**: Blueprints multi-agent architectures (Sequential, Fan-Out, Orchestrator-Workers, Router, Evaluator, Autonomous ReAct).
-  - **Reflection Pass Engine (`refine.ts`)**: 2-pass critique flow that purges generic filler prose ("ensure scalability", "TBD").
-- **BYOK Privacy & Security**: Bring-Your-Own-Key model supporting OpenAI, Anthropic, Google Gemini, Groq, OpenRouter, and local Ollama servers. Features client-side `AES-256-GCM` encryption and automated `obf:` key obfuscation.
-- **Stripe Billing & Subscriptions**: Integrated Free vs Pro subscription tiers managed via Supabase Cloud Edge Functions and Stripe Checkout/Portal.
-- **PWA & Offline First**: Progressive Web App with ServiceWorker precaching and offline local storage persistence.
+- **Document Forge**: Text editor built on Monaco Editor supporting Markdown (`.md`), XML (`.xml`), and Plain Text (`.txt`). Includes live split-pane rendering, a 1000ms debounced auto-save queue, multi-tab state sync via `BroadcastChannel`, and export to PDF, HTML, or raw Markdown.
+- **System Architect**: Visual node editor built on `@xyflow/react` (React Flow) for designing microservice systems and state machines. Features Left-to-Right (`LR`) graph layout using `@dagrejs/dagre`, 1-click auto-layout, and freehand drawing overlays.
+- **AI Tools**:
+  - **PRD Generator**: Mode-based PRD generator (Agile, Technical Spec, Lean MVP, Custom).
+  - **Vibe Coding**: Generates file-scoped prompts with `[NEW]` and `[MODIFY]` action tags for Cursor, Artix, and generic LLM targets.
+  - **Agentic Workflow Designer**: Visualizer for multi-agent execution patterns (Sequential, Fan-Out, Orchestrator-Workers, Router, Evaluator, Autonomous ReAct).
+  - **Refinement Pass (`refine.ts`)**: 2-pass critique flow that cleans up vague phrasing and expands specification drafts.
+- **Authentication**: Supports 1-click Google OAuth (`signInWithGoogle`) and standard email/password authentication via Supabase Auth.
+- **API Key Storage & Encryption**: Bring-Your-Own-Key (BYOK) setup supporting OpenAI, Anthropic, Gemini, Groq, OpenRouter, and local Ollama instances. Keys are stored in `localStorage` with `obf:` prefix obfuscation and optional `AES-256-GCM` encryption. Since keys stay in the browser, users are prompted to keep external backups.
+- **Stripe Billing**: Free vs Pro plans managed via Supabase Edge Functions (`create-checkout-session`, `create-portal-session`, `stripe-webhook`) and PostgreSQL quota triggers.
+- **PWA & Offline Support**: Progressive Web App configuration with ServiceWorker caching for offline document viewing and editing.
 
 ### Tech Stack
 - **Frontend**: React 18, Vite 5, TypeScript, Tailwind CSS, shadcn/ui, Framer Motion
 - **Editor & Canvas**: Monaco Editor (`@monaco-editor/react`), React Flow (`@xyflow/react`), `@dagrejs/dagre`
-- **Backend & Database**: Supabase (PostgreSQL with Row Level Security policies and triggers, Auth)
-- **Edge Architecture**: Supabase Cloud Edge Functions (Deno / TypeScript)
-- **Testing**: Vitest (Unit & Integration), Playwright (E2E & Security Audits)
+- **Backend & Database**: Supabase (PostgreSQL with Row Level Security, Auth, Triggers)
+- **Edge Runtime**: Supabase Edge Functions (Deno / TypeScript)
+- **Deployment**: Vercel with SPA rewrite rules in `vercel.json`
+- **Testing**: Vitest (78 unit/integration tests), Playwright (E2E & security specs)
 
 ---
 
 ## 2. System Architecture
 
-### High-Level Flow
+### High-Level System Flow
 ```
 [ Browser / Client ]
   │
   ├──► Local Storage Cache (AES-256-GCM / obf: Obfuscation)
   ├──► Monaco Editor & React Flow Canvas Engine
   │
+  ├──► Vercel Edge SPA Router (vercel.json -> index.html)
+  │
   ├──► Supabase Client (Auth & Postgres RLS Tables)
-  │      ├── public.projects
+  │      ├── public.projects (FK -> auth.users)
   │      ├── public.documents
-  │      ├── public.system_designs
-  │      └── public.subscriptions
+  │      ├── public.system_designs (FK -> auth.users)
+  │      ├── public.subscriptions
+  │      └── public.stripe_events (Idempotency)
   │
   ├──► Supabase Edge Functions (Deno Runtime)
   │      ├── create-checkout-session (Stripe Checkout)
-  │      ├── create-portal-session (Stripe Customer Portal)
-  │      └── stripe-webhook (Idempotent Webhook Handler)
+  │      ├── create-portal-session (Stripe Portal)
+  │      └── stripe-webhook (Signature Verification & Idempotency)
   │
-  └──► Self-Owned AI APIs (OpenAI / Anthropic / Gemini / Groq / Ollama)
+  └──► Direct AI Provider APIs (OpenAI / Anthropic / Gemini / Groq / Ollama)
 ```
 
-### Subsystems Breakdown
+### Subsystem Details
 
-1. **Document Forge & Resilience Subsystem**:
-   - Monaco Editor dual-view rendering.
-   - 4-Tier Auto-Save strategy: 1000ms Debounce → Optimistic Lock Queue (`saveQueue.ts`) → `sendBeacon` / `keepalive` Unload Guard → `BroadcastChannel` Multi-Tab Sync (`multiTabSync.ts`).
+1. **Document Forge and Storage Sync**:
+   - Monaco Editor dual-view sync.
+   - 4-Tier Auto-Save strategy: 1000ms Debounce → Optimistic Lock Queue (`saveQueue.ts`) → `sendBeacon` / `keepalive` Unload Guard (`tabCloseGuard.ts`) → `BroadcastChannel` Multi-Tab Sync (`multiTabSync.ts`).
 
-2. **System Architect & Visual Canvas Engine**:
-   - React Flow (`@xyflow/react`) canvas supporting custom nodes, curved connectors, double-click label editing, and freehand drawing overlays.
-   - Topological Rank-Based Layout Engine (`@dagrejs/dagre`): Left-to-Right (`LR`) layout for System Architect; Top-to-Bottom (`TB`) layout for Algorithm Visualizer. Includes 1-click Auto Layout action.
+2. **System Architect and Graph Engine**:
+   - React Flow graph with custom node components, connection lines, double-click label editing, and freehand drawing canvas.
+   - Graph auto-layout via `@dagrejs/dagre` (Left-to-Right `LR` layout for System Architect; Top-to-Bottom `TB` for Algorithm Visualizer).
 
-3. **AI Intelligence & Reflection Engine**:
-   - BYOK direct streaming registry (`registry.ts`).
-   - High-signal system prompts for PRD, Vibe Coding, and Architecture diagrams.
-   - 2-Pass Reflection Critique (`refine.ts`) purging buzzwords and expanding specifications.
+3. **Performance and Code-Splitting**:
+   - Route-level code splitting using `React.lazy()` and static `<Suspense fallback={<PageFallback />}>` in `src/App.tsx`.
+   - Heavy dependencies (Monaco Editor and React Flow) are isolated into a separate `ProjectWorkspace` chunk (~561 kB), reducing initial JS payload from 1.47 MB to ~613 kB.
 
-4. **Security & Encryption Subsystem**:
-   - Automated `obf:` key obfuscation prior to `localStorage` write.
-   - Optional `AES-256-GCM` encryption with `PBKDF2` key derivation (100,000 iterations), isolating decrypted keys in volatile JS memory.
+4. **Security and Key Protection**:
+   - Keys written to `localStorage` are prefixed with `obf:`. Optional `AES-256-GCM` encryption derives a key via 100,000 PBKDF2 iterations.
+   - Inline alerts and save toasts remind users that keys remain local to their browser cache.
 
-5. **Billing & Subscriptions Subsystem**:
-   - PostgreSQL limit trigger (`enforce_tier_limits_trigger.sql`) enforcing Free tier limits (3 projects, 10 documents, 3 designs).
-   - Cloud Edge Functions handling Stripe Checkout, Customer Portal, and signature-verified webhook idempotency.
+5. **Database & Foreign Key Integrity**:
+   - Foreign key constraints `projects_user_id_fkey` and `system_designs_user_id_fkey` enforce `ON DELETE CASCADE` on `auth.users(id)`.
+   - Quota limits enforced by PostgreSQL triggers (`enforce_tier_limits_trigger.sql`).
 
 ---
 
@@ -92,52 +96,60 @@ Artix is a modern, unified SaaS platform designed for software engineers, techni
 
 ### Database Tables (Supabase REST API)
 
-- **`public.projects`**: Workspace container (`id`, `user_id`, `name`, `description`). Max 3 for Free users.
-- **`public.documents`**: Technical documents (`id`, `project_id`, `title`, `content`, `format`). Max 10 per user on Free tier.
-- **`public.system_designs`**: Architecture boards (`id`, `project_id`, `name`, `board_state`). Max 3 for Free users.
+- **`public.projects`**: User workspaces (`id`, `user_id`, `name`, `description`). Foreign key on `user_id` referencing `auth.users(id) ON DELETE CASCADE`. Max 3 on Free plan.
+- **`public.documents`**: Technical documents (`id`, `project_id`, `title`, `content`, `format`). Max 10 per user on Free plan.
+- **`public.system_designs`**: Architecture graph states (`id`, `project_id`, `name`, `board_state`). Foreign key on `user_id` referencing `auth.users(id) ON DELETE CASCADE`. Max 3 on Free plan.
 - **`public.subscriptions`**: Billing state (`user_id`, `plan_tier`, `status`, `billing_cycle`, `current_period_end`).
+- **`public.stripe_events`**: Idempotency tracking table (`stripe_event_id`, `event_type`, `processed_at`).
 
 ### Supabase Edge Functions
 
-- `POST /functions/v1/create-checkout-session`: Generates Stripe Checkout URLs.
-- `POST /functions/v1/create-portal-session`: Generates Stripe Customer Portal URLs.
-- `POST /functions/v1/stripe-webhook`: Idempotently processes Stripe events (`checkout.session.completed`, `customer.subscription.updated`, `customer.subscription.deleted`, `invoice.payment_failed`).
+- `POST /functions/v1/create-checkout-session`: Generates Stripe Checkout URLs. Accepts `{ priceId: string, origin: string }`.
+- `POST /functions/v1/create-portal-session`: Generates Stripe Customer Portal URLs. Accepts `{ return_url: string }`.
+- `POST /functions/v1/stripe-webhook`: Idempotently handles Stripe webhook events (`checkout.session.completed`, `customer.subscription.updated`, `customer.subscription.deleted`, `invoice.payment_failed`). Verifies `Stripe-Signature` via `constructEventAsync`.
 
-### AI Provider Integrations (BYOK Direct Client Calls)
+### Client-Side AI Provider Calls
 - OpenAI (`gpt-4o`, `gpt-4o-mini`)
 - Anthropic (`claude-3-5-sonnet-20241022`, `claude-3-5-haiku-20241022`)
 - Google Gemini (`gemini-1.5-pro`, `gemini-1.5-flash`)
 - Groq (`llama-3.3-70b-versatile`)
-- OpenRouter & Local keyless Ollama
+- OpenRouter & Local keyless Ollama (`http://localhost:11434/api/generate`)
 
 ---
 
-## 4. Changelog & Release History
+## 4. Changelog and Release History
+
+### [v1.5.0] — 2026-07-25
+- **Google OAuth**: Integrated 1-click Google OAuth authentication (`signInWithGoogle`) in `useAuth.tsx` and added Google Sign-In button on `Auth.tsx`.
+- **Vercel SPA Routing**: Added `vercel.json` containing SPA rewrite rules (`/(.*)` -> `/index.html`) to resolve deep-link 404 errors on Vercel edge deployment.
+- **Database Foreign Keys**: Applied migration `20260724060000_add_missing_user_fk_constraints.sql` to enforce `projects_user_id_fkey` and `system_designs_user_id_fkey` constraints referencing `auth.users(id) ON DELETE CASCADE`.
+- **Route Code-Splitting**: Updated `App.tsx` with `React.lazy()` and `<Suspense>` route code splitting, reducing initial JavaScript bundle size by over 58%.
+- **API Key Storage Warning**: Added clear UX warning notices in `AISettingsCard.tsx` reminding users to maintain external backups of API keys.
 
 ### [v1.4.0] — 2026-07-23
-- **Clean Hero Layout**: Removed sub-hero format badges for an uncluttered hero section.
-- **Lighthouse Agentic Browsing & Accessibility**: Added `/public/llms.txt` and `/public/llms-full.txt` for AI agent web indexing. Added `<main id="main-content">` landmark and explicit `aria-label` tags.
+- **Hero Layout Clean-up**: Removed sub-hero file format badges from `Index.tsx`.
+- **Accessibility & Indexing**: Added `/public/llms.txt` and `/public/llms-full.txt`. Added `<main id="main-content">` landmark and explicit `aria-label` tags on navigation buttons.
 
 ### [v1.3.0] — 2026-07-23
-- **System Architect Upgrades**: Switched graph layout to horizontal Left-to-Right (`LR`) Dagre placement. Added 1-click **Auto Layout** button and expanded node capacity to **40 nodes**.
+- **System Architect Updates**: Changed graph positioning to horizontal Left-to-Right (`LR`) layout. Added 1-click Auto Layout button and increased diagram node capacity to 40 nodes.
 
 ### [v1.2.0] — 2026-07-23
-- **High-Signal Prompts & Reflection**: Integrated senior persona prompts for PRD and Vibe Coding (Artix & Cursor targets). Added `refine.ts` 2-pass critique flow.
+- **Prompt Engineering & Reflection**: Added system prompts for PRD and Vibe Coding generators. Added 2-pass critique flow in `refine.ts`.
 
 ### [v1.1.0] — 2026-07-23
-- **Stripe Billing & Tier Enforcement**: Created Stripe Checkout/Portal/Webhook Edge Functions and PostgreSQL quota triggers.
+- **Stripe Billing Integration**: Added Edge Functions for Stripe Checkout, Customer Portal, and Webhook processing. Added PostgreSQL quota triggers.
 
 ### [v1.0.0] — 2026-07-22
-- **Core Platform**: Rebranding to Artix, 4-tier auto-save engine, BYOK AES-256-GCM encryption, Playwright E2E suite.
+- **Initial Platform Release**: Rebranded to Artix. Added 4-tier auto-save engine, client-side encryption, and Playwright test suite.
 
 ---
 
-## 5. UI & UX Guidelines
+## 5. UI and UX Guidelines
 
-- **Design System Aesthetic**: Dark Theme SaaS aesthetic with Warm Amber Accents (`hsl(38 92% 50%)`), glassmorphism cards (`backdrop-blur-md`), and dark slate background (`hsl(220 14% 8%)`).
-- **Typography**: Inter (Body & UI controls) + JetBrains Mono (Monaco Editor & code blocks).
-- **Component Hierarchy**: Primary amber CTAs (`glow-amber`), outline buttons, and icon buttons with explicit `aria-label` tags.
-- **Micro-Interactions**: Framer Motion entrance animations and smooth hover transitions.
+- **Theme Aesthetic**: Dark mode across all components using deep slate backgrounds (`hsl(220 14% 8%)`), warm amber accents (`hsl(38 92% 50%)`), and glassmorphism card surfaces (`backdrop-blur-md`).
+- **Typography**: `Inter` for general UI text; `JetBrains Mono` for Monaco Editor, code blocks, and prompt outputs.
+- **Buttons and Controls**: Primary amber buttons (`bg-primary`), outline controls, and icon buttons with explicit `aria-label` attributes for accessibility and web agent navigation.
+- **Lazy Loading Fallback**: Static, hook-free `<PageFallback />` loading spinner rendered during route code-splitting transitions.
 
 ---
 
@@ -145,34 +157,47 @@ Artix is a modern, unified SaaS platform designed for software engineers, techni
 
 ```
 c:/Fenix-main/
-├── DOCS.md                    # Master Consolidated Platform Specification
-├── public/                    # PWA assets & llms.txt specs
-├── src/
+├── DOCS.md                    # Consolidated Technical Specification
+├── vercel.json                # Vercel SPA Routing Configuration
+├── docs/                      # Technical documentation suite
+│   ├── README.md
+│   ├── ARCHITECTURE.md
+│   ├── API.md
+│   ├── CHANGELOG.md
+│   ├── UI_UX_GUIDELINES.md
+│   ├── PROJECT_FILE_STRUCTURE.md
+│   ├── CHALLENGES_AND_SOLUTIONS.md
+│   └── TESTING.md
+├── public/                    # Static assets, PWA manifest & llms.txt specs
+├── src/                       # Frontend Source Code
 │   ├── assets/                # App branding & logo assets
 │   ├── components/            # UI components, AI Dialogs & Monaco Editor
 │   ├── hooks/                 # Custom React hooks (Auth, Docs, Billing)
-│   ├── lib/                   # BYOK AI Registry, Storage & 4-tier Auto-Save
-│   ├── pages/                 # React Router pages (Dashboard, Workspace, Pricing)
-│   └── test/                  # Vitest unit test suite (77 tests)
-├── supabase/                  # Edge Functions & PostgreSQL Migrations
+│   ├── integrations/          # Supabase client configuration
+│   ├── lib/                   # AI Registry, Storage & 4-tier Auto-Save
+│   ├── pages/                 # React Router views (Dashboard, Workspace, Pricing)
+│   └── test/                  # Vitest unit test suite (78 tests across 11 files)
+├── supabase/                  # Database Migrations & Edge Functions
+│   ├── functions/             # Cloud Edge Functions (Stripe Checkout & Webhook)
+│   └── migrations/            # PostgreSQL migrations & limit triggers
 └── tests/                     # Playwright E2E & Security Test Suite
 ```
 
 ---
 
-## 7. Engineering Challenges & Technical Solutions
+## 7. Engineering Challenges and Technical Solutions
 
-1. **Auto-Save Data Loss & Race Conditions** → *Solution*: 4-tier caching engine (Debounce, optimistic lock queue, `sendBeacon`/`keepalive` unload guard, `BroadcastChannel` tab sync).
-2. **Plaintext API Key Leakage** → *Solution*: `AES-256-GCM` encryption + automatic `obf:` prefix obfuscation.
-3. **Graph Overlapping in System Architect** → *Solution*: Left-to-Right (`LR`) Dagre rank layout engine + 1-click Auto Layout button.
-4. **Generic AI Output** → *Solution*: High-signal persona prompts + 2-pass reflection critique engine (`refine.ts`).
-5. **Stripe Webhook Forgery & Retries** → *Solution*: Signature verification (`constructEventAsync`) + `stripe_events` idempotency table.
-6. **Lighthouse Agentic Browsing Audits** → *Solution*: `public/llms.txt` & `public/llms-full.txt` implementation + W3C accessibility landmarks.
+1. **Auto-Save Data Loss**: Solved using a 4-tier caching engine (1000ms debounce, optimistic lock queue, `sendBeacon`/`keepalive` unload guard, `BroadcastChannel` tab sync).
+2. **Plaintext Key Storage**: Solved using `obf:` prefix obfuscation and optional `AES-256-GCM` encryption. Added clear UX warnings since keys stay in local browser storage.
+3. **Graph Node Overlapping**: Solved by implementing horizontal Left-to-Right (`LR`) layout with `@dagrejs/dagre` and a 1-click Auto Layout button.
+4. **Vercel Deep-Link 404 Errors**: Solved by adding `vercel.json` with rewrite rule `/(.*)` -> `/index.html` to direct deep-link route handling to index.html.
+5. **Monolithic Bundle Size**: Solved by implementing route-level code splitting with `React.lazy()` in `App.tsx`, isolating Monaco and React Flow into separate chunks.
+6. **Stripe Webhook Retries**: Solved using `stripe.webhooks.constructEventAsync` signature verification and recording event IDs in `public.stripe_events`.
 
 ---
 
-## 8. Testing & Quality Assurance
+## 8. Testing and Quality Assurance
 
-- **Vitest Unit & Integration Suite (`src/test/`)**: 77 unit tests verifying AI registries, 16k context window limits, 2-pass reflection critique engine, 4-tier auto-save queues, key encryption, and Stripe billing limits (`npm run test`).
-- **Playwright E2E & Security Suite (`tests/e2e/`)**: Multi-browser Chromium, Firefox, WebKit specs covering Auth redirects, Dashboard navigation, Document Forge Monaco editor, System Architect auto-layout, XSS vector injection, key obfuscation, and CORS headers (`npm run test:e2e`).
-
+- **Vitest Unit & Integration Suite (`src/test/`)**: 78 passing tests across 11 files covering AI provider registries, 2-pass reflection, 4-tier auto-save, key encryption, DB limits, and DB foreign key constraints (`SEC-08`). Command: `npm run test`.
+- **Playwright E2E & Security Suite (`tests/e2e/`)**: E2E specs running on Chromium, Firefox, and WebKit covering auth redirects, editor functionality, system architect auto-layout, XSS injection prevention, and key obfuscation. Command: `npm run test:e2e`.
+- **Build & Verification Gate**: All changes must pass `npx tsc --noEmit` (0 errors), `npm run test` (78/78 passing), and `npm run build` cleanly before deployment.

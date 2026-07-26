@@ -1,78 +1,102 @@
-# Challenges Faced & Technical Solutions — Artix
+# Challenges Faced and Technical Solutions — Artix
 
-This document logs the major engineering challenges, edge cases, security vulnerabilities, and UX bottlenecks encountered during the development of Artix, along with their implemented technical solutions.
-
----
-
-## 🛑 Challenge 1: Auto-Save Data Loss & Race Conditions
-
-### Problem
-When users typed rapidly in the Monaco editor or made quick edits on the System Architect canvas, rapid auto-save requests fired concurrently. This caused out-of-order database writes (stale content overwriting newer content) and lost unsaved edits when closing browser tabs.
-
-### Technical Solution
-Implemented a robust **4-Tier Auto-Save & Data Resilience Engine**:
-1. **Debounce Engine (`debouncedSave.ts`)**: 1000ms debounce trigger to batch keystrokes.
-2. **Optimistic Locking Queue (`saveQueue.ts`)**: Monotonically increasing version counter (`version`). Concurrent save requests are queued into a serial FIFO queue so that write operations never run in parallel. Stale versions are automatically rejected.
-3. **Unload Protection (`tabCloseGuard.ts`)**: Added `beforeunload` event handlers that flush pending drafts using `navigator.sendBeacon` or fallback `fetch({ keepalive: true })`.
-4. **Multi-Tab Sync (`multiTabSync.ts`)**: Used `BroadcastChannel` with leader election so only 1 tab issues network saves, while secondary tabs update their UI via remote broadcast messages.
+This document logs major engineering challenges, security vulnerabilities, edge cases, and performance bottlenecks encountered during the development of Artix, along with their implemented technical solutions.
 
 ---
 
-## 🛑 Challenge 2: Plaintext API Key Leakage & Forgotten Passphrase Recovery
+## Challenge 1: Auto-Save Data Loss & Race Conditions
 
 ### Problem
-Artix operates on a Bring-Your-Own-Key (BYOK) architecture. Storing raw API keys in plaintext inside browser `localStorage` created a security risk. Furthermore, zero-knowledge encryption locked users out if they forgot their passphrase.
+Rapid typing in Monaco Editor or quick edits on the System Architect canvas triggered concurrent auto-save requests. This caused out-of-order database writes (stale content overwriting newer edits) and data loss when closing browser tabs.
 
 ### Technical Solution
-Implemented **Client-Side Encryption & Reset Vault Recovery (`storage.ts` & `crypto.ts`)**:
-1. **Automated Obfuscation**: All stored keys are automatically obfuscated with the `obf:` prefix prior to writing to `localStorage`.
-2. **AES-256-GCM Encryption**: Users can enable Passphrase Encryption. Keys are encrypted using `AES-256-GCM` with a 100,000-iteration `PBKDF2` derived key. Decrypted keys reside strictly in volatile JS memory.
-3. **Reset Key Vault Action**: Added a **Reset Key Vault** trigger to the locked encryption panel in `AISettingsCard.tsx`, allowing users to safely purge the encrypted blob and enter fresh API keys without DevTools intervention.
+Built a **4-Tier Auto-Save Engine**:
+1. **Debounce Engine (`debouncedSave.ts`)**: 1000ms debounce trigger to batch rapid keystrokes.
+2. **Optimistic Locking Queue (`saveQueue.ts`)**: Version counter (`version`) and serial queue ensure write operations execute sequentially and stale updates are rejected.
+3. **Unload Protection (`tabCloseGuard.ts`)**: Flushes unsaved drafts via `navigator.sendBeacon` or `fetch({ keepalive: true })` on `beforeunload`.
+4. **Multi-Tab Sync (`multiTabSync.ts`)**: `BroadcastChannel` leader election ensures only one tab issues network save requests while secondary tabs receive state updates via broadcast.
 
 ---
 
-## 🛑 Challenge 3: Node Overlapping & Visual Clutter in System Architect
+## Challenge 2: API Key Storage and User Cache Loss
 
 ### Problem
-Auto-generating system architecture diagrams with 15–40 nodes using naive square-root grid placement caused horizontal connection lines to cut directly through sibling node boxes, obscuring text labels and creating visual noise.
+Storing raw API keys in browser `localStorage` created security risks. In addition, because keys stay in browser storage, clearing browser data removes stored keys.
 
 ### Technical Solution
-Upgraded the graph rendering pipeline with a **Topological Rank-Based Layout Engine (`@dagrejs/dagre`)**:
-1. **Horizontal Architecture Flow (`LR`)**: Set `rankdir: 'LR'` for System Architect diagrams. Connections route cleanly from Clients on the Left (`Position.Right`) → API Gateways → Microservices → Databases on the Right (`Position.Left`).
-2. **Generous Spacing Standards**: Configured `ranksep: 200` and `nodesep: 110` with rounded smoothstep connectors (`borderRadius: 16`).
-3. **1-Click Auto Layout Toolbar Action**: Added an **Auto Layout** button on the canvas toolbar so users can instantly re-align any diagram.
+1. **Automated Obfuscation**: Keys are stored in `localStorage` with an `obf:` prefix prior to writing.
+2. **AES-256-GCM Encryption**: Optional passphrase encryption using `AES-256-GCM` with a 100,000-iteration `PBKDF2` derived key. Decrypted keys reside only in volatile JavaScript memory during active sessions.
+3. **Reset Key Vault Action**: Added a Reset Vault option to the locked settings panel in `AISettingsCard.tsx` so users can clear encrypted blobs if they forget their passphrase.
+4. **UX Backup Notice**: Added an inline warning alert and save toast notice informing users that keys stay local to browser storage, encouraging them to keep an external backup.
 
 ---
 
-## 🛑 Challenge 4: Generic AI Output ("TBD", "Ensure Scalability")
+## Challenge 3: Node Overlapping in System Architect
 
 ### Problem
-Default AI prompts often produced vague boilerplate text (e.g. *"ensure high availability"*, *"sprint 1 setup"*, *"TBD"*) instead of concrete technical specifications.
+Auto-generating graph diagrams with 15–40 nodes using basic grid positioning caused connection lines to cross sibling node boxes, obscuring labels.
 
 ### Technical Solution
-Implemented **High-Signal Prompts & 2-Pass Reflection Engine (`refine.ts`)**:
-1. **Persona Prompting**: Engineered specialized system prompts acting as Senior Agile PMs, Principal Systems Architects, and Cursor IDE Specialists.
-2. **Streaming Reflection Engine (`streamRefinement`)**: Built a 2-pass critique flow that scans generated output to purge generic buzzwords and expand bullet points into executable technical requirements.
+Integrated a **Topological Rank-Based Layout Engine (`@dagrejs/dagre`)**:
+1. **Horizontal Layout (`LR`)**: Set `rankdir: 'LR'` for System Architect diagrams, routing connections cleanly from client nodes on the left to database nodes on the right.
+2. **Spacing Configuration**: Set `ranksep: 200` and `nodesep: 110` with rounded smoothstep connectors (`borderRadius: 16`).
+3. **Auto Layout Button**: Added a 1-click **Auto Layout** action on the canvas toolbar to format nodes automatically.
 
 ---
 
-## 🛑 Challenge 5: Stripe Billing Webhook Idempotency & Signature Forgery
+## Challenge 4: Vercel Edge Deep-Link 404 Errors
 
 ### Problem
-Handling Stripe webhooks in serverless environments can lead to signature forgery or duplicate subscription processing if Stripe retries webhook delivery.
+Directly navigating to sub-routes (such as `/dashboard` or `/projects/:id`) or refreshing deep links on Vercel deployments returned edge-network `404 NOT_FOUND` errors (`fra1::...` header format) because Vercel looked for static file routes instead of delegating to client-side React Router.
 
 ### Technical Solution
-Built hardened **Supabase Cloud Edge Functions (`supabase/functions/stripe-webhook/`)**:
-1. **Signature Verification**: Every incoming POST request is validated against Stripe's raw request body using `stripe.webhooks.constructEventAsync`.
-2. **Idempotency Tracking**: Webhook event IDs are recorded in `public.stripe_events`. Duplicate event IDs return an immediate `200 OK` response without re-processing database mutations.
+Added `vercel.json` to the project root with SPA rewrite rules:
+```json
+{
+  "rewrites": [
+    {
+      "source": "/(.*)",
+      "destination": "/index.html"
+    }
+  ]
+}
+```
+This routes all non-static asset paths back to `/index.html`, allowing React Router to handle deep-link routing.
 
 ---
 
-## 🛑 Challenge 6: Lighthouse Agentic Browsing & Accessibility Audits
+## Challenge 5: Monolithic Bundle Size & Initial Render Delays
 
 ### Problem
-Lighthouse audits flagged `llms.txt does not follow recommendations` and `Accessibility tree is not well-formed`.
+Static imports of heavy libraries (Monaco Editor `@monaco-editor/react` and React Flow `@xyflow/react`) inside main entry files inflated the production JavaScript bundle to 1.47 MB, dragging down First Contentful Paint (FCP) and Largest Contentful Paint (LCP) performance metrics.
 
 ### Technical Solution
-1. **`llms.txt` Standard**: Created `/public/llms.txt` and `/public/llms-full.txt` following the official [llmstxt.org](https://llmstxt.org/) specification to allow AI search crawlers to index Artix capabilities.
-2. **Accessibility Tree Remediation**: Wrapped page sections in `<main id="main-content">` landmark elements and added explicit `aria-label` attributes to all icon-only buttons.
+Implemented **Route-Level Code Splitting (`React.lazy` & `Suspense`)**:
+1. Lazy-loaded page routes in `src/App.tsx` (`ProjectWorkspace`, `Dashboard`, `Settings`, `Pricing`, etc.).
+2. Wrapped routes in `<Suspense fallback={<PageFallback />}>` using a static, hook-free spinner component.
+3. Isolated Monaco and React Flow into a dedicated `ProjectWorkspace` bundle (~561 kB), shrinking the main entry bundle from 1.47 MB to ~613 kB (~58% payload reduction).
+
+---
+
+## Challenge 6: User Foreign Key Integrity in PostgreSQL
+
+### Problem
+Original database schemas lacked explicit foreign key constraints on `projects.user_id` and `system_designs.user_id` referencing `auth.users(id)`. This created risks of orphaned rows if a user account was deleted.
+
+### Technical Solution
+Created migration `supabase/migrations/20260724060000_add_missing_user_fk_constraints.sql`:
+1. Wrapped constraint creation in idempotent `DO $$ BEGIN IF NOT EXISTS ... END $$;` blocks.
+2. Added `projects_user_id_fkey` and `system_designs_user_id_fkey` foreign key constraints referencing `auth.users(id) ON DELETE CASCADE`.
+3. Added automated Vitest test (`SEC-08` in `src/test/security.test.ts`) to verify foreign key constraint definitions.
+
+---
+
+## Challenge 7: Stripe Webhook Idempotency & Signature Forgery
+
+### Problem
+Handling serverless Stripe webhooks can lead to duplicate processing if Stripe retries event delivery, or unauthorized calls if webhooks aren't verified.
+
+### Technical Solution
+Built **Supabase Edge Functions (`supabase/functions/stripe-webhook/`)**:
+1. **Signature Verification**: Validates incoming POST requests against raw request bodies using `stripe.webhooks.constructEventAsync`.
+2. **Idempotency Tracking**: Records processed webhook event IDs in `public.stripe_events`. Duplicate event IDs return an immediate `200 OK` without repeating database operations.

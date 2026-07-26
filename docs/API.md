@@ -1,12 +1,12 @@
 # API Specification — Artix
 
-This document details all Supabase database tables (REST API), Cloud Edge Functions, and client-side AI provider API integrations.
+This document details all Supabase database tables (REST API), Cloud Edge Functions, and client-side AI provider integrations.
 
 ---
 
-## 🗄️ Database Tables (Supabase REST API)
+## Database Tables (Supabase REST API)
 
-All database endpoints require `apikey: VITE_SUPABASE_PUBLISHABLE_KEY` and are protected by Supabase Row Level Security (RLS) policies.
+All REST endpoints require `apikey: VITE_SUPABASE_PUBLISHABLE_KEY` and are protected by Supabase Row Level Security (RLS) policies.
 
 ### 1. `public.projects`
 Represents user workspaces.
@@ -17,7 +17,7 @@ Represents user workspaces.
 - **POST `/rest/v1/projects`**
   - *Auth*: Required (JWT)
   - *Body*: `{ name: string, description?: string }`
-  - *Limits*: Max 3 for Free plan users (enforced by DB trigger).
+  - *Limits*: Max 3 for Free plan users (enforced by DB trigger). Foreign key on `user_id` referencing `auth.users(id) ON DELETE CASCADE`.
 - **PATCH `/rest/v1/projects?id=eq.{id}`**
   - *Auth*: Required (JWT)
   - *Body*: `{ name?: string, description?: string }`
@@ -43,7 +43,7 @@ Represents Markdown, XML, and Plain Text specs inside projects.
 ---
 
 ### 3. `public.system_designs`
-Represents React Flow visual architecture boards.
+Represents React Flow architecture board states.
 
 - **GET `/rest/v1/system_designs?project_id=eq.{projectId}&select=*`**
   - *Auth*: Required (JWT)
@@ -51,12 +51,12 @@ Represents React Flow visual architecture boards.
 - **POST `/rest/v1/system_designs`**
   - *Auth*: Required (JWT)
   - *Body*: `{ project_id: string, name: string, board_state: { nodes: [], edges: [], strokes: [] } }`
-  - *Limits*: Max 3 per user on Free plan.
+  - *Limits*: Max 3 per user on Free plan. Foreign key on `user_id` referencing `auth.users(id) ON DELETE CASCADE`.
 
 ---
 
 ### 4. `public.subscriptions`
-Represents user billing state.
+Represents user subscription and plan state.
 
 - **GET `/rest/v1/subscriptions?select=*`**
   - *Auth*: Required (JWT)
@@ -64,17 +64,26 @@ Represents user billing state.
 
 ---
 
-## ⚡ Supabase Edge Functions
+### 5. `public.stripe_events`
+Tracks Stripe webhook event IDs for idempotency.
+
+- **GET `/rest/v1/stripe_events?select=*`**
+  - *Auth*: Service Role key
+  - *Response*: `Array<{ id: string, stripe_event_id: string, event_type: string, processed_at: string }>`
+
+---
+
+## Supabase Edge Functions
 
 ### 1. `POST /functions/v1/create-checkout-session`
-Creates a Stripe Checkout Session for upgrading to Pro.
+Generates Stripe Checkout URLs for upgrades.
 
 - **Auth**: Required (`Authorization: Bearer <user_jwt>`)
 - **Body**: `{ priceId: string, origin: string }`
 - **Response**: `{ url: string }`
 
 ### 2. `POST /functions/v1/create-portal-session`
-Generates a Stripe Customer Portal link for managing subscriptions.
+Generates Stripe Customer Portal URLs.
 
 - **Auth**: Required (`Authorization: Bearer <user_jwt>`)
 - **Body**: `{ return_url: string }`
@@ -86,19 +95,19 @@ Handles incoming Stripe billing webhooks idempotently.
 - **Auth**: Verified via `Stripe-Signature` header (`constructEventAsync`).
 - **Events Handled**:
   - `checkout.session.completed` -> Sets `plan_tier = 'pro'`, `status = 'active'`.
-  - `customer.subscription.updated` -> Updates subscription status & period end.
-  - `customer.subscription.deleted` -> Reverts `plan_tier = 'free'`.
+  - `customer.subscription.updated` -> Updates plan tier, status, billing cycle, and period end.
+  - `customer.subscription.deleted` -> Reverts `plan_tier = 'free'`, `status = 'canceled'`.
   - `invoice.payment_failed` -> Sets `status = 'past_due'`.
 
 ---
 
-## 🤖 Client-Side AI Provider Integrations
+## Client-Side AI Provider Integrations
 
-All AI calls are executed directly from the client browser to provider endpoints (BYOK architecture):
+All AI calls execute directly from the client browser to provider endpoints (BYOK architecture):
 
 - **OpenAI**: `https://api.openai.com/v1/chat/completions` (`gpt-4o`, `gpt-4o-mini`)
 - **Anthropic**: `https://api.anthropic.com/v1/messages` (`claude-3-5-sonnet-20241022`, `claude-3-5-haiku-20241022`)
 - **Google Gemini**: `https://generativelanguage.googleapis.com/v1beta/models/...:streamGenerateContent` (`gemini-1.5-pro`, `gemini-1.5-flash`)
 - **Groq**: `https://api.groq.com/openai/v1/chat/completions` (`llama-3.3-70b-versatile`)
 - **OpenRouter**: `https://openrouter.ai/api/v1/chat/completions`
-- **Ollama**: `http://localhost:11434/api/generate` (Local keyless server)
+- **Ollama**: `http://localhost:11434/api/generate` (Local keyless server, requires `OLLAMA_ORIGINS=*`)

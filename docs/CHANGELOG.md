@@ -1,55 +1,64 @@
 # Changelog — Artix
 
-All notable changes to the Artix platform are documented below, grouped by feature release.
+All notable changes to the Artix platform are documented below.
 
 ---
 
-## 🚀 [v1.4.0] — 2026-07-23
+## [v1.5.0] — 2026-07-25
 
-### 🎨 UI & Hero Section Optimization
-- **Clean Hero Layout**: Removed sub-hero file format badges (`Markdown .md`, `XML .xml`, `Plain Text .txt`) to provide an uncluttered, high-converting hero section.
-- **Auth Page Branding**: Refactored Auth page right-side panel with Artix branding, feature icons, and warm amber glow shadows.
-- **Vite Build Fix**: Resolved JSX closing tag nesting order in `Index.tsx` and moved `@import` URL to line 1 of `index.css` to eliminate CSS build warnings.
+### Authentication and Security
+- **Google OAuth Integration**: Added 1-click Google OAuth authentication (`signInWithGoogle`) in `useAuth.tsx` and added the Google Sign-In button to `Auth.tsx`.
+- **Database Foreign Key Integrity**: Applied migration `20260724060000_add_missing_user_fk_constraints.sql` adding foreign key constraints `projects_user_id_fkey` and `system_designs_user_id_fkey` on `auth.users(id) ON DELETE CASCADE`.
+- **Accessibility Fixes**: Added explicit `aria-label` tags to icon buttons across `Dashboard.tsx`, `ProjectWorkspace.tsx`, and `Settings.tsx`.
 
-### 🌐 Lighthouse Agentic Browsing & Accessibility
-- **`llms.txt` Implementation**: Added `/public/llms.txt` and `/public/llms-full.txt` following the official [llmstxt.org](https://llmstxt.org/) specification for AI agent web indexing.
-- **Accessibility Landmarks**: Added `<main id="main-content">` semantic landmark wrapper and explicit `aria-label` attributes across Navbar icon buttons.
-- **Reset Key Vault Recovery**: Added Reset Vault dialog to locked encryption panel in `AISettingsCard.tsx` for forgotten passphrase recovery.
+### Deployment and Performance
+- **Vercel SPA Routing**: Created `vercel.json` with SPA rewrite rules (`/(.*)` -> `/index.html`) to resolve deep-link 404 errors on Vercel edge deployment.
+- **Route Code-Splitting**: Implemented route-level code splitting using `React.lazy()` and static `<Suspense>` fallbacks in `App.tsx`, lowering initial entry bundle size from 1.47 MB to ~613 kB.
 
----
-
-## 📐 [v1.3.0] — 2026-07-23
-
-### 📐 System Architect & Algorithm Visualizer Upgrades
-- **Horizontal Dagre Rank Layout (`LR`)**: Switched System Architect graph positioning from vertical `TB` to horizontal **Left-to-Right (`LR`)**, routing connections cleanly from Clients on the Left (`Position.Right`) → Microservices → Databases on the Right (`Position.Left`).
-- **Interactive Auto-Layout Button**: Added a 1-click **Auto Layout** toolbar action on the System Architect header to auto-align nodes with zero visual overlap.
-- **High-Node Capacity Prompts**: Expanded AI architecture diagram generation token budget to `4096` tokens and node capacity to **40 nodes**.
+### UX Updates
+- **API Key Storage Warning**: Added clear UX warning notices in `AISettingsCard.tsx` reminding users to maintain external backups of API keys because keys stay in browser storage.
 
 ---
 
-## 🤖 [v1.2.0] — 2026-07-23
+## [v1.4.0] — 2026-07-23
 
-### 💡 High-Signal System Prompts & Reflection Engine
-- **PRD System Prompts**: Integrated 4 senior PM personas for Agile, Technical Spec, Lean MVP, and Custom modes in `prd.ts`.
-- **Vibe Coding Engine**: Integrated Artix Stack Lead (`vibe_artix`) and Cursor IDE Specialist (`vibe_cursor`) prompts with relative paths (`[NEW]`, `[MODIFY]`) and mandatory verification commands (`npx tsc --noEmit`).
-- **Refinement Pass (`refine.ts`)**: Built 2-pass critique flow purging generic filler words ("ensure scalability", "TBD").
-- **Target Refactoring**: Removed legacy `bolt` and `v0` targets, focusing on `artix`, `cursor`, and `generic`.
-
----
-
-## 💳 [v1.1.0] — 2026-07-23
-
-### 💳 Stripe Billing & Tier Enforcement
-- **Cloud Edge Functions**: Created `create-checkout-session`, `create-portal-session`, and `stripe-webhook` Edge Functions with CORS origin hardening.
-- **Database Trigger Quotas**: Applied `enforce_tier_limits_trigger.sql` PostgreSQL migration to enforce Free plan limits (3 projects, 10 documents, 3 designs).
-- **Admin Pro Access**: Applied database migration granting lifetime Pro subscription to `volij00635@gmail.com`.
+### UI and Accessibility
+- **Hero Section Clean-up**: Removed sub-hero file format badges from `Index.tsx`.
+- **Accessibility Landmarks**: Added `<main id="main-content">` semantic landmark wrapper.
+- **AI Crawling Specs**: Added `/public/llms.txt` and `/public/llms-full.txt` for AI web agent indexing.
+- **Key Recovery**: Added Reset Vault dialog to locked encryption panel in `AISettingsCard.tsx`.
 
 ---
 
-## 🔒 [v1.0.0] — 2026-07-22
+## [v1.3.0] — 2026-07-23
 
-### 🔒 Core Platform & Security Remediation
-- **Branding Migration**: Completed full migration from legacy project naming to **Artix**.
-- **BYOK Key Protection**: Implemented automated key obfuscation (`obf:` prefix) and client-side `AES-256-GCM` encryption.
-- **Auto-Save Resilience**: Built 4-tier auto-save architecture (Debounce, optimistic lock queue, sendBeacon/keepalive unload guard, BroadcastChannel multi-tab sync).
-- **Playwright Test Suite**: Added complete E2E and security audit testing suite in `tests/e2e/`.
+### System Architect and Canvas
+- **Horizontal Dagre Layout (`LR`)**: Switched graph positioning to horizontal Left-to-Right layout, routing connections from client nodes on the left to database nodes on the right.
+- **Auto Layout Button**: Added 1-click Auto Layout toolbar action on System Architect.
+- **Node Capacity**: Expanded diagram token limit and increased maximum node capacity to 40 nodes.
+
+---
+
+## [v1.2.0] — 2026-07-23
+
+### Prompts and Reflection Pass
+- **System Prompts**: Integrated prompts for PRD Generator and Vibe Coding (Artix and Cursor targets).
+- **Refinement Pass (`refine.ts`)**: Built 2-pass critique flow that cleans up vague phrasing and expands technical details.
+
+---
+
+## [v1.1.0] — 2026-07-23
+
+### Billing and Subscriptions
+- **Stripe Edge Functions**: Built `create-checkout-session`, `create-portal-session`, and `stripe-webhook` Edge Functions.
+- **Database Quota Triggers**: Applied `enforce_tier_limits_trigger.sql` migration enforcing Free plan limits (3 projects, 10 documents, 3 designs).
+
+---
+
+## [v1.0.0] — 2026-07-22
+
+### Initial Platform Setup
+- **Rebranding**: Completed rebrand to Artix.
+- **BYOK Protection**: Added `obf:` key obfuscation and `AES-256-GCM` passphrase encryption.
+- **Auto-Save Engine**: Built 4-tier auto-save architecture (1000ms debounce, optimistic queue, sendBeacon/keepalive unload guard, BroadcastChannel tab sync).
+- **Test Suite**: Added Vitest unit test suite and Playwright E2E testing suite in `tests/e2e/`.
