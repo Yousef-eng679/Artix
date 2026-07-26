@@ -96,7 +96,7 @@ Artix is a developer workspace platform that combines multi-format technical doc
 
 ### Database Tables (Supabase REST API)
 
-- **`public.projects`**: User workspaces (`id`, `user_id`, `name`, `description`). Foreign key on `user_id` referencing `auth.users(id) ON DELETE CASCADE`. Max 3 on Free plan.
+- **`public.projects`**: User workspaces (`id`, `user_id`, `name`, `created_at`, `updated_at`). Foreign key on `user_id` referencing `auth.users(id) ON DELETE CASCADE`. Max 3 on Free plan.
 - **`public.documents`**: Technical documents (`id`, `project_id`, `title`, `content`, `format`). Max 10 per user on Free plan.
 - **`public.system_designs`**: Architecture graph states (`id`, `project_id`, `name`, `board_state`). Foreign key on `user_id` referencing `auth.users(id) ON DELETE CASCADE`. Max 3 on Free plan.
 - **`public.subscriptions`**: Billing state (`user_id`, `plan_tier`, `status`, `billing_cycle`, `current_period_end`).

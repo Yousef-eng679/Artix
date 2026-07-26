@@ -13,14 +13,14 @@ Represents user workspaces.
 
 - **GET `/rest/v1/projects?select=*`**
   - *Auth*: Required (JWT)
-  - *Response*: `Array<{ id: string, user_id: string, name: string, description: string, created_at: string, updated_at: string }>`
+  - *Response*: `Array<{ id: string, user_id: string, name: string, created_at: string, updated_at: string }>`
 - **POST `/rest/v1/projects`**
   - *Auth*: Required (JWT)
-  - *Body*: `{ name: string, description?: string }`
+  - *Body*: `{ name: string }`
   - *Limits*: Max 3 for Free plan users (enforced by DB trigger). Foreign key on `user_id` referencing `auth.users(id) ON DELETE CASCADE`.
 - **PATCH `/rest/v1/projects?id=eq.{id}`**
   - *Auth*: Required (JWT)
-  - *Body*: `{ name?: string, description?: string }`
+  - *Body*: `{ name?: string }`
 - **DELETE `/rest/v1/projects?id=eq.{id}`**
   - *Auth*: Required (JWT)
 

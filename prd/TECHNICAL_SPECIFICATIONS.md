@@ -9,47 +9,54 @@ Target Release: v1.5.0
 All database tables reside in Supabase PostgreSQL (`public` schema) and are protected by Row Level Security policies requiring authenticated JWT sessions (`auth.uid() = user_id`).
 
 ```sql
--- 1. Projects Table
+-- 1. Projects Table (20260203132019 & 20260724060000)
 CREATE TABLE public.projects (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  id UUID NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
   user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
-  name TEXT NOT NULL,
-  description TEXT,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  name TEXT NOT NULL DEFAULT 'Untitled Project',
+  created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
+  updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
 );
 
 -- Foreign Key Constraint (added via 20260724060000_add_missing_user_fk_constraints.sql):
 -- CONSTRAINT projects_user_id_fkey FOREIGN KEY (user_id) REFERENCES auth.users(id) ON DELETE CASCADE;
 
--- 2. Documents Table
+-- 2. Documents Table (20260202130240 & 20260203132019)
 CREATE TABLE public.documents (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  project_id UUID NOT NULL REFERENCES public.projects(id) ON DELETE CASCADE,
+  id UUID NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
+  project_id UUID REFERENCES public.projects(id) ON DELETE CASCADE,
   user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
   title TEXT NOT NULL DEFAULT 'Untitled Document',
   content TEXT NOT NULL DEFAULT '',
   format TEXT NOT NULL DEFAULT 'markdown' CHECK (format IN ('markdown', 'xml', 'text')),
-  version INTEGER NOT NULL DEFAULT 1,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
+  updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
 );
 
--- 3. System Designs Table
+-- 3. System Designs Table (20260203132019 & 20260724060000)
 CREATE TABLE public.system_designs (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  id UUID NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
   project_id UUID NOT NULL REFERENCES public.projects(id) ON DELETE CASCADE,
   user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
-  name TEXT NOT NULL DEFAULT 'Untitled System Architecture',
-  board_state JSONB NOT NULL DEFAULT '{"nodes":[],"edges":[],"strokes":[]}'::jsonb,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  name TEXT NOT NULL DEFAULT 'System Design',
+  board_state JSONB NOT NULL DEFAULT '{"nodes": [], "edges": []}'::jsonb,
+  created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
+  updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
 );
 
 -- Foreign Key Constraint (added via 20260724060000_add_missing_user_fk_constraints.sql):
 -- CONSTRAINT system_designs_user_id_fkey FOREIGN KEY (user_id) REFERENCES auth.users(id) ON DELETE CASCADE;
 
--- 4. Subscriptions Table
+-- 4. Profiles Table (20260205164934)
+CREATE TABLE public.profiles (
+  id UUID NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
+  user_id UUID NOT NULL UNIQUE REFERENCES auth.users(id) ON DELETE CASCADE,
+  display_name TEXT,
+  created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
+  updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
+);
+
+-- 5. Subscriptions Table (20260722180000)
 CREATE TABLE public.subscriptions (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE UNIQUE,
@@ -63,12 +70,47 @@ CREATE TABLE public.subscriptions (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- 5. Stripe Events Table (Idempotency)
+-- 6. Stripe Events Table (20260722180000 - Idempotency)
 CREATE TABLE public.stripe_events (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   stripe_event_id TEXT NOT NULL UNIQUE,
   event_type TEXT NOT NULL,
   processed_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- 7. PRD Generations Table (20260617215902)
+CREATE TABLE public.prd_generations (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  project_id UUID NOT NULL REFERENCES public.projects(id) ON DELETE CASCADE,
+  source_document_id UUID REFERENCES public.documents(id) ON DELETE SET NULL,
+  template TEXT NOT NULL,
+  output_markdown TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- 8. Agentic Workflows Table
+CREATE TABLE public.agentic_workflows (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  project_id UUID NOT NULL REFERENCES public.projects(id) ON DELETE CASCADE,
+  source_document_id UUID REFERENCES public.documents(id) ON DELETE SET NULL,
+  pattern TEXT NOT NULL,
+  agent_count INTEGER NOT NULL DEFAULT 1,
+  output_markdown TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- 9. Vibe Generations Table
+CREATE TABLE public.vibe_generations (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  project_id UUID NOT NULL REFERENCES public.projects(id) ON DELETE CASCADE,
+  source_document_id UUID REFERENCES public.documents(id) ON DELETE SET NULL,
+  target TEXT NOT NULL,
+  scope TEXT NOT NULL,
+  output_markdown TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 ```
 
