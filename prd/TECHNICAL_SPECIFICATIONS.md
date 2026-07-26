@@ -1,11 +1,10 @@
-# Artix — Technical Specifications & Database Schema
+# Artix — Technical Specifications and Database Schema
 
-> **Document Status**: Production-Ready  
-> **Target Release**: v1.4.0  
+Target Release: v1.5.0
 
 ---
 
-## 🗄️ 1. Database Schema & Row Level Security (RLS)
+## 1. Database Schema and Row Level Security (RLS)
 
 All database tables reside in Supabase PostgreSQL (`public` schema) and are protected by Row Level Security policies requiring authenticated JWT sessions (`auth.uid() = user_id`).
 
@@ -19,6 +18,9 @@ CREATE TABLE public.projects (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Foreign Key Constraint (added via 20260724060000_add_missing_user_fk_constraints.sql):
+-- CONSTRAINT projects_user_id_fkey FOREIGN KEY (user_id) REFERENCES auth.users(id) ON DELETE CASCADE;
 
 -- 2. Documents Table
 CREATE TABLE public.documents (
@@ -43,6 +45,9 @@ CREATE TABLE public.system_designs (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Foreign Key Constraint (added via 20260724060000_add_missing_user_fk_constraints.sql):
+-- CONSTRAINT system_designs_user_id_fkey FOREIGN KEY (user_id) REFERENCES auth.users(id) ON DELETE CASCADE;
 
 -- 4. Subscriptions Table
 CREATE TABLE public.subscriptions (
@@ -69,7 +74,7 @@ CREATE TABLE public.stripe_events (
 
 ---
 
-## ⚡ 2. Supabase Cloud Edge Functions
+## 2. Supabase Cloud Edge Functions
 
 Edge Functions run on Deno TypeScript runtime at edge locations:
 
@@ -90,7 +95,14 @@ Edge Functions run on Deno TypeScript runtime at edge locations:
 
 ---
 
-## 🤖 3. AI Streaming & Reflection Pipeline
+## 3. Frontend Architecture and Code Splitting
+
+- **Vercel SPA Rewrites**: `vercel.json` maps all non-static requests to `/index.html` (`"rewrites": [{"source": "/(.*)", "destination": "/index.html"}]`), resolving Vercel edge `404 NOT_FOUND` errors on direct URL refreshes.
+- **Route Code-Splitting**: `App.tsx` imports page routes via `React.lazy()` and wraps them in `<Suspense fallback={<PageFallback />}>`. Monaco Editor and React Flow are isolated in a separate `ProjectWorkspace` bundle (~561 kB), lowering the initial JavaScript entry chunk from 1.47 MB to ~613 kB.
+
+---
+
+## 4. AI Streaming and Refinement Pipeline
 
 ```
 [ User Input ]
@@ -105,9 +117,9 @@ Edge Functions run on Deno TypeScript runtime at edge locations:
 [ Draft Stream Output ]
       │
       ▼
-[ 2nd Pass: Reflection & Critique Engine (refine.ts) ]
-      │ Purges filler ("ensure scalability", "TBD")
+[ 2nd Pass: Refinement Pass (refine.ts) ]
+      │ Purges vague filler ("ensure scalability", "TBD")
       │ Expands concrete specs & verification steps
       ▼
-[ Final High-Signal Response Render ]
+[ Final Clean Response Render ]
 ```
