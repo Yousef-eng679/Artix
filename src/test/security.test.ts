@@ -122,5 +122,29 @@ describe('Security Remediation Suite', () => {
       expect(allSql).toContain('ON DELETE CASCADE');
     });
   });
+
+  describe('Real-Time Email Validation & Deliverability (Option B)', () => {
+    it('should identify disposable email domains correctly', async () => {
+      const { validateEmailDeliverability } = await import('@/lib/emailValidation');
+      const disposableResult = await validateEmailDeliverability('testuser@mailinator.com');
+      expect(disposableResult.valid).toBe(false);
+      expect(disposableResult.reason).toBe('disposable');
+    });
+
+    it('should detect domain typos and return suggestions', async () => {
+      const { validateEmailDeliverability } = await import('@/lib/emailValidation');
+      const typoResult = await validateEmailDeliverability('user@gmial.com');
+      expect(typoResult.valid).toBe(false);
+      expect(typoResult.reason).toBe('typo');
+      expect(typoResult.suggestion).toBe('gmail.com');
+    });
+
+    it('should allow valid email domains to proceed', async () => {
+      const { validateEmailDeliverability } = await import('@/lib/emailValidation');
+      const validResult = await validateEmailDeliverability('developer@gmail.com');
+      expect(validResult.valid).toBe(true);
+    });
+  });
 });
+
 

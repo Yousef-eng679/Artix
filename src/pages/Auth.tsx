@@ -7,6 +7,7 @@ import { Label } from '@/components/ui/label';
 import { Mail, Lock, ArrowRight, Loader2, CheckCircle2, AlertCircle, FileText, Network, Sparkles, ShieldCheck } from 'lucide-react';
 import { toast } from 'sonner';
 import { useAuth } from '@/hooks/useAuth';
+import { validateEmailDeliverability } from '@/lib/emailValidation';
 import { z } from 'zod';
 import artixLogo from '@/assets/artix-logo.png';
 
@@ -83,6 +84,22 @@ const Auth = () => {
 
     try {
       if (isSignUp) {
+        const validation = await validateEmailDeliverability(trimmed.email);
+        if (!validation.valid) {
+          if (validation.reason === 'typo' && validation.suggestion) {
+            toast.error(`Did you mean ${validation.suggestion}?`, {
+              description: 'Check your email spelling or sign in with Google.',
+            });
+            setErrors({ email: `Did you mean ${validation.suggestion}?` });
+          } else {
+            toast.error(validation.message || "This email domain can't receive mail.", {
+              description: 'Check for typos or use Google Sign-In instead.',
+            });
+            setErrors({ email: validation.message || "Email domain can't receive mail." });
+          }
+          return;
+        }
+
         const { error } = await signUp(trimmed.email, trimmed.password);
         if (error) {
           if (error.message.includes('already registered')) {
