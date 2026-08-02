@@ -54,8 +54,8 @@ export default defineConfig(() => ({
         ],
       },
       manifest: {
-        name: "Fenix - Developer's Command Center",
-        short_name: "Fenix",
+        name: "Artix - Developer's Command Center",
+        short_name: "Artix",
         description: "Document, design, and visualize — all in one developer workspace",
         theme_color: "#1a1a2e",
         background_color: "#1a1a2e",

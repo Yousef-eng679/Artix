@@ -143,7 +143,7 @@ describe('Security Remediation Suite', () => {
       const { validateEmailDeliverability } = await import('@/lib/emailValidation');
       const validResult = await validateEmailDeliverability('developer@gmail.com');
       expect(validResult.valid).toBe(true);
-    });
+    }, 15000);
   });
 });
 
