@@ -1,6 +1,8 @@
 # Artix — The Developer's Command Center
 
-![Artix Cover Banner](public/artix-cover.png)
+<p align="center">
+  <img src="public/artix-logo-banner.png" alt="Artix Logo" width="300" />
+</p>
 
 Artix is a modern, unified SaaS platform designed for software engineers, product leads, and architects. It combines multi-format technical documentation, visual system design, algorithm mapping, and high-signal AI prompt engineering into a single high-performance workspace.
 
