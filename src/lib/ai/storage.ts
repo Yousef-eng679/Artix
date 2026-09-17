@@ -152,7 +152,7 @@ export async function disableEncryption(passphrase: string): Promise<void> {
   if (!raw) return;
   const blob = JSON.parse(raw) as EncryptedBlob;
   const settings = await decryptJSON<AISettings>(blob, passphrase);
-  localStorage.setItem(KEY, JSON.stringify(settings));
+  localStorage.setItem(KEY, JSON.stringify(sanitizeSettingsForStorage(settings)));
   localStorage.removeItem(ENC_KEY);
   memoryCache = null;
   memoryPassphrase = null;

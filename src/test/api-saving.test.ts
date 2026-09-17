@@ -90,6 +90,11 @@ describe('API Settings Saving & Encryption', () => {
     await disableEncryption(passphrase);
     expect(isEncrypted()).toBe(false);
     expect(loadSettings()).toEqual(settings);
+
+    // Verify no raw API key in localStorage — must be obfuscated
+    const stored = localStorage.getItem('artix.ai.settings.v1');
+    expect(stored).not.toContain('ai-gemini-key');
+    expect(stored).toContain('obf:');
   });
 
   it('should completely clear all settings', () => {
