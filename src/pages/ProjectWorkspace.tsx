@@ -102,6 +102,18 @@ const ProjectWorkspace = () => {
     }
   }, [projectsLoading, docsLoading, designsLoading, id, searchParams]);
 
+  const currentDesign = designs.find((d) => d.id === selectedDesign);
+
+  const handleSaveDesign = useCallback(async (boardState: any) => {
+    if (!currentDesign?.id) return;
+    await updateDesign({ id: currentDesign.id, board_state: boardState });
+  }, [currentDesign?.id, updateDesign]);
+
+  const handleUpdateDesignName = useCallback(async (name: string) => {
+    if (!currentDesign?.id) return;
+    await updateDesign({ id: currentDesign.id, name });
+  }, [currentDesign?.id, updateDesign]);
+
   // Don't render until auth is resolved
   if (authLoading) {
     return (
@@ -185,8 +197,6 @@ const ProjectWorkspace = () => {
     }
   };
 
-  const currentDesign = designs.find((d) => d.id === selectedDesign);
-
   const handleRenameDocument = async (newTitle: string) => {
     if (!renameDoc) return;
     await updateDocument({ id: renameDoc.id, title: newTitle });
@@ -198,16 +208,6 @@ const ProjectWorkspace = () => {
     await updateDesign({ id: renameDesign.id, name: newName });
     toast.success('Design renamed');
   };
-
-  const handleSaveDesign = useCallback(async (boardState: any) => {
-    if (!currentDesign?.id) return;
-    await updateDesign({ id: currentDesign.id, board_state: boardState });
-  }, [currentDesign?.id, updateDesign]);
-
-  const handleUpdateDesignName = useCallback(async (name: string) => {
-    if (!currentDesign?.id) return;
-    await updateDesign({ id: currentDesign.id, name });
-  }, [currentDesign?.id, updateDesign]);
 
   if (projectsLoading) {
     return (
