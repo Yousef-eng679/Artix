@@ -1,11 +1,4 @@
-import { corsHeaders, getCorsHeaders } from '../_shared/cors.ts';
-
-// Allowed origins for CORS
-const ALLOWED_ORIGINS = [
-  'https://artix-mocha.vercel.app',
-  'http://localhost:8080',
-  'http://localhost:8081',
-];
+import { getCorsHeaders } from '../_shared/cors.ts';
 
 // Common disposable/fake email domains
 const DISPOSABLE_DOMAINS = new Set([
@@ -80,7 +73,7 @@ async function checkDomainMxRecord(domain: string): Promise<boolean> {
 }
 
 Deno.serve(async (req) => {
-  const headers = getCorsHeaders(req, ALLOWED_ORIGINS);
+  const headers = getCorsHeaders(req);
 
   // Handle CORS preflight
   if (req.method === 'OPTIONS') {

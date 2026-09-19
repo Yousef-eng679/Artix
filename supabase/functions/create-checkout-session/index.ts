@@ -1,6 +1,6 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import Stripe from 'https://esm.sh/stripe@17.7.0?target=deno'
-import { getCorsHeaders } from '../_shared/cors.ts'
+import { getCorsHeaders, isOriginAllowed } from '../_shared/cors.ts'
 
 const stripe = new Stripe(Deno.env.get('STRIPE_SECRET_KEY') as string, {
   apiVersion: '2023-10-16',
@@ -35,6 +35,10 @@ Deno.serve(async (req) => {
     const { priceId, origin } = await req.json()
     if (!priceId || !origin) {
       throw new Error('priceId and origin are required')
+    }
+
+    if (!isOriginAllowed(origin)) {
+      throw new Error('Invalid origin')
     }
 
     // Use service role for database operations
