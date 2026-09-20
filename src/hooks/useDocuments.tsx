@@ -77,13 +77,19 @@ export function useDocuments(projectId?: string) {
   });
 
   const updateDocumentMutation = useMutation({
-    mutationFn: async (updates: Partial<Document> & { id: string }) => {
-      const { id, ...rest } = updates;
+    mutationFn: async (updates: Partial<Document> & { id: string; expectedUpdatedAt?: string }) => {
+      const { id, expectedUpdatedAt, ...rest } = updates;
       
-      const { data, error } = await supabase
+      let query = supabase
         .from('documents')
         .update(rest)
-        .eq('id', id)
+        .eq('id', id);
+
+      if (expectedUpdatedAt) {
+        query = query.eq('updated_at', expectedUpdatedAt);
+      }
+
+      const { data, error } = await query
         .select('updated_at')
         .single();
 

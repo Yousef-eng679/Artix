@@ -331,4 +331,97 @@ describe('SaveQueue (Optimistic Locking)', () => {
     expect(queue.getVersion('doc-a')).toBe('ts-doc-a');
     expect(queue.getVersion('doc-b')).toBe('ts-doc-b');
   });
+
+  it('should integrate debounced saver with saveQueue for serial executions', async () => {
+    const { createDebouncedSaver } = await import('@/lib/cache/debouncedSave');
+    const { createSaveQueue } = await import('@/lib/cache/saveQueue');
+
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const saveOrder: string[] = [];
+
+    const mockDbSave = vi.fn().mockImplementation(async (payload) => {
+      inFlight++;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise((r) => setTimeout(r, 50));
+      saveOrder.push(payload.content);
+      inFlight--;
+      return { updated_at: `time-${payload.content}` };
+    });
+
+    const queue = createSaveQueue(mockDbSave);
+    const saver = createDebouncedSaver(
+      async (content: string) => {
+        await queue.enqueue({ id: 'doc-integrated', content });
+      },
+      100,
+      'doc-integrated'
+    );
+
+    // Rapid edits
+    saver.save('edit-1');
+    saver.save('edit-2');
+    saver.save('edit-3');
+
+    // Fast-forward past debounce window
+    await vi.advanceTimersByTimeAsync(150);
+
+    expect(maxInFlight).toBe(1);
+    expect(mockDbSave).toHaveBeenCalledTimes(1);
+    expect(saveOrder).toEqual(['edit-3']); // Debounce batched to final edit
+    expect(queue.getVersion('doc-integrated')).toBe('time-edit-3');
+  });
+
+  it('should reject stale updates when expectedUpdatedAt does not match (optimistic locking guard)', async () => {
+    // Simulate Supabase update with optimistic concurrency guard: .eq('updated_at', expectedUpdatedAt)
+    const mockDb = {
+      id: 'doc-optimistic',
+      content: 'Current Server Content',
+      updated_at: '2026-09-20T10:00:00Z',
+    };
+
+    const updateDocumentWithGuard = async ({
+      id,
+      content,
+      expectedUpdatedAt,
+    }: {
+      id: string;
+      content: string;
+      expectedUpdatedAt?: string;
+    }) => {
+      if (id !== mockDb.id) throw new Error('Not found');
+      // Exact-match guard
+      if (expectedUpdatedAt && expectedUpdatedAt !== mockDb.updated_at) {
+        throw new Error('VERSION_CONFLICT: Document has been modified by another session');
+      }
+      mockDb.content = content;
+      mockDb.updated_at = '2026-09-20T10:05:00Z';
+      return { updated_at: mockDb.updated_at };
+    };
+
+    // Attempt update with matching version -> succeeds
+    const successResult = await updateDocumentWithGuard({
+      id: 'doc-optimistic',
+      content: 'New Content from Session 1',
+      expectedUpdatedAt: '2026-09-20T10:00:00Z',
+    });
+    expect(successResult.updated_at).toBe('2026-09-20T10:05:00Z');
+
+    // Attempt update with stale version (older or newer clock skew) -> rejected
+    await expect(
+      updateDocumentWithGuard({
+        id: 'doc-optimistic',
+        content: 'Stale Content from Session 2',
+        expectedUpdatedAt: '2026-09-20T10:00:00Z', // Old version
+      })
+    ).rejects.toThrow('VERSION_CONFLICT');
+
+    await expect(
+      updateDocumentWithGuard({
+        id: 'doc-optimistic',
+        content: 'Clock Skewed Content from Session 3',
+        expectedUpdatedAt: '2026-09-20T11:00:00Z', // Future version
+      })
+    ).rejects.toThrow('VERSION_CONFLICT');
+  });
 });

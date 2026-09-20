@@ -29,6 +29,7 @@ import { ArchitectureGeneratorDialog } from '@/components/AI/ArchitectureGenerat
 import dagre from '@dagrejs/dagre';
 import { createDebouncedSaver } from '@/lib/cache/debouncedSave';
 import { createTabCloseGuard } from '@/lib/cache/tabCloseGuard';
+import { createSaveQueue } from '@/lib/cache/saveQueue';
 import { Button } from '@/components/ui/button';
 import { SystemDesign, BoardState } from '@/hooks/useSystemDesigns';
 import { ArchitectNode } from './ArchitectNode';
@@ -154,15 +155,21 @@ export function SystemArchitect({ design, onSave, onUpdateName, onBack, document
     onSaveRef.current = onSave;
   }, [onSave]);
 
-  // --- Shared auto-save with debounce + tab-close protection ---
+  // --- Shared auto-save with debounce + serial queue + tab-close protection ---
   const guardRef = useRef(createTabCloseGuard('/api/save'));
+  const queueRef = useRef(
+    createSaveQueue(async (payload) => {
+      const boardState: BoardState = JSON.parse(payload.content);
+      const res = await onSaveRef.current(boardState);
+      return { updated_at: (res as any)?.updated_at || new Date().toISOString() };
+    })
+  );
   const saverRef = useRef(
     createDebouncedSaver(
       async (content: string) => {
         try {
           setSaveStatus('saving');
-          const boardState: BoardState = JSON.parse(content);
-          await onSaveRef.current(boardState);
+          await queueRef.current.enqueue({ id: design.id, content });
           guardRef.current.markClean(design.id);
           setSaveStatus('saved');
           setTimeout(() => setSaveStatus('idle'), 2000);

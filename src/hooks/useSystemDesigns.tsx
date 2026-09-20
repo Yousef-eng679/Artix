@@ -85,16 +85,22 @@ export function useSystemDesigns(projectId: string | undefined) {
   });
 
   const updateDesignMutation = useMutation({
-    mutationFn: async ({ id, board_state, ...updates }: Partial<SystemDesign> & { id: string }) => {
+    mutationFn: async ({ id, board_state, expectedUpdatedAt, ...updates }: Partial<SystemDesign> & { id: string; expectedUpdatedAt?: string }) => {
       const updatePayload: Record<string, unknown> = { ...updates };
       if (board_state) {
         updatePayload.board_state = JSON.parse(JSON.stringify(board_state));
       }
       
-      const { data, error } = await supabase
+      let query = supabase
         .from('system_designs')
         .update(updatePayload)
-        .eq('id', id)
+        .eq('id', id);
+
+      if (expectedUpdatedAt) {
+        query = query.eq('updated_at', expectedUpdatedAt);
+      }
+
+      const { data, error } = await query
         .select()
         .single();
       

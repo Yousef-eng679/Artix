@@ -13,6 +13,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createDebouncedSaver, DebouncedSaver } from './cache/debouncedSave';
 import { createTabCloseGuard, TabCloseGuard } from './cache/tabCloseGuard';
+import { createSaveQueue, SaveQueue } from './cache/saveQueue';
 
 export type SaveStatus = 'idle' | 'saving' | 'saved' | 'error';
 
@@ -48,6 +49,9 @@ export function useAutoSave({ delay = 1500, onSave, documentId }: UseAutoSaveOpt
   // --- Debounced saver ---
   const saverRef = useRef<DebouncedSaver | null>(null);
 
+  // --- Serial save queue ---
+  const queueRef = useRef<SaveQueue | null>(null);
+
   // --- Tab close guard ---
   const guardRef = useRef<TabCloseGuard | null>(null);
 
@@ -55,10 +59,18 @@ export function useAutoSave({ delay = 1500, onSave, documentId }: UseAutoSaveOpt
     const guard = createTabCloseGuard(SAVE_ENDPOINT);
     guardRef.current = guard;
 
+    const queue = createSaveQueue(async (payload) => {
+      const res = await onSaveRef.current(payload.content);
+      return {
+        updated_at: (res as any)?.updated_at || new Date().toISOString(),
+      };
+    });
+    queueRef.current = queue;
+
     const wrappedSave = async (content: string) => {
       try {
         setStatus('saving');
-        await onSaveRef.current(content);
+        await queue.enqueue({ id: documentId || 'current-doc', content });
         // Mark clean — DB save succeeded
         if (documentId) guard.markClean(documentId);
         setStatus('saved');
@@ -101,5 +113,10 @@ export function useAutoSave({ delay = 1500, onSave, documentId }: UseAutoSaveOpt
     saverRef.current?.cancel();
   }, []);
 
-  return { status, triggerSave, cancelSave };
+  const getVersion = useCallback(
+    (id?: string) => queueRef.current?.getVersion(id || documentId || 'current-doc'),
+    [documentId],
+  );
+
+  return { status, triggerSave, cancelSave, getVersion };
 }
