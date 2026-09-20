@@ -85,25 +85,59 @@ function notifyChange() {
   window.dispatchEvent(new CustomEvent('artix-ai-settings-changed'));
 }
 
-let saveRevision = 0;
+export class OperationInvalidatedError extends Error {
+  constructor(message = 'Operation invalidated: storage was locked or cleared.') {
+    super(message);
+    this.name = 'OperationInvalidatedError';
+  }
+}
+
+// Concurrency controls (Task §2.1b)
+let stateEpoch = 0;
+let operationTail: Promise<unknown> = Promise.resolve();
+let latestSaveId = 0;
+
+function enqueueOperation<T>(op: () => Promise<T>): Promise<T> {
+  const next = operationTail.then(op, op);
+  operationTail = next.catch(() => {});
+  return next;
+}
 
 export async function saveSettings(settings: AISettings): Promise<void> {
-  if (isEncrypted()) {
-    if (!isUnlocked()) throw new Error('AI keys are locked. Unlock to save.');
-    const revision = ++saveRevision;
-    const blob = await encryptJSON(settings, memoryPassphrase!);
-    if (revision !== saveRevision) return; // stale write, skip
-    if (!isUnlocked() || !memoryPassphrase) return; // storage locked while encrypting
-    memoryCache = settings;
-    localStorage.setItem(ENC_KEY, JSON.stringify(blob));
+  const requestEpoch = stateEpoch;
+  const saveId = ++latestSaveId;
+
+  return enqueueOperation(async () => {
+    // If invalidated by lock() or clearSettings() while waiting in queue, abort
+    if (requestEpoch !== stateEpoch) return;
+
+    // Coalescing optimization: skip intermediate save if a newer save was already queued
+    if (saveId !== latestSaveId) return;
+
+    if (isEncrypted()) {
+      if (!isUnlocked()) throw new Error('AI keys are locked. Unlock to save.');
+      const pass = memoryPassphrase!;
+      const blob = await encryptJSON(settings, pass);
+
+      // Verify not invalidated during encryption
+      if (requestEpoch !== stateEpoch) return;
+      if (!isUnlocked() || memoryPassphrase !== pass) return;
+
+      memoryCache = settings;
+      localStorage.setItem(ENC_KEY, JSON.stringify(blob));
+      notifyChange();
+      return;
+    }
+
+    // Plaintext save
+    if (requestEpoch !== stateEpoch) return;
+    localStorage.setItem(KEY, JSON.stringify(sanitizeSettingsForStorage(settings)));
     notifyChange();
-    return;
-  }
-  localStorage.setItem(KEY, JSON.stringify(sanitizeSettingsForStorage(settings)));
-  notifyChange();
+  });
 }
 
 export function clearSettings(): void {
+  stateEpoch++;
   localStorage.removeItem(KEY);
   localStorage.removeItem(ENC_KEY);
   memoryCache = null;
@@ -119,17 +153,30 @@ export function hasPrimaryProvider(s: AISettings = loadSettings()): boolean {
 // ---- Passphrase encryption controls ----
 
 export async function unlock(passphrase: string): Promise<AISettings> {
-  const raw = localStorage.getItem(ENC_KEY);
-  if (!raw) throw new Error('No encrypted AI settings found.');
-  const blob = JSON.parse(raw) as EncryptedBlob;
-  const settings = await decryptJSON<AISettings>(blob, passphrase);
-  memoryCache = settings;
-  memoryPassphrase = passphrase;
-  notifyChange();
-  return settings;
+  const requestEpoch = stateEpoch;
+
+  return enqueueOperation(async () => {
+    if (requestEpoch !== stateEpoch) {
+      throw new OperationInvalidatedError();
+    }
+    const raw = localStorage.getItem(ENC_KEY);
+    if (!raw) throw new Error('No encrypted AI settings found.');
+    const blob = JSON.parse(raw) as EncryptedBlob;
+    const settings = await decryptJSON<AISettings>(blob, passphrase);
+
+    if (requestEpoch !== stateEpoch) {
+      throw new OperationInvalidatedError();
+    }
+
+    memoryCache = settings;
+    memoryPassphrase = passphrase;
+    notifyChange();
+    return settings;
+  });
 }
 
 export function lock(): void {
+  stateEpoch++;
   memoryCache = null;
   memoryPassphrase = null;
   notifyChange();
@@ -139,39 +186,74 @@ export async function enableEncryption(passphrase: string): Promise<void> {
   if (!passphrase || passphrase.length < 8) {
     throw new Error('Passphrase must be at least 8 characters.');
   }
-  const current = loadSettings();
-  const blob = await encryptJSON(current, passphrase);
-  localStorage.setItem(ENC_KEY, JSON.stringify(blob));
-  localStorage.removeItem(KEY);
-  memoryCache = current;
-  memoryPassphrase = passphrase;
-  notifyChange();
+  const requestEpoch = stateEpoch;
+
+  return enqueueOperation(async () => {
+    if (requestEpoch !== stateEpoch) {
+      throw new OperationInvalidatedError();
+    }
+    const current = loadSettings();
+    const blob = await encryptJSON(current, passphrase);
+
+    if (requestEpoch !== stateEpoch) {
+      throw new OperationInvalidatedError();
+    }
+
+    localStorage.setItem(ENC_KEY, JSON.stringify(blob));
+    localStorage.removeItem(KEY);
+    memoryCache = current;
+    memoryPassphrase = passphrase;
+    notifyChange();
+  });
 }
 
 export async function disableEncryption(passphrase: string): Promise<void> {
-  // Verify passphrase by decrypting first.
-  const raw = localStorage.getItem(ENC_KEY);
-  if (!raw) return;
-  const blob = JSON.parse(raw) as EncryptedBlob;
-  const settings = await decryptJSON<AISettings>(blob, passphrase);
-  localStorage.setItem(KEY, JSON.stringify(sanitizeSettingsForStorage(settings)));
-  localStorage.removeItem(ENC_KEY);
-  memoryCache = null;
-  memoryPassphrase = null;
-  notifyChange();
+  const requestEpoch = stateEpoch;
+
+  return enqueueOperation(async () => {
+    if (requestEpoch !== stateEpoch) {
+      throw new OperationInvalidatedError();
+    }
+    const raw = localStorage.getItem(ENC_KEY);
+    if (!raw) return;
+    const blob = JSON.parse(raw) as EncryptedBlob;
+    const settings = await decryptJSON<AISettings>(blob, passphrase);
+
+    if (requestEpoch !== stateEpoch) {
+      throw new OperationInvalidatedError();
+    }
+
+    localStorage.setItem(KEY, JSON.stringify(sanitizeSettingsForStorage(settings)));
+    localStorage.removeItem(ENC_KEY);
+    memoryCache = null;
+    memoryPassphrase = null;
+    notifyChange();
+  });
 }
 
 export async function changePassphrase(oldPass: string, newPass: string): Promise<void> {
   if (!newPass || newPass.length < 8) {
     throw new Error('Passphrase must be at least 8 characters.');
   }
-  const raw = localStorage.getItem(ENC_KEY);
-  if (!raw) throw new Error('Encryption is not enabled.');
-  const blob = JSON.parse(raw) as EncryptedBlob;
-  const settings = await decryptJSON<AISettings>(blob, oldPass);
-  const newBlob = await encryptJSON(settings, newPass);
-  localStorage.setItem(ENC_KEY, JSON.stringify(newBlob));
-  memoryCache = settings;
-  memoryPassphrase = newPass;
-  notifyChange();
+  const requestEpoch = stateEpoch;
+
+  return enqueueOperation(async () => {
+    if (requestEpoch !== stateEpoch) {
+      throw new OperationInvalidatedError();
+    }
+    const raw = localStorage.getItem(ENC_KEY);
+    if (!raw) throw new Error('Encryption is not enabled.');
+    const blob = JSON.parse(raw) as EncryptedBlob;
+    const settings = await decryptJSON<AISettings>(blob, oldPass);
+    const newBlob = await encryptJSON(settings, newPass);
+
+    if (requestEpoch !== stateEpoch) {
+      throw new OperationInvalidatedError();
+    }
+
+    localStorage.setItem(ENC_KEY, JSON.stringify(newBlob));
+    memoryCache = settings;
+    memoryPassphrase = newPass;
+    notifyChange();
+  });
 }
