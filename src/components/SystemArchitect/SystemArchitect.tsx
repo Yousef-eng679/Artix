@@ -30,6 +30,7 @@ import dagre from '@dagrejs/dagre';
 import { createDebouncedSaver } from '@/lib/cache/debouncedSave';
 import { createTabCloseGuard } from '@/lib/cache/tabCloseGuard';
 import { createSaveQueue } from '@/lib/cache/saveQueue';
+import { getRecoverableBoardDraft } from '@/lib/cache/draftRecovery';
 import { Button } from '@/components/ui/button';
 import { SystemDesign, BoardState } from '@/hooks/useSystemDesigns';
 import { ArchitectNode } from './ArchitectNode';
@@ -85,13 +86,21 @@ interface SystemArchitectProps {
 
 export function SystemArchitect({ design, onSave, onUpdateName, onBack, documents = [] }: SystemArchitectProps) {
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
-  const initialNodes: ArchitectFlowNode[] = design.board_state.nodes.map((n) => ({
+
+  // Check for recovered draft (Task §2.3)
+  const recoveredDraftState = useMemo(() => {
+    return getRecoverableBoardDraft<BoardState>(`design-${design.id}`, design.board_state);
+  }, [design.id, design.board_state]);
+
+  const activeBoardState = recoveredDraftState ?? design.board_state;
+
+  const initialNodes: ArchitectFlowNode[] = (activeBoardState.nodes || []).map((n) => ({
     id: n.id,
     type: 'architect',
     position: n.position,
     data: {
-      label: n.data.label,
-      description: n.data.description,
+      label: n.data?.label ?? '',
+      description: n.data?.description,
       nodeType: n.type,
       icon: getIconFromType(n.type),
       color: getColorFromType(n.type),
@@ -100,7 +109,7 @@ export function SystemArchitect({ design, onSave, onUpdateName, onBack, document
 
   const [nodes, setNodes, onNodesChange] = useNodesState<ArchitectFlowNode>(initialNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(
-    design.board_state.edges.map((e) => ({
+    (activeBoardState.edges || []).map((e) => ({
       ...e,
       type: 'smoothstep',
       label: e.label || '',
@@ -121,7 +130,7 @@ export function SystemArchitect({ design, onSave, onUpdateName, onBack, document
   const [mode, setMode] = useState<'system' | 'algorithm'>('system');
   const [isDrawing, setIsDrawing] = useState(false);
   const [strokes, setStrokes] = useState<Stroke[]>(
-    (design.board_state as any).strokes || []
+    (activeBoardState as any).strokes || []
   );
   const [customNodeDialog, setCustomNodeDialog] = useState(false);
   const [customNodeColor, setCustomNodeColor] = useState('blue');
@@ -223,9 +232,17 @@ export function SystemArchitect({ design, onSave, onUpdateName, onBack, document
     saverRef.current.save(serialized);
   }, [nodes, edges, strokes, design.id]);
 
+  const isInitialMount = useRef(true);
   useEffect(() => {
+    if (isInitialMount.current) {
+      isInitialMount.current = false;
+      if (recoveredDraftState) {
+        triggerAutoSave();
+      }
+      return;
+    }
     triggerAutoSave();
-  }, [nodes, edges, strokes, triggerAutoSave]);
+  }, [nodes, edges, strokes, triggerAutoSave, recoveredDraftState]);
 
   const onConnect = useCallback(
     (connection: Connection) => {

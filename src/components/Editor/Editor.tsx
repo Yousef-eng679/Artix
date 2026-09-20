@@ -5,6 +5,7 @@ import { EditorToolbar } from './EditorToolbar';
 import { MarkdownPreview } from './MarkdownPreview';
 import { DocumentFormat, getLanguageConfig } from './languageMap';
 import { useAutoSave, SaveStatus } from '@/lib/autosave';
+import { getRecoverableDraft } from '@/lib/cache/draftRecovery';
 import { motion } from 'framer-motion';
 import { Loader2 } from 'lucide-react';
 import {
@@ -34,7 +35,10 @@ interface EditorProps {
 export function Editor({ document, onSave, onBack, projectId }: EditorProps) {
   const [searchParams, setSearchParams] = useSearchParams();
   const [title, setTitle] = useState(document.title);
-  const [content, setContent] = useState(document.content);
+  const [content, setContent] = useState(() => {
+    const recovered = getRecoverableDraft(document.id, document.content);
+    return recovered ?? document.content;
+  });
   const [format, setFormat] = useState<DocumentFormat>(document.format);
   const [prdOpen, setPrdOpen] = useState(false);
   const [vibeOpen, setVibeOpen] = useState(false);
@@ -67,6 +71,14 @@ export function Editor({ document, onSave, onBack, projectId }: EditorProps) {
     onSave: handleSave,
     documentId: document.id,
   });
+
+  // Flush recovered local draft to Supabase on mount if one was restored
+  useEffect(() => {
+    const recovered = getRecoverableDraft(document.id, document.content);
+    if (recovered) {
+      triggerSave(recovered);
+    }
+  }, [document.id, document.content, triggerSave]);
 
   const handleContentChange = (value: string | undefined) => {
     const newContent = value ?? '';

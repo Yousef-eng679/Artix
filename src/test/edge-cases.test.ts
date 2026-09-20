@@ -425,3 +425,118 @@ describe('SaveQueue (Optimistic Locking)', () => {
     ).rejects.toThrow('VERSION_CONFLICT');
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 5.  D R A F T   R E C O V E R Y   O N   M O U N T   (Task §2.3)
+// ─────────────────────────────────────────────────────────────────────────────
+describe('DraftRecoveryOnMount', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    localStorage.clear();
+    vi.useRealTimers();
+  });
+
+  it('should recover document draft from localStorage when differing from loaded content', async () => {
+    const { getRecoverableDraft } = await import('@/lib/cache/draftRecovery');
+    const docId = 'test-doc-123';
+    localStorage.setItem(`artix.draft.${docId}`, 'recovered content from crash');
+
+    const recovered = getRecoverableDraft(docId, 'old server content');
+    expect(recovered).toBe('recovered content from crash');
+  });
+
+  it('should silently clear draft and return null when draft matches server content', async () => {
+    const { getRecoverableDraft } = await import('@/lib/cache/draftRecovery');
+    const docId = 'test-doc-sync';
+    localStorage.setItem(`artix.draft.${docId}`, 'identical content');
+
+    const recovered = getRecoverableDraft(docId, 'identical content');
+    expect(recovered).toBeNull();
+    expect(localStorage.getItem(`artix.draft.${docId}`)).toBeNull();
+  });
+
+  it('should return null when draft is missing or empty whitespace', async () => {
+    const { getRecoverableDraft } = await import('@/lib/cache/draftRecovery');
+    expect(getRecoverableDraft('missing-id', 'some content')).toBeNull();
+
+    localStorage.setItem('artix.draft.blank-id', '   ');
+    expect(getRecoverableDraft('blank-id', 'some content')).toBeNull();
+  });
+
+  it('should recover valid board state draft differing from server board state', async () => {
+    const { getRecoverableBoardDraft } = await import('@/lib/cache/draftRecovery');
+    const designId = 'design-123';
+    const serverState = {
+      nodes: [{ id: '1', type: 'database', position: { x: 0, y: 0 }, data: { label: 'DB' } }],
+      edges: [],
+    };
+    const draftState = {
+      nodes: [
+        { id: '1', type: 'database', position: { x: 0, y: 0 }, data: { label: 'DB' } },
+        { id: '2', type: 'server', position: { x: 100, y: 100 }, data: { label: 'API' } },
+      ],
+      edges: [{ id: 'e1-2', source: '1', target: '2' }],
+    };
+
+    localStorage.setItem(`artix.draft.${designId}`, JSON.stringify(draftState));
+
+    const recovered = getRecoverableBoardDraft(designId, serverState);
+    expect(recovered).toEqual(draftState);
+  });
+
+  it('should silently clear board draft when it matches server board state', async () => {
+    const { getRecoverableBoardDraft } = await import('@/lib/cache/draftRecovery');
+    const designId = 'design-same';
+    const serverState = {
+      nodes: [{ id: '1', type: 'database', position: { x: 0, y: 0 }, data: { label: 'DB' } }],
+      edges: [],
+    };
+
+    localStorage.setItem(`artix.draft.${designId}`, JSON.stringify(serverState));
+
+    const recovered = getRecoverableBoardDraft(designId, serverState);
+    expect(recovered).toBeNull();
+    expect(localStorage.getItem(`artix.draft.${designId}`)).toBeNull();
+  });
+
+  it('should gracefully ignore corrupted JSON board draft without throwing', async () => {
+    const { getRecoverableBoardDraft } = await import('@/lib/cache/draftRecovery');
+    const designId = 'design-corrupt';
+    const serverState = { nodes: [], edges: [] };
+
+    localStorage.setItem(`artix.draft.${designId}`, '{{{not-valid-json... broken');
+
+    const recovered = getRecoverableBoardDraft(designId, serverState);
+    expect(recovered).toBeNull();
+  });
+
+  it('should flush recovered draft through debounced saver and clear draft upon successful DB save', async () => {
+    const { getRecoverableDraft } = await import('@/lib/cache/draftRecovery');
+    const { createDebouncedSaver } = await import('@/lib/cache/debouncedSave');
+    const docId = 'doc-recovery-flush';
+    const draftContent = 'Unsaved draft before crash';
+    localStorage.setItem(`artix.draft.${docId}`, draftContent);
+
+    const recovered = getRecoverableDraft(docId, 'Original content');
+    expect(recovered).toBe(draftContent);
+
+    const mockDbSave = vi.fn().mockResolvedValue(undefined);
+    const saver = createDebouncedSaver(mockDbSave, 300, docId);
+
+    // Component mounts with recovered draft and triggers save
+    saver.save(recovered!);
+
+    // Debounce timer fires
+    await vi.advanceTimersByTimeAsync(350);
+
+    expect(mockDbSave).toHaveBeenCalledTimes(1);
+    expect(mockDbSave).toHaveBeenCalledWith(draftContent);
+
+    // Once DB save finishes, draft key is cleared from localStorage
+    expect(localStorage.getItem(`artix.draft.${docId}`)).toBeNull();
+  });
+});
