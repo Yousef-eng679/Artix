@@ -17,7 +17,7 @@ export function isUnlocked(): boolean {
   return memoryCache !== null && memoryPassphrase !== null;
 }
 
-function obfuscateApiKey(key?: string): string | undefined {
+export function obfuscateApiKey(key?: string): string | undefined {
   if (!key) return key;
   if (key.startsWith('obf:')) return key;
   try {
@@ -27,7 +27,7 @@ function obfuscateApiKey(key?: string): string | undefined {
   }
 }
 
-function deobfuscateApiKey(stored?: string): string | undefined {
+export function deobfuscateApiKey(stored?: string): string | undefined {
   if (!stored) return stored;
   if (!stored.startsWith('obf:')) return stored;
   try {

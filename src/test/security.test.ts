@@ -1,53 +1,20 @@
 import { describe, it, expect } from 'vitest';
 import { isWithinLimit, PLAN_LIMITS } from '../lib/plans';
-
-// Helper functions for security checks
-function obfuscateApiKey(key: string): string {
-  if (!key) return '';
-  if (key.startsWith('obf:')) return key;
-  return `obf:${btoa(key)}`;
-}
-
-function deobfuscateApiKey(stored: string): string {
-  if (!stored) return '';
-  if (!stored.startsWith('obf:')) return stored;
-  try {
-    return atob(stored.slice(4));
-  } catch {
-    return stored;
-  }
-}
-
-function getCorsOrigin(requestOrigin?: string, allowedOrigins: string[] = []): string {
-  if (!requestOrigin) return '*';
-  if (allowedOrigins.includes(requestOrigin)) return requestOrigin;
-  return allowedOrigins[0] || '*';
-}
-
-function sanitizeRedirectUrl(url: string, defaultPath = '/dashboard'): string {
-  if (!url) return defaultPath;
-  // Prevent protocol-relative open redirects starting with // or javascript:
-  if (url.startsWith('//') || url.toLowerCase().startsWith('javascript:')) {
-    return defaultPath;
-  }
-  // Allow relative paths starting with /
-  if (url.startsWith('/') && !url.startsWith('//')) {
-    return url;
-  }
-  return defaultPath;
-}
+import { obfuscateApiKey, deobfuscateApiKey } from '../lib/ai/storage';
+import { sanitizeRedirectUrl } from '../lib/utils';
+import { isOriginAllowed, getCorsHeaders } from '../../supabase/functions/_shared/cors';
 
 describe('Security Remediation Suite', () => {
   describe('API Key Obfuscation & Storage Protection (SEC-06)', () => {
-    it('should obfuscate plain API keys before storing', () => {
+    it('should obfuscate plain API keys before storing using real storage module', () => {
       const rawKey = 'sk-proj-1234567890abcdef';
       const obfuscated = obfuscateApiKey(rawKey);
 
       expect(obfuscated).not.toBe(rawKey);
-      expect(obfuscated.startsWith('obf:')).toBe(true);
+      expect(obfuscated?.startsWith('obf:')).toBe(true);
     });
 
-    it('should correctly deobfuscate stored API keys', () => {
+    it('should correctly deobfuscate stored API keys using real storage module', () => {
       const rawKey = 'sk-proj-1234567890abcdef';
       const obfuscated = obfuscateApiKey(rawKey);
       const restored = deobfuscateApiKey(obfuscated);
@@ -62,15 +29,34 @@ describe('Security Remediation Suite', () => {
   });
 
   describe('CORS Header Origin Protection (SEC-05)', () => {
-    it('should match allowed origins dynamically', () => {
-      const allowed = ['https://artix.app', 'https://staging.artix.app'];
-
-      expect(getCorsOrigin('https://artix.app', allowed)).toBe('https://artix.app');
-      expect(getCorsOrigin('https://evil.com', allowed)).toBe('https://artix.app');
+    it('should allow whitelisted localhost and production origins', () => {
+      expect(isOriginAllowed('http://localhost:8080')).toBe(true);
+      expect(isOriginAllowed('http://localhost:5173')).toBe(true);
+      expect(isOriginAllowed('https://artix-mocha.vercel.app')).toBe(true);
     });
 
-    it('should return default wildcard when no whitelist is defined', () => {
-      expect(getCorsOrigin('http://localhost:8080')).toBe('*');
+    it('should allow authentic Artix Vercel preview branches', () => {
+      expect(isOriginAllowed('https://artix-mocha-git-feature.vercel.app')).toBe(true);
+    });
+
+    it('should reject arbitrary untrusted vercel deployments and attacker origins', () => {
+      expect(isOriginAllowed('https://evil.vercel.app')).toBe(false);
+      expect(isOriginAllowed('https://phishing-artix.com')).toBe(false);
+      expect(isOriginAllowed('not-a-valid-url')).toBe(false);
+    });
+
+    it('should dynamically set Access-Control-Allow-Origin from request headers', () => {
+      const validReq = new Request('http://localhost:8080/api', {
+        headers: { origin: 'http://localhost:8080' },
+      });
+      const headers = getCorsHeaders(validReq);
+      expect(headers['Access-Control-Allow-Origin']).toBe('http://localhost:8080');
+
+      const invalidReq = new Request('http://localhost:8080/api', {
+        headers: { origin: 'https://evil.com' },
+      });
+      const fallbackHeaders = getCorsHeaders(invalidReq);
+      expect(fallbackHeaders['Access-Control-Allow-Origin']).toBe('https://artix-mocha.vercel.app');
     });
   });
 
@@ -87,6 +73,12 @@ describe('Security Remediation Suite', () => {
     it('should allow valid relative paths', () => {
       expect(sanitizeRedirectUrl('/pricing')).toBe('/pricing');
       expect(sanitizeRedirectUrl('/settings')).toBe('/settings');
+    });
+
+    it('should handle null, undefined, or empty inputs gracefully', () => {
+      expect(sanitizeRedirectUrl(null)).toBe('/dashboard');
+      expect(sanitizeRedirectUrl(undefined)).toBe('/dashboard');
+      expect(sanitizeRedirectUrl('')).toBe('/dashboard');
     });
   });
 
@@ -115,7 +107,6 @@ describe('Security Remediation Suite', () => {
       const files = fs.readdirSync(migrationsDir);
       const allSql = files.map((f: string) => fs.readFileSync(path.join(migrationsDir, f), 'utf-8')).join('\n');
 
-      // Verify FK references to auth.users exist for all user-owned tables
       expect(allSql).toContain('REFERENCES auth.users(id)');
       expect(allSql).toContain('projects_user_id_fkey');
       expect(allSql).toContain('system_designs_user_id_fkey');
@@ -146,5 +137,3 @@ describe('Security Remediation Suite', () => {
     }, 15000);
   });
 });
-
-

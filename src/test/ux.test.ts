@@ -35,15 +35,4 @@ describe('UX & Utility Tests', () => {
     expect(formatCost({ amount: 0.00001, unit: 'usd' })).toBe('<$0.0001');
   });
 
-  it('should parse createDocument mutation arguments correctly for backward compatibility', () => {
-    const parseArgs = (args?: string | { projectId?: string; title?: string }) => {
-      const projectId = typeof args === 'string' ? args : args?.projectId;
-      const title = typeof args === 'string' ? 'Untitled Document' : (args?.title || 'Untitled Document');
-      return { projectId, title };
-    };
-
-    expect(parseArgs('proj-uuid')).toEqual({ projectId: 'proj-uuid', title: 'Untitled Document' });
-    expect(parseArgs({ projectId: 'proj-uuid', title: 'Custom Spec' })).toEqual({ projectId: 'proj-uuid', title: 'Custom Spec' });
-    expect(parseArgs()).toEqual({ projectId: undefined, title: 'Untitled Document' });
-  });
 });

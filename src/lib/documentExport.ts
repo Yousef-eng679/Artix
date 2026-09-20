@@ -10,7 +10,7 @@ interface ExportOptions {
 }
 
 // Convert markdown to HTML (simple implementation)
-function markdownToHtml(markdown: string): string {
+export function markdownToHtml(markdown: string): string {
   let html = markdown
     // Headers
     .replace(/^### (.*$)/gim, '<h3>$1</h3>')
@@ -38,7 +38,7 @@ function markdownToHtml(markdown: string): string {
   return `<p>${html}</p>`;
 }
 
-function getHtmlDocument(title: string, content: string, format: DocumentFormat): string {
+export function getHtmlDocument(title: string, content: string, format: DocumentFormat): string {
   let bodyContent: string;
   
   if (format === 'markdown') {
@@ -95,7 +95,7 @@ function getHtmlDocument(title: string, content: string, format: DocumentFormat)
 </html>`;
 }
 
-function escapeHtml(text: string): string {
+export function escapeHtml(text: string): string {
   return text
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')

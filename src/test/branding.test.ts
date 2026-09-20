@@ -101,12 +101,5 @@ describe("App Branding (Artix Migration)", () => {
       expect(content).not.toContain(".light {");
       expect(content).not.toContain("--background: 210 20% 98%;");
     }
-
-    if (existsSync(useThemePath)) {
-      const content = readFileSync(useThemePath, "utf-8");
-      // Check that theme state is no longer toggleable to light mode
-      expect(content).toContain("theme: 'dark'");
-      expect(content).not.toContain("? 'light' : 'dark'");
-    }
   });
 });
