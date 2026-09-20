@@ -62,6 +62,7 @@ function ProviderSlot({ slot, label }: { slot: SlotKey; label: string }) {
   const [showKey, setShowKey] = useState(false);
   const [testStatus, setTestStatus] = useState<TestStatus>('idle');
   const [testMessage, setTestMessage] = useState('');
+  const [saving, setSaving] = useState(false);
 
   const providerDef = PROVIDERS[provider];
 
@@ -77,13 +78,14 @@ function ProviderSlot({ slot, label }: { slot: SlotKey; label: string }) {
   const allowCustomModel = !!providerDef.allowCustomModel;
   const isPresetModel = providerDef.models.some((m) => m.id === model);
 
-  const handleSave = () => {
+  const handleSave = async () => {
     if (needsKey && !apiKey.trim()) {
       toast.error('Enter an API key');
       return;
     }
+    setSaving(true);
     try {
-      update({
+      await update({
         ...settings,
         [slot]: {
           provider,
@@ -97,6 +99,8 @@ function ProviderSlot({ slot, label }: { slot: SlotKey; label: string }) {
       });
     } catch (err) {
       toast.error((err as Error).message);
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -223,7 +227,8 @@ function ProviderSlot({ slot, label }: { slot: SlotKey; label: string }) {
         </div>
       )}
       <div className="flex items-center gap-2 flex-wrap">
-        <Button onClick={handleSave} size="sm">
+        <Button onClick={handleSave} size="sm" disabled={saving} className="gap-2">
+          {saving && <Loader2 className="h-4 w-4 animate-spin" />}
           Save
         </Button>
         <Button

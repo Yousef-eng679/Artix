@@ -85,15 +85,17 @@ function notifyChange() {
   window.dispatchEvent(new CustomEvent('artix-ai-settings-changed'));
 }
 
-export function saveSettings(settings: AISettings): void {
+let saveRevision = 0;
+
+export async function saveSettings(settings: AISettings): Promise<void> {
   if (isEncrypted()) {
     if (!isUnlocked()) throw new Error('AI keys are locked. Unlock to save.');
+    const revision = ++saveRevision;
+    const blob = await encryptJSON(settings, memoryPassphrase!);
+    if (revision !== saveRevision) return; // stale write, skip
+    if (!isUnlocked() || !memoryPassphrase) return; // storage locked while encrypting
     memoryCache = settings;
-    // Re-encrypt asynchronously; fire-and-forget — caller doesn't await.
-    void encryptJSON(settings, memoryPassphrase!).then((blob) => {
-      localStorage.setItem(ENC_KEY, JSON.stringify(blob));
-      notifyChange();
-    });
+    localStorage.setItem(ENC_KEY, JSON.stringify(blob));
     notifyChange();
     return;
   }

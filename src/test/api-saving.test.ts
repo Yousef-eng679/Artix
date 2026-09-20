@@ -18,7 +18,7 @@ describe('API Settings Saving & Encryption', () => {
     lock(); // Reset memory cache
   });
 
-  it('should save and load settings in plaintext by default', () => {
+  it('should save and load settings in plaintext by default', async () => {
     const settings: AISettings = {
       primary: {
         provider: 'openai',
@@ -27,7 +27,7 @@ describe('API Settings Saving & Encryption', () => {
       },
     };
 
-    saveSettings(settings);
+    await saveSettings(settings);
     expect(isEncrypted()).toBe(false);
 
     const loaded = loadSettings();
@@ -44,7 +44,7 @@ describe('API Settings Saving & Encryption', () => {
     };
 
     // 1. Save settings in plaintext first
-    saveSettings(settings);
+    await saveSettings(settings);
 
     // 2. Enable encryption with a passphrase
     const passphrase = 'my-secure-password';
@@ -81,7 +81,7 @@ describe('API Settings Saving & Encryption', () => {
       },
     };
 
-    saveSettings(settings);
+    await saveSettings(settings);
     const passphrase = 'password123';
     await enableEncryption(passphrase);
     expect(isEncrypted()).toBe(true);
@@ -97,7 +97,7 @@ describe('API Settings Saving & Encryption', () => {
     expect(stored).toContain('obf:');
   });
 
-  it('should completely clear all settings', () => {
+  it('should completely clear all settings', async () => {
     const settings: AISettings = {
       primary: {
         provider: 'openai',
@@ -106,12 +106,28 @@ describe('API Settings Saving & Encryption', () => {
       },
     };
 
-    saveSettings(settings);
+    await saveSettings(settings);
     expect(loadSettings()).toEqual(settings);
 
     clearSettings();
     expect(loadSettings()).toEqual({});
     expect(localStorage.getItem('artix.ai.settings.v1')).toBeNull();
     expect(localStorage.getItem('artix.ai.settings.enc.v1')).toBeNull();
+  });
+
+  it('should handle rapid saves without stale data in encrypted mode', async () => {
+    const passphrase = 'password123';
+    await enableEncryption(passphrase);
+    expect(isUnlocked()).toBe(true);
+
+    // Three rapid saves without awaiting intermediate ones
+    const p1 = saveSettings({ primary: { provider: 'openai', model: 'gpt-4', apiKey: 'A' } });
+    const p2 = saveSettings({ primary: { provider: 'openai', model: 'gpt-4', apiKey: 'B' } });
+    const p3 = saveSettings({ primary: { provider: 'openai', model: 'gpt-4', apiKey: 'C' } });
+
+    await Promise.all([p1, p2, p3]);
+
+    const loaded = loadSettings();
+    expect(loaded.primary?.apiKey).toBe('C');
   });
 });

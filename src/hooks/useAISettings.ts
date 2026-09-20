@@ -33,8 +33,8 @@ export function useAISettings() {
     };
   }, []);
 
-  const update = useCallback((next: AISettings) => {
-    saveSettings(next);
+  const update = useCallback(async (next: AISettings) => {
+    await saveSettings(next);
     setSettings(next);
   }, []);
 
