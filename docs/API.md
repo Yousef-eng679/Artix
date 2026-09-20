@@ -80,14 +80,20 @@ Generates Stripe Checkout URLs for upgrades.
 
 - **Auth**: Required (`Authorization: Bearer <user_jwt>`)
 - **Body**: `{ priceId: string, origin: string }`
-- **Response**: `{ url: string }`
+- **Validation**: `origin` must match an allowed origin whitelist (`isOriginAllowed`).
+- **Responses**:
+  - `200 OK`: `{ url: string }`
+  - `400 Bad Request`: `{ error: 'priceId and origin are required' }` or `{ error: 'Invalid origin' }`
 
 ### 2. `POST /functions/v1/create-portal-session`
 Generates Stripe Customer Portal URLs.
 
 - **Auth**: Required (`Authorization: Bearer <user_jwt>`)
 - **Body**: `{ return_url: string }`
-- **Response**: `{ url: string }`
+- **Validation**: `return_url` must match an allowed origin whitelist (`isOriginAllowed`).
+- **Responses**:
+  - `200 OK`: `{ url: string }`
+  - `400 Bad Request`: `{ error: 'return_url is required' }`, `{ error: 'Invalid return_url' }`, or `{ error: 'Customer not found for this user' }`
 
 ### 3. `POST /functions/v1/stripe-webhook`
 Handles incoming Stripe billing webhooks idempotently.
@@ -98,6 +104,20 @@ Handles incoming Stripe billing webhooks idempotently.
   - `customer.subscription.updated` -> Updates plan tier, status, billing cycle, and period end.
   - `customer.subscription.deleted` -> Reverts `plan_tier = 'free'`, `status = 'canceled'`.
   - `invoice.payment_failed` -> Sets `status = 'past_due'`.
+
+### 4. `POST /functions/v1/validate-email`
+Server-side email syntax, disposable domain detection, typo suggestion, and DNS MX deliverability verification.
+
+- **Auth**: None (public pre-signup validation endpoint).
+- **Body**: `{ email: string }`
+- **Responses**:
+  - `200 OK` (Valid): `{ valid: true }`
+  - `200 OK` (Invalid / Suggestion):
+    - Syntax error: `{ valid: false, reason: 'syntax_invalid' }`
+    - Disposable email: `{ valid: false, reason: 'disposable', message: string }`
+    - Misspelled domain: `{ valid: false, reason: 'typo', suggestion: string, suggestedEmail: string, message: string }`
+    - Missing MX record: `{ valid: false, reason: 'mx_record_missing', message: string }`
+  - `500 Internal Server Error`: `{ valid: false, error: string }`
 
 ---
 

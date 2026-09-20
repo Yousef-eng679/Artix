@@ -25,7 +25,7 @@ Storing raw API keys in browser `localStorage` created security risks. In additi
 
 ### Technical Solution
 1. **Automated Obfuscation**: Keys are stored in `localStorage` with an `obf:` prefix prior to writing.
-2. **AES-256-GCM Encryption**: Optional passphrase encryption using `AES-256-GCM` with a 100,000-iteration `PBKDF2` derived key. Decrypted keys reside only in volatile JavaScript memory during active sessions.
+2. **AES-256-GCM Encryption**: Optional passphrase encryption using `AES-256-GCM` with a 250,000-iteration `PBKDF2` derived key. Decrypted keys reside only in volatile JavaScript memory during active sessions.
 3. **Reset Key Vault Action**: Added a Reset Vault option to the locked settings panel in `AISettingsCard.tsx` so users can clear encrypted blobs if they forget their passphrase.
 4. **UX Backup Notice**: Added an inline warning alert and save toast notice informing users that keys stay local to browser storage, encouraging them to keep an external backup.
 

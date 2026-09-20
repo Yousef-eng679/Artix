@@ -4,6 +4,18 @@ All notable changes to the Artix platform are documented below.
 
 ---
 
+## [v1.6.0] — 2026-09-20
+
+### CI/CD & Reliability Hardening
+- **GitHub Actions CI Automation**: Added `.github/workflows/ci.yml` running parallel linting, TypeScript typecheck, Vitest unit test suite, and production build on Node.js 20 LTS.
+- **Hermetic Supabase Unit Test Suite**: Intercepted `FunctionsClient.prototype.invoke` in test setup, removing operating-system DNS lookups to `dummy.supabase.co` and eliminating `ENOTFOUND` console warnings during test runs (Commit `aa504ec`).
+- **Async Concurrency & Race-Condition Defense (Task §2.1)**: Refactored `saveSettings()` to return `Promise<void>` with revision-counter guards (`saveRevision`) to prevent stale writes during rapid updates, and added UI loading spinner state in `AISettingsCard.tsx` (Commit `e9cd72c`).
+- **Client Storage Sanitization (Task §1.1)**: Enforced `sanitizeSettingsForStorage()` in `disableEncryption()` ensuring raw API keys never enter `localStorage` as plaintext.
+- **Edge Function Origin Validation (Task §1.5)**: Enforced strict origin and return URL validation via `isOriginAllowed()` on `create-checkout-session` and `create-portal-session` Edge Functions, rejecting invalid origins with HTTP 400.
+- **Email Deliverability Edge Function**: Deployed `validate-email` Edge Function with RFC syntax check, disposable domain blacklist, typo suggestions, and Cloudflare/Google DNS-over-HTTPS MX verification.
+
+---
+
 ## [v1.5.0] — 2026-07-25
 
 ### Authentication and Security
