@@ -10,6 +10,10 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  VITE_SUPABASE_URL: https://dummy.supabase.co
+  VITE_SUPABASE_PUBLISHABLE_KEY: dummy-anon-key
+
 jobs:
   lint:
     name: Lint
