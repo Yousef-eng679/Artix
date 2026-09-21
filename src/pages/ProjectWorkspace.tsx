@@ -76,11 +76,21 @@ const ProjectWorkspace = () => {
     }
   }, [rawDocId, rawDesignId, searchParams, setSearchParams]);
 
+  // Track IDs created in the current session to avoid race condition with async cache refetch
+  const recentlyCreatedRef = useRef<Set<string>>(new Set());
+
   // Canonicalization on missing resource or project boundary violation
   useEffect(() => {
     if (docsLoading || designsLoading) return;
 
     if (rawDocId) {
+      if (recentlyCreatedRef.current.has(rawDocId)) {
+        if (documents.some((d) => d.id === rawDocId)) {
+          recentlyCreatedRef.current.delete(rawDocId);
+        }
+        return;
+      }
+
       const docExists = documents.some((d) => d.id === rawDocId);
       if (!docExists) {
         toast.error('Document not found');
@@ -89,6 +99,13 @@ const ProjectWorkspace = () => {
         setSearchParams(nextParams, { replace: true });
       }
     } else if (rawDesignId) {
+      if (recentlyCreatedRef.current.has(rawDesignId)) {
+        if (designs.some((d) => d.id === rawDesignId)) {
+          recentlyCreatedRef.current.delete(rawDesignId);
+        }
+        return;
+      }
+
       const designExists = designs.some((d) => d.id === rawDesignId);
       if (!designExists) {
         toast.error('System design not found');
@@ -165,6 +182,7 @@ const ProjectWorkspace = () => {
     } else if (action === 'new-vibe') {
       createDocument({ projectId: id, title: 'Untitled Document' })
         .then((newDoc) => {
+          recentlyCreatedRef.current.add(newDoc.id);
           toast.success('Vibe Scratchpad created');
           const vibeParams = new URLSearchParams(searchParams);
           vibeParams.delete('action');
@@ -196,6 +214,7 @@ const ProjectWorkspace = () => {
     }
     try {
       const newDoc = await createDocument({ projectId: id, title });
+      recentlyCreatedRef.current.add(newDoc.id);
       openDocument(newDoc.id);
       setIsCreateDocOpen(false);
       toast.success('New document created');
@@ -212,6 +231,7 @@ const ProjectWorkspace = () => {
     }
     try {
       const newDesign = await createDesign({ name, projectId: id });
+      recentlyCreatedRef.current.add(newDesign.id);
       openDesign(newDesign.id);
       setIsCreateDesignOpen(false);
       toast.success('New system design created');

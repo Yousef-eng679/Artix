@@ -232,10 +232,40 @@ describe('ProjectWorkspace Navigation & Shell Integration', () => {
     expect(screen.getByText('Create New Document')).toBeInTheDocument();
   });
 
-  it('handles ?action=new-design idempotently and opens creation dialog', async () => {
-    renderWorkspace('/projects/p1?action=new-design');
+  it('creates a new document without false-positive Document not found error', async () => {
+    renderWorkspace('/projects/p1');
+
+    const createBtn = screen.getByLabelText('Create new document');
+    fireEvent.click(createBtn);
+
+    expect(screen.getByText('Create New Document')).toBeInTheDocument();
+
+    const saveBtn = screen.getByRole('button', { name: 'Save' });
+    fireEvent.click(saveBtn);
+
+    await waitFor(() => {
+      expect(mockCreateDocument).toHaveBeenCalled();
+      expect(toast.success).toHaveBeenCalledWith('New document created');
+      expect(toast.error).not.toHaveBeenCalledWith('Document not found');
+    });
+  });
+
+  it('creates a new design without false-positive System design not found error', async () => {
+    renderWorkspace('/projects/p1');
+
+    const createBtn = screen.getByLabelText('Create new system design');
+    fireEvent.click(createBtn);
 
     expect(screen.getByText('Create New System Design')).toBeInTheDocument();
+
+    const saveBtn = screen.getByRole('button', { name: 'Save' });
+    fireEvent.click(saveBtn);
+
+    await waitFor(() => {
+      expect(mockCreateDesign).toHaveBeenCalled();
+      expect(toast.success).toHaveBeenCalledWith('New system design created');
+      expect(toast.error).not.toHaveBeenCalledWith('System design not found');
+    });
   });
 
   // --- Regression Tests for Resource Switching & Lifecycle ---

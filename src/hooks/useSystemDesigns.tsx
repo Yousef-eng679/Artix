@@ -78,7 +78,11 @@ export function useSystemDesigns(projectId: string | undefined) {
         board_state: data.board_state as unknown as BoardState,
       } as SystemDesign;
     },
-    onSuccess: () => {
+    onSuccess: (newDesign) => {
+      queryClient.setQueryData<SystemDesign[]>(
+        ['system_designs', projectId],
+        (old = []) => [newDesign, ...old.filter((d) => d.id !== newDesign.id)]
+      );
       queryClient.invalidateQueries({ queryKey: ['system_designs', projectId] });
       queryClient.invalidateQueries({ queryKey: ['projects'] });
     },

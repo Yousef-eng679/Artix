@@ -70,7 +70,11 @@ export function useDocuments(projectId?: string) {
         project_id: data.project_id,
       } as Document;
     },
-    onSuccess: () => {
+    onSuccess: (newDoc) => {
+      queryClient.setQueryData<Document[]>(
+        ['documents', user?.id, projectId],
+        (old = []) => [newDoc, ...old.filter((d) => d.id !== newDoc.id)]
+      );
       queryClient.invalidateQueries({ queryKey: ['documents', user?.id] });
       queryClient.invalidateQueries({ queryKey: ['projects'] });
     },
