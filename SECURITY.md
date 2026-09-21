@@ -63,7 +63,7 @@ Artix features a Bring-Your-Own-Key (BYOK) model allowing users to connect their
                   └─────────────────────────────────┘
 ```
 
-### Cryptographic Implementation Specifications ([`src/lib/ai/crypto.ts`](file:///c:/Fenix-main/src/lib/ai/crypto.ts))
+### Cryptographic Implementation Specifications ([`src/lib/ai/crypto.ts`](./src/lib/ai/crypto.ts))
 - **Cipher:** `AES-256-GCM` authenticated symmetric encryption.
 - **Key Derivation Function:** `PBKDF2` with `SHA-256`.
 - **Iteration Count:** **250,000 rounds** (`PBKDF2_ITERATIONS = 250_000`).

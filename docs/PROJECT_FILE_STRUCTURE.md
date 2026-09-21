@@ -7,7 +7,7 @@ This document maps out the repository file organization and component responsibi
 ## Root Directory Layout
 
 ```
-c:/Fenix-main/
+artix/
 ├── DOCS.md                    # Consolidated Technical Specification
 ├── vercel.json                # Vercel SPA Routing Rewrite Configuration
 ├── docs/                      # Technical documentation suite

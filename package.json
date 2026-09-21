@@ -1,7 +1,14 @@
 {
-  "name": "vite_react_shadcn_ts",
+  "name": "artix",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
+  "description": "Artix — The Developer's Command Center: Technical Architecture & Engineering Workspace",
+  "author": "Artix Engineering Team",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Yousef-eng679/Artix.git"
+  },
   "type": "module",
   "scripts": {
     "dev": "vite",

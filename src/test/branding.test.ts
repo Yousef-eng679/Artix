@@ -102,4 +102,32 @@ describe("App Branding (Artix Migration)", () => {
       expect(content).not.toContain("--background: 210 20% 98%;");
     }
   });
+
+  it("should have updated package.json metadata and removed template defaults", () => {
+    const pkgPath = join(srcDir, "../package.json");
+    expect(existsSync(pkgPath)).toBe(true);
+    const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
+
+    expect(pkg.name).toBe("artix");
+    expect(pkg.version).toBe("1.0.0");
+    expect(pkg.description).toContain("Artix");
+    expect(JSON.stringify(pkg)).not.toContain("vite_react_shadcn_ts");
+  });
+
+  it("should not contain machine-specific file:/// or c:/Fenix-main paths in documentation", () => {
+    const docFiles = [
+      join(srcDir, "../README.md"),
+      join(srcDir, "../SECURITY.md"),
+      join(srcDir, "../DOCS.md"),
+      join(srcDir, "../docs/PROJECT_FILE_STRUCTURE.md"),
+    ];
+
+    for (const file of docFiles) {
+      if (existsSync(file)) {
+        const content = readFileSync(file, "utf-8");
+        expect(content).not.toContain("file:///");
+        expect(content).not.toContain("c:/Fenix-main");
+      }
+    }
+  });
 });

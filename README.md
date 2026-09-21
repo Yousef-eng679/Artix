@@ -42,4 +42,4 @@ Artix is a modern, unified SaaS platform designed for software engineers, produc
 
 ## Documentation
 
-For full platform specifications, API reference, architecture details, and changelog, see [DOCS.md](file:///c:/Fenix-main/DOCS.md).
+For full platform specifications, API reference, architecture details, and changelog, see [DOCS.md](./DOCS.md).

@@ -156,7 +156,7 @@ Artix is a developer workspace platform that combines multi-format technical doc
 ## 6. Project File Structure
 
 ```
-c:/Fenix-main/
+artix/
 ├── DOCS.md                    # Consolidated Technical Specification
 ├── vercel.json                # Vercel SPA Routing Configuration
 ├── docs/                      # Technical documentation suite
