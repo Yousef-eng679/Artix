@@ -13,23 +13,55 @@ vi.mock('sonner', () => ({
   },
 }));
 
-// Mock heavy child components to isolate workspace shell and navigation logic
+// Mock heavy child components to accurately simulate mount-only state behavior
 vi.mock('@/components/Editor/Editor', () => ({
-  Editor: ({ document, onBack }: { document: { title: string }; onBack: () => void }) => (
-    <div data-testid="editor-view">
-      <h2>Editor: {document.title}</h2>
-      <button onClick={onBack}>Editor Back</button>
-    </div>
-  ),
+  Editor: ({
+    document,
+    onBack,
+  }: {
+    document: { id: string; title: string; content?: string };
+    onBack: () => void;
+  }) => {
+    // Accurately simulates Editor's internal useState which only initializes on mount
+    const [title] = React.useState(document.title);
+    const [content] = React.useState(() => {
+      const draft = localStorage.getItem(`artix.draft.${document.id}`);
+      return draft ?? (document.content || '');
+    });
+
+    return (
+      <div data-testid="editor-view">
+        <h2>Editor: {title}</h2>
+        <div data-testid="editor-content">{content}</div>
+        <button onClick={onBack}>Editor Back</button>
+      </div>
+    );
+  },
 }));
 
 vi.mock('@/components/SystemArchitect/SystemArchitect', () => ({
-  SystemArchitect: ({ design, onBack }: { design: { name: string }; onBack: () => void }) => (
-    <div data-testid="architect-view">
-      <h2>Architect: {design.name}</h2>
-      <button onClick={onBack}>Architect Back</button>
-    </div>
-  ),
+  SystemArchitect: ({
+    design,
+    onBack,
+  }: {
+    design: { id: string; name: string };
+    onBack: () => void;
+  }) => {
+    // Accurately simulates SystemArchitect's internal useState/useNodesState which only initializes on mount
+    const [name] = React.useState(design.name);
+    const [boardDraft] = React.useState(() => {
+      const draft = localStorage.getItem(`artix.draft.design-${design.id}`);
+      return draft ?? 'default-board-state';
+    });
+
+    return (
+      <div data-testid="architect-view">
+        <h2>Architect: {name}</h2>
+        <div data-testid="architect-state">{boardDraft}</div>
+        <button onClick={onBack}>Architect Back</button>
+      </div>
+    );
+  },
 }));
 
 // Mock hooks
@@ -45,6 +77,7 @@ let mockDocs = [
 
 let mockDesigns = [
   { id: 'des-1', project_id: 'p1', name: 'Microservices Mesh', board_state: { nodes: [1, 2] }, updated_at: '2026-02-03T10:00:00Z' },
+  { id: 'des-2', project_id: 'p1', name: 'Database Cluster', board_state: { nodes: [3] }, updated_at: '2026-02-04T10:00:00Z' },
 ];
 
 const mockCreateDocument = vi.fn().mockImplementation(async ({ title }) => {
@@ -95,19 +128,21 @@ vi.mock('@/hooks/useSystemDesigns', () => ({
 vi.mock('@/hooks/useUsageLimits', () => ({
   useUsageLimits: () => ({
     documents: { canCreate: true, used: 2, limit: 10 },
-    systemDesigns: { canCreate: true, used: 1, limit: 10 },
+    systemDesigns: { canCreate: true, used: 2, limit: 10 },
   }),
 }));
 
 describe('ProjectWorkspace Navigation & Shell Integration', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    localStorage.clear();
     mockDocs = [
       { id: 'doc-1', project_id: 'p1', title: 'Architecture Spec', content: '# Spec', format: 'markdown', updated_at: '2026-02-01T10:00:00Z' },
       { id: 'doc-2', project_id: 'p1', title: 'API Documentation', content: '# API', format: 'markdown', updated_at: '2026-02-02T10:00:00Z' },
     ];
     mockDesigns = [
       { id: 'des-1', project_id: 'p1', name: 'Microservices Mesh', board_state: { nodes: [1, 2] }, updated_at: '2026-02-03T10:00:00Z' },
+      { id: 'des-2', project_id: 'p1', name: 'Database Cluster', board_state: { nodes: [3] }, updated_at: '2026-02-04T10:00:00Z' },
     ];
   });
 
@@ -127,7 +162,6 @@ describe('ProjectWorkspace Navigation & Shell Integration', () => {
     renderWorkspace('/projects/p1');
 
     expect(screen.getByRole('heading', { name: 'Alpha Engine', level: 1 })).toBeInTheDocument();
-    // Overview metrics
     expect(screen.getByText('Total Resources')).toBeInTheDocument();
     expect(screen.queryByTestId('editor-view')).not.toBeInTheDocument();
     expect(screen.queryByTestId('architect-view')).not.toBeInTheDocument();
@@ -152,7 +186,6 @@ describe('ProjectWorkspace Navigation & Shell Integration', () => {
   it('resolves conflict (?doc and ?design): doc strictly takes precedence', async () => {
     renderWorkspace('/projects/p1?doc=doc-1&design=des-1');
 
-    // doc must win
     expect(screen.getByTestId('editor-view')).toBeInTheDocument();
     expect(screen.queryByTestId('architect-view')).not.toBeInTheDocument();
   });
@@ -164,7 +197,6 @@ describe('ProjectWorkspace Navigation & Shell Integration', () => {
       expect(toast.error).toHaveBeenCalledWith('Document not found');
     });
 
-    // Falls back to overview
     expect(screen.getByText('Total Resources')).toBeInTheDocument();
     expect(screen.queryByTestId('editor-view')).not.toBeInTheDocument();
   });
@@ -176,7 +208,6 @@ describe('ProjectWorkspace Navigation & Shell Integration', () => {
       expect(toast.error).toHaveBeenCalledWith('System design not found');
     });
 
-    // Falls back to overview
     expect(screen.getByText('Total Resources')).toBeInTheDocument();
     expect(screen.queryByTestId('architect-view')).not.toBeInTheDocument();
   });
@@ -207,6 +238,81 @@ describe('ProjectWorkspace Navigation & Shell Integration', () => {
     expect(screen.getByText('Create New System Design')).toBeInTheDocument();
   });
 
+  // --- Regression Tests for Resource Switching & Lifecycle ---
+
+  it('navigates from Document A to Document B and renders B, not A', async () => {
+    renderWorkspace('/projects/p1?doc=doc-1');
+
+    expect(screen.getByTestId('editor-view')).toBeInTheDocument();
+    expect(screen.getByText('Editor: Architecture Spec')).toBeInTheDocument();
+
+    // Click Document B in the sidebar
+    const docBButton = screen.getAllByLabelText('Open document: API Documentation')[0];
+    fireEvent.click(docBButton);
+
+    await waitFor(() => {
+      expect(screen.getByText('Editor: API Documentation')).toBeInTheDocument();
+      expect(screen.queryByText('Editor: Architecture Spec')).not.toBeInTheDocument();
+    });
+  });
+
+  it('navigates from Design A to Design B and renders B, not A', async () => {
+    renderWorkspace('/projects/p1?design=des-1');
+
+    expect(screen.getByTestId('architect-view')).toBeInTheDocument();
+    expect(screen.getByText('Architect: Microservices Mesh')).toBeInTheDocument();
+
+    // Click Design B in the sidebar
+    const desBButton = screen.getAllByLabelText('Open system design: Database Cluster')[0];
+    fireEvent.click(desBButton);
+
+    await waitFor(() => {
+      expect(screen.getByText('Architect: Database Cluster')).toBeInTheDocument();
+      expect(screen.queryByText('Architect: Microservices Mesh')).not.toBeInTheDocument();
+    });
+  });
+
+  it('synchronizes URL and sidebar active selection across switches', async () => {
+    renderWorkspace('/projects/p1?doc=doc-1');
+
+    const docAButton = screen.getAllByLabelText('Open document: Architecture Spec')[0];
+    expect(docAButton).toHaveClass('border-primary');
+
+    const docBButton = screen.getAllByLabelText('Open document: API Documentation')[0];
+    fireEvent.click(docBButton);
+
+    await waitFor(() => {
+      expect(docBButton).toHaveClass('border-primary');
+      expect(docAButton).not.toHaveClass('border-primary');
+    });
+  });
+
+  it('preserves recoverable draft state when switching resources', async () => {
+    // User has an unsaved recoverable draft in localStorage for doc-1
+    localStorage.setItem('artix.draft.doc-1', 'Recoverable draft for Doc A');
+
+    renderWorkspace('/projects/p1?doc=doc-1');
+
+    expect(screen.getByText('Recoverable draft for Doc A')).toBeInTheDocument();
+
+    // Switch to doc-2
+    const docBButton = screen.getAllByLabelText('Open document: API Documentation')[0];
+    fireEvent.click(docBButton);
+
+    await waitFor(() => {
+      expect(screen.getByText('Editor: API Documentation')).toBeInTheDocument();
+    });
+
+    // Switch back to doc-1
+    const docAButton = screen.getAllByLabelText('Open document: Architecture Spec')[0];
+    fireEvent.click(docAButton);
+
+    await waitFor(() => {
+      expect(screen.getByText('Editor: Architecture Spec')).toBeInTheDocument();
+      expect(screen.getByText('Recoverable draft for Doc A')).toBeInTheDocument();
+    });
+  });
+
   it('supports large resource count (50 docs + 20 designs) without errors', () => {
     const largeDocs = Array.from({ length: 50 }, (_, i) => ({
       id: `doc-${i + 10}`,
@@ -231,7 +337,6 @@ describe('ProjectWorkspace Navigation & Shell Integration', () => {
     renderWorkspace('/projects/p1');
 
     expect(screen.getByText('Total Resources')).toBeInTheDocument();
-    // 50 docs + 20 designs = 70 total
     expect(screen.getByText('70')).toBeInTheDocument();
   });
 });

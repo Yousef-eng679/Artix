@@ -104,13 +104,13 @@ const ProjectWorkspace = () => {
     if (rawDocId) {
       const doc = documents.find((d) => d.id === rawDocId);
       if (doc) {
-        return { kind: 'document', resourceId: doc.id };
+        return { kind: 'document', id: doc.id };
       }
     }
     if (rawDesignId && !rawDocId) {
       const design = designs.find((d) => d.id === rawDesignId);
       if (design) {
-        return { kind: 'design', resourceId: design.id };
+        return { kind: 'design', id: design.id };
       }
     }
     return { kind: 'none' };
@@ -119,12 +119,12 @@ const ProjectWorkspace = () => {
   // Active resource models
   const activeDocument = useMemo(() => {
     if (selection.kind !== 'document') return null;
-    return documents.find((d) => d.id === selection.resourceId) ?? null;
+    return documents.find((d) => d.id === selection.id) ?? null;
   }, [selection, documents]);
 
   const activeDesign = useMemo(() => {
     if (selection.kind !== 'design') return null;
-    return designs.find((d) => d.id === selection.resourceId) ?? null;
+    return designs.find((d) => d.id === selection.id) ?? null;
   }, [selection, designs]);
 
   // Auth redirect
@@ -336,6 +336,7 @@ const ProjectWorkspace = () => {
       {selection.kind === 'document' ? (
         activeDocument ? (
           <Editor
+            key={activeDocument.id}
             document={activeDocument}
             onSave={handleSaveDocument}
             onBack={openOverview}
@@ -349,6 +350,7 @@ const ProjectWorkspace = () => {
       ) : selection.kind === 'design' ? (
         activeDesign ? (
           <SystemArchitect
+            key={activeDesign.id}
             design={activeDesign}
             onSave={handleSaveDesign}
             onUpdateName={handleUpdateDesignName}
