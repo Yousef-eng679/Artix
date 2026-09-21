@@ -15,6 +15,7 @@ const Pricing = lazy(() => import("./pages/Pricing"));
 const CheckoutSuccess = lazy(() => import("./pages/CheckoutSuccess"));
 const NotFound = lazy(() => import("./pages/NotFound"));
 import { PWAInstallPrompt } from "./components/PWAInstallPrompt";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 
 const PageFallback = () => (
   <div className="min-h-screen bg-background flex items-center justify-center">
@@ -26,8 +27,9 @@ const App = () => (
   <TooltipProvider>
     <Toaster />
     <Sonner />
-    <Suspense fallback={<PageFallback />}>
-      <Routes>
+    <ErrorBoundary>
+      <Suspense fallback={<PageFallback />}>
+        <Routes>
         <Route path="/" element={<Index />} />
         <Route path="/auth" element={<Auth />} />
         <Route path="/dashboard" element={<Dashboard />} />
@@ -40,6 +42,7 @@ const App = () => (
         <Route path="*" element={<NotFound />} />
       </Routes>
     </Suspense>
+    </ErrorBoundary>
     <PWAInstallPrompt />
   </TooltipProvider>
 );
