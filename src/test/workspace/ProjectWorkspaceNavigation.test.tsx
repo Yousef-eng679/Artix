@@ -270,35 +270,49 @@ describe('ProjectWorkspace Navigation & Shell Integration', () => {
 
   // --- Regression Tests for Resource Switching & Lifecycle ---
 
-  it('navigates from Document A to Document B and renders B, not A', async () => {
+  it('navigates from Document A to Document B and renders B, not A (synchronizing sidebar and editor)', async () => {
     renderWorkspace('/projects/p1?doc=doc-1');
 
     expect(screen.getByTestId('editor-view')).toBeInTheDocument();
     expect(screen.getByText('Editor: Architecture Spec')).toBeInTheDocument();
 
-    // Click Document B in the sidebar
+    const docAButton = screen.getAllByLabelText('Open document: Architecture Spec')[0];
     const docBButton = screen.getAllByLabelText('Open document: API Documentation')[0];
+    expect(docAButton).toHaveClass('border-primary');
+
+    // Click Document B in the sidebar
     fireEvent.click(docBButton);
 
     await waitFor(() => {
+      // 1. Rendered Editor represents Document B
       expect(screen.getByText('Editor: API Documentation')).toBeInTheDocument();
       expect(screen.queryByText('Editor: Architecture Spec')).not.toBeInTheDocument();
+      // 2. Sidebar active state points to Document B
+      expect(docBButton).toHaveClass('border-primary');
+      expect(docAButton).not.toHaveClass('border-primary');
     });
   });
 
-  it('navigates from Design A to Design B and renders B, not A', async () => {
+  it('navigates from Design A to Design B and renders B, not A (synchronizing sidebar and architect)', async () => {
     renderWorkspace('/projects/p1?design=des-1');
 
     expect(screen.getByTestId('architect-view')).toBeInTheDocument();
     expect(screen.getByText('Architect: Microservices Mesh')).toBeInTheDocument();
 
-    // Click Design B in the sidebar
+    const desAButton = screen.getAllByLabelText('Open system design: Microservices Mesh')[0];
     const desBButton = screen.getAllByLabelText('Open system design: Database Cluster')[0];
+    expect(desAButton).toHaveClass('border-primary');
+
+    // Click Design B in the sidebar
     fireEvent.click(desBButton);
 
     await waitFor(() => {
+      // 1. Rendered Architect represents Design B
       expect(screen.getByText('Architect: Database Cluster')).toBeInTheDocument();
       expect(screen.queryByText('Architect: Microservices Mesh')).not.toBeInTheDocument();
+      // 2. Sidebar active state points to Design B
+      expect(desBButton).toHaveClass('border-primary');
+      expect(desAButton).not.toHaveClass('border-primary');
     });
   });
 
@@ -343,7 +357,29 @@ describe('ProjectWorkspace Navigation & Shell Integration', () => {
     });
   });
 
-  it('supports large resource count (50 docs + 20 designs) without errors', () => {
+  it('suppresses false-positive Document not found toast via recentlyCreatedRef even when cache update is delayed', async () => {
+    mockCreateDocument.mockImplementationOnce(async ({ title }) => {
+      // Return new document without immediately adding it to mockDocs to simulate cache query delay
+      return { id: 'doc-delayed-sync', project_id: 'p1', title, content: '', format: 'markdown' as const, updated_at: new Date().toISOString() };
+    });
+
+    renderWorkspace('/projects/p1');
+
+    const createBtn = screen.getByLabelText('Create new document');
+    fireEvent.click(createBtn);
+
+    const saveBtn = screen.getByRole('button', { name: 'Save' });
+    fireEvent.click(saveBtn);
+
+    await waitFor(() => {
+      expect(mockCreateDocument).toHaveBeenCalled();
+      expect(toast.success).toHaveBeenCalledWith('New document created');
+      // recentlyCreatedRef suppresses toast.error('Document not found') even though doc-delayed-sync is not in mockDocs yet!
+      expect(toast.error).not.toHaveBeenCalledWith('Document not found');
+    });
+  });
+
+  it('supports large resource count (50 docs + 20 designs) without rendering errors (smoke/integrity check)', () => {
     const largeDocs = Array.from({ length: 50 }, (_, i) => ({
       id: `doc-${i + 10}`,
       project_id: 'p1',
