@@ -40,9 +40,29 @@ export function Editor({ document, onSave, onBack, projectId }: EditorProps) {
     return recovered ?? document.content;
   });
   const [format, setFormat] = useState<DocumentFormat>(document.format);
+  const [showPreview, setShowPreview] = useState(() => {
+    try {
+      const stored = localStorage.getItem('artix.editor.showPreview');
+      return stored !== null ? stored === 'true' : true;
+    } catch {
+      return true;
+    }
+  });
   const [prdOpen, setPrdOpen] = useState(false);
   const [vibeOpen, setVibeOpen] = useState(false);
   const [agentOpen, setAgentOpen] = useState(false);
+
+  const handleTogglePreview = useCallback(() => {
+    setShowPreview((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem('artix.editor.showPreview', String(next));
+      } catch {
+        // Silently ignore storage errors (e.g. private browsing or quota limits)
+      }
+      return next;
+    });
+  }, []);
 
   useEffect(() => {
     if (searchParams.get('vibe') === 'true') {
@@ -124,6 +144,8 @@ export function Editor({ document, onSave, onBack, projectId }: EditorProps) {
         onGeneratePRD={projectId ? () => setPrdOpen(true) : undefined}
         onGenerateVibe={projectId ? () => setVibeOpen(true) : undefined}
         onGenerateAgentic={projectId ? () => setAgentOpen(true) : undefined}
+        showPreview={showPreview}
+        onTogglePreview={handleTogglePreview}
       />
 
       {projectId && (
@@ -156,7 +178,7 @@ export function Editor({ document, onSave, onBack, projectId }: EditorProps) {
       )}
 
       <div className="flex-1 overflow-hidden">
-        {format === 'markdown' ? (
+        {format === 'markdown' && showPreview ? (
           <ResizablePanelGroup direction="horizontal">
             <ResizablePanel defaultSize={50} minSize={30}>
               <MonacoEditor
@@ -203,6 +225,12 @@ export function Editor({ document, onSave, onBack, projectId }: EditorProps) {
             value={content}
             onChange={handleContentChange}
             theme="vs-dark"
+            loading={
+              <div className="h-full flex items-center justify-center bg-editor text-muted-foreground gap-2">
+                <Loader2 className="h-5 w-5 animate-spin text-primary" />
+                <span className="text-sm font-medium">Loading Monaco Editor...</span>
+              </div>
+            }
             options={{
               fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
               fontSize: 14,
