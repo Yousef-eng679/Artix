@@ -125,6 +125,16 @@ vi.mock('@/hooks/useSystemDesigns', () => ({
   }),
 }));
 
+vi.mock('@/hooks/useWorkspaceFolders', () => ({
+  useWorkspaceFolders: () => ({
+    folders: [],
+    isLoading: false,
+    createFolder: vi.fn(),
+    renameFolder: vi.fn(),
+    deleteFolder: vi.fn(),
+  }),
+}));
+
 vi.mock('@/hooks/useUsageLimits', () => ({
   useUsageLimits: () => ({
     documents: { canCreate: true, used: 2, limit: 10 },
@@ -162,7 +172,7 @@ describe('ProjectWorkspace Navigation & Shell Integration', () => {
     renderWorkspace('/projects/p1');
 
     expect(screen.getByRole('heading', { name: 'Alpha Engine', level: 1 })).toBeInTheDocument();
-    expect(screen.getByText('Total Resources')).toBeInTheDocument();
+    expect(screen.getByText('Continue Working')).toBeInTheDocument();
     expect(screen.queryByTestId('editor-view')).not.toBeInTheDocument();
     expect(screen.queryByTestId('architect-view')).not.toBeInTheDocument();
   });
@@ -197,7 +207,7 @@ describe('ProjectWorkspace Navigation & Shell Integration', () => {
       expect(toast.error).toHaveBeenCalledWith('Document not found');
     });
 
-    expect(screen.getByText('Total Resources')).toBeInTheDocument();
+    expect(screen.getByText('Continue Working')).toBeInTheDocument();
     expect(screen.queryByTestId('editor-view')).not.toBeInTheDocument();
   });
 
@@ -208,7 +218,7 @@ describe('ProjectWorkspace Navigation & Shell Integration', () => {
       expect(toast.error).toHaveBeenCalledWith('System design not found');
     });
 
-    expect(screen.getByText('Total Resources')).toBeInTheDocument();
+    expect(screen.getByText('Continue Working')).toBeInTheDocument();
     expect(screen.queryByTestId('architect-view')).not.toBeInTheDocument();
   });
 
@@ -222,7 +232,7 @@ describe('ProjectWorkspace Navigation & Shell Integration', () => {
 
     await waitFor(() => {
       expect(screen.queryByTestId('editor-view')).not.toBeInTheDocument();
-      expect(screen.getByText('Total Resources')).toBeInTheDocument();
+      expect(screen.getByText('Continue Working')).toBeInTheDocument();
     });
   });
 
@@ -402,7 +412,6 @@ describe('ProjectWorkspace Navigation & Shell Integration', () => {
 
     renderWorkspace('/projects/p1');
 
-    expect(screen.getByText('Total Resources')).toBeInTheDocument();
-    expect(screen.getByText('70')).toBeInTheDocument();
+    expect(screen.getByText(/70 resources/i)).toBeInTheDocument();
   });
 });

@@ -7,14 +7,16 @@ import { useDocuments } from '@/hooks/useDocuments';
 import { useSystemDesigns, BoardState } from '@/hooks/useSystemDesigns';
 import { useUsageLimits } from '@/hooks/useUsageLimits';
 import { useWorkspaceNavigation } from '@/hooks/useWorkspaceNavigation';
+import { useWorkspaceFolders } from '@/hooks/useWorkspaceFolders';
 import { toWorkspaceResources } from '@/lib/workspace/resourceAdapter';
-import { WorkspaceSelection, SidebarFilterKind } from '@/types/workspace';
+import { WorkspaceSelection, WorkspaceFolder, SidebarFilterKind } from '@/types/workspace';
 import { ProjectWorkspaceLayout } from '@/components/ProjectWorkspace/ProjectWorkspaceLayout';
 import { ProjectWorkspaceSidebar } from '@/components/ProjectWorkspace/ProjectWorkspaceSidebar';
 import { ProjectOverview } from '@/components/ProjectWorkspace/ProjectOverview';
 import { Editor, Document } from '@/components/Editor/Editor';
 import { SystemArchitect } from '@/components/SystemArchitect/SystemArchitect';
 import { RenameDialog } from '@/components/RenameDialog';
+import { WorkspaceMoveResourceDialog } from '@/components/ProjectWorkspace/WorkspaceMoveResourceDialog';
 import { UpgradePrompt } from '@/components/UpgradePrompt';
 import { toast } from 'sonner';
 
@@ -38,6 +40,12 @@ const ProjectWorkspace = () => {
     updateDesign,
     deleteDesign,
   } = useSystemDesigns(id);
+  const {
+    folders,
+    createFolder,
+    renameFolder: renameFolderMutation,
+    deleteFolder,
+  } = useWorkspaceFolders(id);
 
   const { openOverview, openDocument, openDesign } = useWorkspaceNavigation();
 
@@ -50,8 +58,12 @@ const ProjectWorkspace = () => {
   // Dialog states
   const [renameDoc, setRenameDoc] = useState<{ id: string; title: string } | null>(null);
   const [renameDesign, setRenameDesign] = useState<{ id: string; name: string } | null>(null);
+  const [renameFolder, setRenameFolder] = useState<WorkspaceFolder | null>(null);
   const [isCreateDocOpen, setIsCreateDocOpen] = useState(false);
   const [isCreateDesignOpen, setIsCreateDesignOpen] = useState(false);
+  const [isCreateFolderOpen, setIsCreateFolderOpen] = useState(false);
+  const [targetFolderForNewResource, setTargetFolderForNewResource] = useState<string | null>(null);
+  const [moveResource, setMoveResource] = useState<WorkspaceResource | null>(null);
   const [upgradePrompt, setUpgradePrompt] = useState<{ feature: string; used: number; limit: number } | null>(null);
 
   const usage = useUsageLimits();
@@ -213,10 +225,15 @@ const ProjectWorkspace = () => {
       return;
     }
     try {
-      const newDoc = await createDocument({ projectId: id, title });
+      const newDoc = await createDocument({
+        projectId: id,
+        title,
+        folderId: targetFolderForNewResource,
+      });
       recentlyCreatedRef.current.add(newDoc.id);
       openDocument(newDoc.id);
       setIsCreateDocOpen(false);
+      setTargetFolderForNewResource(null);
       toast.success('New document created');
     } catch {
       toast.error('Failed to create document');
@@ -230,13 +247,65 @@ const ProjectWorkspace = () => {
       return;
     }
     try {
-      const newDesign = await createDesign({ name, projectId: id });
+      const newDesign = await createDesign({
+        name,
+        projectId: id,
+        folderId: targetFolderForNewResource,
+      });
       recentlyCreatedRef.current.add(newDesign.id);
       openDesign(newDesign.id);
       setIsCreateDesignOpen(false);
+      setTargetFolderForNewResource(null);
       toast.success('New system design created');
     } catch {
       toast.error('Failed to create system design');
+    }
+  };
+
+  const handleCreateFolder = async (name: string) => {
+    if (!id) return;
+    try {
+      await createFolder({ name, projectId: id });
+      setIsCreateFolderOpen(false);
+      toast.success('Folder created');
+    } catch {
+      toast.error('Failed to create folder');
+    }
+  };
+
+  const handleRenameFolder = async (newName: string) => {
+    if (!renameFolder) return;
+    try {
+      await renameFolderMutation({ id: renameFolder.id, name: newName });
+      setRenameFolder(null);
+      toast.success('Folder renamed');
+    } catch {
+      toast.error('Failed to rename folder');
+    }
+  };
+
+  const handleDeleteFolder = async (folder: WorkspaceFolder) => {
+    try {
+      await deleteFolder(folder.id);
+      toast.success(`Folder "${folder.name}" deleted. Contained resources moved to Root.`);
+    } catch {
+      toast.error('Failed to delete folder');
+    }
+  };
+
+  const handleMoveResource = async (targetFolderId: string | null) => {
+    if (!moveResource) return;
+    try {
+      if (moveResource.kind === 'document') {
+        await updateDocument({ id: moveResource.id, folder_id: targetFolderId });
+      } else {
+        await updateDesign({ id: moveResource.id, folder_id: targetFolderId });
+      }
+      setMoveResource(null);
+      toast.success('Resource moved');
+    } catch {
+      toast.error('Failed to move resource');
+      throw new Error('Failed to move resource');
     }
   };
 
@@ -253,7 +322,7 @@ const ProjectWorkspace = () => {
   const handleDeleteDocument = async (docId: string) => {
     try {
       await deleteDocument(docId);
-      if (selection.kind === 'document' && selection.resourceId === docId) {
+      if (selection.kind === 'document' && selection.id === docId) {
         openOverview();
       }
       toast.success('Document deleted');
@@ -265,7 +334,7 @@ const ProjectWorkspace = () => {
   const handleDeleteDesign = async (designId: string) => {
     try {
       await deleteDesign(designId);
-      if (selection.kind === 'design' && selection.resourceId === designId) {
+      if (selection.kind === 'design' && selection.id === designId) {
         openOverview();
       }
       toast.success('System design deleted');
@@ -313,6 +382,7 @@ const ProjectWorkspace = () => {
         <ProjectWorkspaceSidebar
           projectName={projectName}
           resources={workspaceResources}
+          folders={folders}
           selection={selection}
           searchQuery={searchQuery}
           onSearchChange={setSearchQuery}
@@ -328,8 +398,15 @@ const ProjectWorkspace = () => {
             }
             setIsMobileSidebarOpen(false);
           }}
-          onCreateDocument={() => setIsCreateDocOpen(true)}
-          onCreateDesign={() => setIsCreateDesignOpen(true)}
+          onCreateDocument={(folderId) => {
+            setTargetFolderForNewResource(folderId ?? null);
+            setIsCreateDocOpen(true);
+          }}
+          onCreateDesign={(folderId) => {
+            setTargetFolderForNewResource(folderId ?? null);
+            setIsCreateDesignOpen(true);
+          }}
+          onCreateFolder={() => setIsCreateFolderOpen(true)}
           onRenameResource={(res) => {
             if (res.kind === 'document') {
               setRenameDoc({ id: res.id, title: res.title });
@@ -344,6 +421,9 @@ const ProjectWorkspace = () => {
               handleDeleteDesign(res.id);
             }
           }}
+          onRenameFolder={(f) => setRenameFolder(f)}
+          onDeleteFolder={handleDeleteFolder}
+          onMoveResource={(res) => setMoveResource(res)}
           collapsed={isSidebarCollapsed}
           onToggleCollapsed={() => setIsSidebarCollapsed(!isSidebarCollapsed)}
           onBackToDashboard={() => navigate('/dashboard')}
@@ -386,10 +466,17 @@ const ProjectWorkspace = () => {
         <ProjectOverview
           projectName={projectName}
           resources={workspaceResources}
+          folders={folders}
           onOpenDocument={openDocument}
           onOpenDesign={openDesign}
-          onCreateDocument={() => setIsCreateDocOpen(true)}
-          onCreateDesign={() => setIsCreateDesignOpen(true)}
+          onCreateDocument={() => {
+            setTargetFolderForNewResource(null);
+            setIsCreateDocOpen(true);
+          }}
+          onCreateDesign={() => {
+            setTargetFolderForNewResource(null);
+            setIsCreateDesignOpen(true);
+          }}
         />
       )}
 
@@ -412,21 +499,55 @@ const ProjectWorkspace = () => {
         onSave={handleRenameDesign}
         title="Rename System Design"
       />
+      <RenameDialog
+        open={!!renameFolder}
+        onOpenChange={(open) => {
+          if (!open) setRenameFolder(null);
+        }}
+        currentName={renameFolder?.name || ''}
+        onSave={handleRenameFolder}
+        title="Rename Folder"
+      />
 
       {/* Create Dialogs */}
       <RenameDialog
         open={isCreateDocOpen}
-        onOpenChange={setIsCreateDocOpen}
+        onOpenChange={(open) => {
+          setIsCreateDocOpen(open);
+          if (!open) setTargetFolderForNewResource(null);
+        }}
         currentName="Untitled Document"
         onSave={handleConfirmCreateDocument}
-        title="Create New Document"
+        title={targetFolderForNewResource ? 'Create Document in Folder' : 'Create New Document'}
       />
       <RenameDialog
         open={isCreateDesignOpen}
-        onOpenChange={setIsCreateDesignOpen}
+        onOpenChange={(open) => {
+          setIsCreateDesignOpen(open);
+          if (!open) setTargetFolderForNewResource(null);
+        }}
         currentName="New System Design"
         onSave={handleConfirmCreateDesign}
-        title="Create New System Design"
+        title={targetFolderForNewResource ? 'Create Design in Folder' : 'Create New System Design'}
+      />
+      <RenameDialog
+        open={isCreateFolderOpen}
+        onOpenChange={setIsCreateFolderOpen}
+        currentName="New Folder"
+        onSave={handleCreateFolder}
+        title="Create New Folder"
+      />
+
+      {/* Move Resource Dialog */}
+      <WorkspaceMoveResourceDialog
+        open={!!moveResource}
+        onOpenChange={(open) => {
+          if (!open) setMoveResource(null);
+        }}
+        resourceTitle={moveResource?.title || ''}
+        currentFolderId={moveResource?.folderId ?? null}
+        folders={folders}
+        onMove={handleMoveResource}
       />
 
       {/* Upgrade Prompt */}

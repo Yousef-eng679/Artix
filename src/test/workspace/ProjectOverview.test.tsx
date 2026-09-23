@@ -1,9 +1,19 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { ProjectOverview } from '@/components/ProjectWorkspace/ProjectOverview';
-import { WorkspaceResource } from '@/types/workspace';
+import { WorkspaceResource, WorkspaceFolder } from '@/types/workspace';
 
-describe('Phase 3: ProjectOverview Component', () => {
+describe('ProjectOverview Component (Simplified Landing)', () => {
+  const mockFolders: WorkspaceFolder[] = [
+    {
+      id: 'f-backend',
+      projectId: 'p1',
+      name: 'Backend Core',
+      createdAt: '2026-09-01T00:00:00Z',
+      updatedAt: '2026-09-01T00:00:00Z',
+    },
+  ];
+
   const mockResources: WorkspaceResource[] = [
     {
       id: 'doc-1',
@@ -11,7 +21,7 @@ describe('Phase 3: ProjectOverview Component', () => {
       title: 'API Reference',
       kind: 'document',
       updatedAt: '2026-09-02T10:00:00Z',
-      meta: { format: 'markdown' },
+      folderId: 'f-backend',
     },
     {
       id: 'des-1',
@@ -19,46 +29,46 @@ describe('Phase 3: ProjectOverview Component', () => {
       title: 'Service Flow',
       kind: 'design',
       updatedAt: '2026-09-03T10:00:00Z',
-      meta: { nodeCount: 5 },
+      folderId: null,
     },
   ];
 
   const defaultProps = {
     projectName: 'Fintech Engine',
     resources: mockResources,
+    folders: mockFolders,
     onOpenDocument: vi.fn(),
     onOpenDesign: vi.fn(),
     onCreateDocument: vi.fn(),
     onCreateDesign: vi.fn(),
   };
 
-  it('renders project name and metrics correctly', () => {
+  it('renders project name and lightweight resource summary correctly', () => {
     render(<ProjectOverview {...defaultProps} />);
 
     expect(screen.getByText('Fintech Engine')).toBeInTheDocument();
-    // Total count: 2, Documents count: 1, System designs count: 1
-    expect(screen.getByText('2')).toBeInTheDocument();
-    const ones = screen.getAllByText('1');
-    expect(ones.length).toBe(2);
+    expect(screen.getByText(/2 resources/i)).toBeInTheDocument();
+    expect(screen.getByText(/1 documents/i)).toBeInTheDocument();
+    expect(screen.getByText(/1 designs/i)).toBeInTheDocument();
+    expect(screen.getByText(/1 folders/i)).toBeInTheDocument();
   });
 
-  it('renders empty state when project has zero resources', () => {
+  it('renders destination badges (folder name or Root) on recent cards', () => {
+    render(<ProjectOverview {...defaultProps} />);
+
+    expect(screen.getByText('Backend Core')).toBeInTheDocument();
+    expect(screen.getByText('Root')).toBeInTheDocument();
+  });
+
+  it('renders empty state with quick action buttons when project has zero resources', () => {
     render(<ProjectOverview {...defaultProps} resources={[]} />);
 
     expect(screen.getByText('Your workspace is ready')).toBeInTheDocument();
-  });
 
-  it('triggers onCreateDocument on clicking Create Document button', () => {
-    render(<ProjectOverview {...defaultProps} />);
-
-    fireEvent.click(screen.getByRole('button', { name: /Create Document/i }));
+    fireEvent.click(screen.getByRole('button', { name: /New Document/i }));
     expect(defaultProps.onCreateDocument).toHaveBeenCalledTimes(1);
-  });
 
-  it('triggers onCreateDesign on clicking New System Design button', () => {
-    render(<ProjectOverview {...defaultProps} />);
-
-    fireEvent.click(screen.getByRole('button', { name: /New System Design/i }));
+    fireEvent.click(screen.getByRole('button', { name: /New Design/i }));
     expect(defaultProps.onCreateDesign).toHaveBeenCalledTimes(1);
   });
 
