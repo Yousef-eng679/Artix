@@ -262,25 +262,72 @@ const ProjectWorkspace = () => {
     }
   };
 
+  // Helper to suggest a non-colliding default folder name
+  const defaultNewFolderName = useMemo(() => {
+    const base = 'New Folder';
+    if (!folders.some((f) => f.name.trim().toLowerCase() === base.toLowerCase())) {
+      return base;
+    }
+    let counter = 2;
+    while (folders.some((f) => f.name.trim().toLowerCase() === `${base} ${counter}`.toLowerCase())) {
+      counter++;
+    }
+    return `${base} ${counter}`;
+  }, [folders]);
+
   const handleCreateFolder = async (name: string) => {
     if (!id) return;
+    const trimmed = name.trim();
+    if (!trimmed) {
+      throw new Error('Folder name cannot be empty');
+    }
+    const isDuplicate = folders.some(
+      (f) => f.name.trim().toLowerCase() === trimmed.toLowerCase()
+    );
+    if (isDuplicate) {
+      const errMsg = `A folder named "${trimmed}" already exists in this project`;
+      toast.error(errMsg);
+      throw new Error(errMsg);
+    }
     try {
-      await createFolder({ name, projectId: id });
+      await createFolder({ name: trimmed, projectId: id });
       setIsCreateFolderOpen(false);
       toast.success('Folder created');
-    } catch {
-      toast.error('Failed to create folder');
+    } catch (err: any) {
+      if (!err?.message?.includes('already exists')) {
+        toast.error('Failed to create folder');
+      }
+      throw err;
     }
   };
 
   const handleRenameFolder = async (newName: string) => {
     if (!renameFolder) return;
+    const trimmed = newName.trim();
+    if (!trimmed) {
+      throw new Error('Folder name cannot be empty');
+    }
+    if (trimmed.toLowerCase() === renameFolder.name.trim().toLowerCase()) {
+      setRenameFolder(null);
+      return;
+    }
+    const isDuplicate = folders.some(
+      (f) => f.id !== renameFolder.id && f.name.trim().toLowerCase() === trimmed.toLowerCase()
+    );
+    if (isDuplicate) {
+      const errMsg = `A folder named "${trimmed}" already exists in this project`;
+      toast.error(errMsg);
+      throw new Error(errMsg);
+    }
     try {
-      await renameFolderMutation({ id: renameFolder.id, name: newName });
+      await renameFolderMutation({ id: renameFolder.id, name: trimmed });
       setRenameFolder(null);
       toast.success('Folder renamed');
-    } catch {
-      toast.error('Failed to rename folder');
+    } catch (err: any) {
+      if (!err?.message?.includes('already exists')) {
+        toast.error('Failed to rename folder');
+      }
+      throw err;
     }
   };
 
@@ -507,6 +554,20 @@ const ProjectWorkspace = () => {
         currentName={renameFolder?.name || ''}
         onSave={handleRenameFolder}
         title="Rename Folder"
+        validate={(newName) => {
+          if (!renameFolder) return null;
+          const trimmed = newName.trim();
+          if (trimmed.toLowerCase() === renameFolder.name.trim().toLowerCase()) {
+            return null; // keeping same name is valid
+          }
+          const isDuplicate = folders.some(
+            (f) => f.id !== renameFolder.id && f.name.trim().toLowerCase() === trimmed.toLowerCase()
+          );
+          if (isDuplicate) {
+            return `A folder named "${trimmed}" already exists in this project`;
+          }
+          return null;
+        }}
       />
 
       {/* Create Dialogs */}
@@ -533,9 +594,19 @@ const ProjectWorkspace = () => {
       <RenameDialog
         open={isCreateFolderOpen}
         onOpenChange={setIsCreateFolderOpen}
-        currentName="New Folder"
+        currentName={defaultNewFolderName}
         onSave={handleCreateFolder}
         title="Create New Folder"
+        validate={(newName) => {
+          const trimmed = newName.trim();
+          const isDuplicate = folders.some(
+            (f) => f.name.trim().toLowerCase() === trimmed.toLowerCase()
+          );
+          if (isDuplicate) {
+            return `A folder named "${trimmed}" already exists in this project`;
+          }
+          return null;
+        }}
       />
 
       {/* Move Resource Dialog */}

@@ -54,3 +54,7 @@ ALTER TABLE public.system_designs
   FOREIGN KEY (folder_id, project_id)
   REFERENCES public.workspace_folders(id, project_id)
   ON DELETE SET NULL;
+
+-- 6. Case-insensitive unique folder name per project
+CREATE UNIQUE INDEX IF NOT EXISTS workspace_folders_project_name_idx
+  ON public.workspace_folders (project_id, lower(trim(name)));

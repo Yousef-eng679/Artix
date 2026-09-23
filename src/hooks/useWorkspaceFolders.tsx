@@ -32,12 +32,18 @@ export function useWorkspaceFolders(projectId?: string) {
   const createFolderMutation = useMutation({
     mutationFn: async ({ name, projectId }: { name: string; projectId: string }) => {
       if (!user) throw new Error('Not authenticated');
+      const trimmedName = name.trim();
       const { data, error } = await supabase
         .from('workspace_folders')
-        .insert({ user_id: user.id, project_id: projectId, name })
+        .insert({ user_id: user.id, project_id: projectId, name: trimmedName })
         .select()
         .single();
-      if (error) throw error;
+      if (error) {
+        if (error.code === '23505') {
+          throw new Error(`A folder named "${trimmedName}" already exists in this project`);
+        }
+        throw error;
+      }
       return {
         id: data.id,
         projectId: data.project_id,
@@ -53,11 +59,17 @@ export function useWorkspaceFolders(projectId?: string) {
 
   const renameFolderMutation = useMutation({
     mutationFn: async ({ id, name }: { id: string; name: string }) => {
+      const trimmedName = name.trim();
       const { error } = await supabase
         .from('workspace_folders')
-        .update({ name })
+        .update({ name: trimmedName })
         .eq('id', id);
-      if (error) throw error;
+      if (error) {
+        if (error.code === '23505') {
+          throw new Error(`A folder named "${trimmedName}" already exists in this project`);
+        }
+        throw error;
+      }
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['workspace_folders', projectId] });

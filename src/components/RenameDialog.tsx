@@ -17,6 +17,7 @@ interface RenameDialogProps {
   currentName: string;
   onSave: (newName: string) => Promise<void>;
   title: string;
+  validate?: (newName: string) => string | null;
 }
 
 export function RenameDialog({
@@ -25,6 +26,7 @@ export function RenameDialog({
   currentName,
   onSave,
   title,
+  validate,
 }: RenameDialogProps) {
   const [name, setName] = useState(currentName);
   const [isSaving, setIsSaving] = useState(false);
@@ -50,11 +52,19 @@ export function RenameDialog({
       return;
     }
 
+    if (validate) {
+      const validationError = validate(trimmedName);
+      if (validationError) {
+        setError(validationError);
+        return;
+      }
+    }
+
     setIsSaving(true);
     try {
       await onSave(trimmedName);
       onOpenChange(false);
-    } catch (err) {
+    } catch {
       setError('Failed to save. Please try again.');
     } finally {
       setIsSaving(false);

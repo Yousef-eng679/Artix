@@ -208,4 +208,59 @@ describe('useWorkspaceFolders Hook', () => {
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['documents'] });
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['system_designs', projectId] });
   });
+
+  it('throws a descriptive error when createFolder encounters a duplicate name (error 23505)', async () => {
+    const insertMock = vi.fn().mockReturnValue({
+      select: () => ({
+        single: async () => ({
+          data: null,
+          error: { code: '23505', message: 'duplicate key value violates unique constraint' },
+        }),
+      }),
+    });
+
+    vi.spyOn(supabase, 'from').mockImplementation((table: string) => {
+      if (table === 'workspace_folders') {
+        return {
+          insert: insertMock,
+        } as any;
+      }
+      return {} as any;
+    });
+
+    const { result } = renderHook(() => useWorkspaceFolders(projectId), { wrapper });
+
+    await expect(
+      result.current.createFolder({ name: '  Billing  ', projectId })
+    ).rejects.toThrow('A folder named "Billing" already exists in this project');
+
+    expect(insertMock).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'Billing' })
+    );
+  });
+
+  it('throws a descriptive error when renameFolder encounters a duplicate name (error 23505)', async () => {
+    const updateMock = vi.fn().mockReturnValue({
+      eq: async () => ({
+        error: { code: '23505', message: 'duplicate key value violates unique constraint' },
+      }),
+    });
+
+    vi.spyOn(supabase, 'from').mockImplementation((table: string) => {
+      if (table === 'workspace_folders') {
+        return {
+          update: updateMock,
+        } as any;
+      }
+      return {} as any;
+    });
+
+    const { result } = renderHook(() => useWorkspaceFolders(projectId), { wrapper });
+
+    await expect(
+      result.current.renameFolder({ id: 'f-1', name: '  ExistingFolder  ' })
+    ).rejects.toThrow('A folder named "ExistingFolder" already exists in this project');
+
+    expect(updateMock).toHaveBeenCalledWith({ name: 'ExistingFolder' });
+  });
 });
