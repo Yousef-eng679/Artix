@@ -5,15 +5,17 @@ import {
   ChevronsRight,
   ChevronDown,
   ChevronRight,
-  FileText,
-  GitBranch,
+  FolderPlus,
   LayoutDashboard,
   Plus,
-  Clock,
+  FileText,
+  GitBranch,
 } from 'lucide-react';
-import { WorkspaceResource, WorkspaceSelection, SidebarFilterKind } from '@/types/workspace';
+import { WorkspaceResource, WorkspaceSelection, WorkspaceFolder, SidebarFilterKind } from '@/types/workspace';
 import { filterWorkspaceResources } from '@/lib/workspace/filterResources';
+import { groupResourcesByFolder } from '@/lib/workspace/groupResourcesByFolder';
 import { WorkspaceResourceItem } from './WorkspaceResourceItem';
+import { WorkspaceFolderItem } from './WorkspaceFolderItem';
 import { WorkspaceSearch } from './WorkspaceSearch';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
@@ -22,15 +24,20 @@ import { cn } from '@/lib/utils';
 export interface ProjectWorkspaceSidebarProps {
   projectName: string;
   resources: WorkspaceResource[];
+  folders?: WorkspaceFolder[];
   selection: WorkspaceSelection;
   searchQuery: string;
   onSearchChange: (query: string) => void;
   onSelectOverview: () => void;
   onSelectResource: (resource: WorkspaceResource) => void;
-  onCreateDocument: () => void;
-  onCreateDesign: () => void;
+  onCreateDocument: (folderId?: string | null) => void;
+  onCreateDesign: (folderId?: string | null) => void;
+  onCreateFolder?: () => void;
   onRenameResource?: (resource: WorkspaceResource) => void;
   onDeleteResource?: (resource: WorkspaceResource) => void;
+  onRenameFolder?: (folder: WorkspaceFolder) => void;
+  onDeleteFolder?: (folder: WorkspaceFolder) => void;
+  onMoveResource?: (resource: WorkspaceResource) => void;
   collapsed?: boolean;
   onToggleCollapsed?: () => void;
   onBackToDashboard: () => void;
@@ -41,6 +48,7 @@ export interface ProjectWorkspaceSidebarProps {
 export const ProjectWorkspaceSidebar: React.FC<ProjectWorkspaceSidebarProps> = ({
   projectName,
   resources,
+  folders = [],
   selection,
   searchQuery,
   onSearchChange,
@@ -48,33 +56,44 @@ export const ProjectWorkspaceSidebar: React.FC<ProjectWorkspaceSidebarProps> = (
   onSelectResource,
   onCreateDocument,
   onCreateDesign,
+  onCreateFolder,
   onRenameResource,
   onDeleteResource,
+  onRenameFolder,
+  onDeleteFolder,
+  onMoveResource,
   collapsed = false,
   onToggleCollapsed,
   onBackToDashboard,
   filterKind = 'all',
 }) => {
-  const [docsOpen, setDocsOpen] = useState(true);
-  const [designsOpen, setDesignsOpen] = useState(true);
+  const [expandedFolderIds, setExpandedFolderIds] = useState<Set<string>>(() => new Set());
+  const [rootOpen, setRootOpen] = useState(true);
 
-  // Filtered resources for search
+  // Filter resources for search
   const filteredResources = filterWorkspaceResources(resources, searchQuery, filterKind);
 
-  // Grouped resources
-  const documents = filteredResources.filter((r) => r.kind === 'document');
-  const designs = filteredResources.filter((r) => r.kind === 'design');
+  // Group resources by folder
+  const groups = groupResourcesByFolder(filteredResources, folders);
 
-  // Total counts from all resources (unfiltered)
-  const totalDocsCount = resources.filter((r) => r.kind === 'document').length;
-  const totalDesignsCount = resources.filter((r) => r.kind === 'design').length;
-
-  // Recent 3 resources (by updatedAt DESC)
-  const recentResources = [...resources]
-    .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
-    .slice(0, 3);
+  const folderGroups = groups.filter((g) => g.folder !== null);
+  const rootGroup = groups.find((g) => g.folder === null);
+  const rootResources = rootGroup ? rootGroup.resources : [];
 
   const isOverviewActive = selection.kind === 'none';
+  const isSearching = searchQuery.trim().length > 0;
+
+  const toggleFolder = (folderId: string) => {
+    setExpandedFolderIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(folderId)) {
+        next.delete(folderId);
+      } else {
+        next.add(folderId);
+      }
+      return next;
+    });
+  };
 
   return (
     <aside
@@ -175,198 +194,187 @@ export const ProjectWorkspaceSidebar: React.FC<ProjectWorkspaceSidebarProps> = (
           )}
         </div>
 
-        {/* Section: Documents */}
+        {/* FOLDERS Section */}
         <div>
           {!collapsed ? (
             <div className="flex items-center justify-between px-2 py-1 text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-              <button
-                type="button"
-                onClick={() => setDocsOpen(!docsOpen)}
-                className="flex items-center gap-1.5 hover:text-foreground transition-colors"
-                aria-expanded={docsOpen}
-                aria-label="Toggle documents list"
-              >
-                {docsOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-                <span>Documents</span>
-                <span className="ml-1 text-[10px] font-normal px-1.5 py-0.2 rounded-full bg-muted text-muted-foreground">
-                  {totalDocsCount}
-                </span>
-              </button>
-              <Button
-                variant="ghost"
-                size="icon"
-                onClick={onCreateDocument}
-                className="h-5 w-5 hover:bg-accent text-muted-foreground hover:text-primary"
-                aria-label="Create new document"
-              >
-                <Plus className="h-3.5 w-3.5" />
-              </Button>
-            </div>
-          ) : (
-            <div className="flex justify-center py-1">
-              <TooltipProvider delayDuration={200}>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      onClick={onCreateDocument}
-                      className="h-8 w-8 text-sky-400 hover:bg-sky-500/10"
-                      aria-label="New Document"
-                    >
-                      <Plus className="h-4 w-4" />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent side="right">New Document ({totalDocsCount})</TooltipContent>
-                </Tooltip>
-              </TooltipProvider>
-            </div>
-          )}
-
-          {(docsOpen || collapsed) && (
-            <div className="mt-1 space-y-0.5">
-              {documents.length === 0 ? (
-                !collapsed && (
-                  <p className="text-xs text-muted-foreground/60 px-2 py-1 italic">
-                    {searchQuery ? 'No matching documents' : 'No documents yet'}
-                  </p>
-                )
-              ) : (
-                documents.map((doc) => (
-                  <WorkspaceResourceItem
-                    key={doc.id}
-                    resource={doc}
-                    isActive={selection.kind === 'document' && selection.id === doc.id}
-                    onClick={() => onSelectResource(doc)}
-                    onRename={onRenameResource}
-                    onDelete={onDeleteResource}
-                    collapsed={collapsed}
-                  />
-                ))
+              <span>Folders</span>
+              {onCreateFolder && (
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={onCreateFolder}
+                  className="h-5 w-5 hover:bg-accent text-muted-foreground hover:text-primary"
+                  aria-label="Create new folder"
+                >
+                  <FolderPlus className="h-3.5 w-3.5" />
+                </Button>
               )}
             </div>
-          )}
-        </div>
-
-        {/* Section: System Designs */}
-        <div>
-          {!collapsed ? (
-            <div className="flex items-center justify-between px-2 py-1 text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-              <button
-                type="button"
-                onClick={() => setDesignsOpen(!designsOpen)}
-                className="flex items-center gap-1.5 hover:text-foreground transition-colors"
-                aria-expanded={designsOpen}
-                aria-label="Toggle system designs list"
-              >
-                {designsOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-                <span>System Designs</span>
-                <span className="ml-1 text-[10px] font-normal px-1.5 py-0.2 rounded-full bg-muted text-muted-foreground">
-                  {totalDesignsCount}
-                </span>
-              </button>
-              <Button
-                variant="ghost"
-                size="icon"
-                onClick={onCreateDesign}
-                className="h-5 w-5 hover:bg-accent text-muted-foreground hover:text-primary"
-                aria-label="Create new system design"
-              >
-                <Plus className="h-3.5 w-3.5" />
-              </Button>
-            </div>
           ) : (
-            <div className="flex justify-center py-1">
-              <TooltipProvider delayDuration={200}>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      onClick={onCreateDesign}
-                      className="h-8 w-8 text-purple-400 hover:bg-purple-500/10"
-                      aria-label="New System Design"
-                    >
-                      <Plus className="h-4 w-4" />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent side="right">New System Design ({totalDesignsCount})</TooltipContent>
-                </Tooltip>
-              </TooltipProvider>
-            </div>
+            onCreateFolder && (
+              <div className="flex justify-center py-1">
+                <TooltipProvider delayDuration={200}>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={onCreateFolder}
+                        className="h-8 w-8 text-amber-400 hover:bg-amber-500/10"
+                        aria-label="New Folder"
+                      >
+                        <FolderPlus className="h-4 w-4" />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent side="right">New Folder</TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+              </div>
+            )
           )}
 
-          {(designsOpen || collapsed) && (
-            <div className="mt-1 space-y-0.5">
-              {designs.length === 0 ? (
-                !collapsed && (
-                  <p className="text-xs text-muted-foreground/60 px-2 py-1 italic">
-                    {searchQuery ? 'No matching designs' : 'No designs yet'}
-                  </p>
-                )
-              ) : (
-                designs.map((design) => (
-                  <WorkspaceResourceItem
-                    key={design.id}
-                    resource={design}
-                    isActive={selection.kind === 'design' && selection.id === design.id}
-                    onClick={() => onSelectResource(design)}
-                    onRename={onRenameResource}
-                    onDelete={onDeleteResource}
-                    collapsed={collapsed}
-                  />
-                ))
-              )}
-            </div>
-          )}
-        </div>
+          <div className="mt-1 space-y-1">
+            {folderGroups.length === 0 && !collapsed && (
+              <p className="text-xs text-muted-foreground/60 px-2 py-1 italic">
+                {isSearching ? 'No matching folders' : 'No folders yet'}
+              </p>
+            )}
 
-        {/* Section: Recents (only when not collapsed and not actively searching) */}
-        {!collapsed && !searchQuery && recentResources.length > 0 && (
-          <div className="pt-2 border-t border-border/30">
-            <div className="flex items-center gap-1.5 px-2 py-1 text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-              <Clock className="h-3 w-3" />
-              <span>Recent</span>
-            </div>
-            <div className="mt-1 space-y-0.5">
-              {recentResources.map((res) => (
-                <WorkspaceResourceItem
-                  key={`recent-${res.id}`}
-                  resource={res}
-                  isActive={
-                    (selection.kind === 'document' && selection.id === res.id) ||
-                    (selection.kind === 'design' && selection.id === res.id)
-                  }
-                  onClick={() => onSelectResource(res)}
-                  collapsed={false}
-                />
-              ))}
-            </div>
+            {folderGroups.map(({ folder, resources: folderResources }) => {
+              if (!folder) return null;
+              // When searching, hide folders that have 0 matching resources
+              if (isSearching && folderResources.length === 0) return null;
+
+              const isExpanded = isSearching ? true : expandedFolderIds.has(folder.id);
+
+              return (
+                <WorkspaceFolderItem
+                  key={folder.id}
+                  folder={folder}
+                  resourceCount={folderResources.length}
+                  isExpanded={isExpanded}
+                  onToggle={() => toggleFolder(folder.id)}
+                  onRename={onRenameFolder}
+                  onDelete={onDeleteFolder}
+                  onCreateDocument={onCreateDocument ? () => onCreateDocument(folder.id) : undefined}
+                  onCreateDesign={onCreateDesign ? () => onCreateDesign(folder.id) : undefined}
+                  collapsed={collapsed}
+                >
+                  {folderResources.map((res) => (
+                    <WorkspaceResourceItem
+                      key={res.id}
+                      resource={res}
+                      depth={1}
+                      isActive={
+                        (selection.kind === 'document' && selection.id === res.id) ||
+                        (selection.kind === 'design' && selection.id === res.id)
+                      }
+                      onClick={() => onSelectResource(res)}
+                      onRename={onRenameResource}
+                      onDelete={onDeleteResource}
+                      onMove={onMoveResource}
+                      collapsed={collapsed}
+                    />
+                  ))}
+                </WorkspaceFolderItem>
+              );
+            })}
           </div>
-        )}
+        </div>
+
+        {/* ROOT / UNORGANIZED Section */}
+        <div>
+          {!collapsed ? (
+            <div className="flex items-center justify-between px-2 py-1 text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+              <button
+                type="button"
+                onClick={() => setRootOpen(!rootOpen)}
+                className="flex items-center gap-1.5 hover:text-foreground transition-colors"
+                aria-expanded={rootOpen}
+                aria-label="Toggle root resources list"
+              >
+                {rootOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+                <span>Root</span>
+                <span className="ml-1 text-[10px] font-normal px-1.5 py-0.2 rounded-full bg-muted text-muted-foreground">
+                  {rootResources.length}
+                </span>
+              </button>
+            </div>
+          ) : (
+            <div className="flex justify-center py-1">
+              <span className="text-[10px] font-semibold text-muted-foreground uppercase">
+                Root
+              </span>
+            </div>
+          )}
+
+          {(rootOpen || collapsed) && (
+            <div className="mt-1 space-y-0.5">
+              {rootResources.length === 0 ? (
+                !collapsed && (
+                  <p className="text-xs text-muted-foreground/60 px-2 py-1 italic">
+                    {isSearching ? 'No matching resources' : 'No root resources'}
+                  </p>
+                )
+              ) : (
+                rootResources.map((res) => (
+                  <WorkspaceResourceItem
+                    key={res.id}
+                    resource={res}
+                    isActive={
+                      (selection.kind === 'document' && selection.id === res.id) ||
+                      (selection.kind === 'design' && selection.id === res.id)
+                    }
+                    onClick={() => onSelectResource(res)}
+                    onRename={onRenameResource}
+                    onDelete={onDeleteResource}
+                    onMove={onMoveResource}
+                    collapsed={collapsed}
+                  />
+                ))
+              )}
+            </div>
+          )}
+        </div>
       </div>
 
-      {/* Footer: Quick create actions */}
+      {/* Footer: Quick Actions */}
       {!collapsed && (
-        <div className="p-3 border-t border-border/40 shrink-0 bg-sidebar/50 flex gap-2">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={onCreateDocument}
-            className="flex-1 text-xs h-8 gap-1.5 border-border/60 hover:border-primary/40"
-          >
-            <FileText className="h-3.5 w-3.5 text-sky-400" />
-            + Doc
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={onCreateDesign}
-            className="flex-1 text-xs h-8 gap-1.5 border-border/60 hover:border-primary/40"
-          >
-            <GitBranch className="h-3.5 w-3.5 text-purple-400" />
-            + Canvas
-          </Button>
+        <div className="p-3 border-t border-border/40 shrink-0 bg-sidebar/50 space-y-2">
+          {onCreateFolder && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={onCreateFolder}
+              className="w-full text-xs h-8 gap-1.5 border-border/60 hover:border-amber-400/40 text-foreground"
+            >
+              <FolderPlus className="h-3.5 w-3.5 text-amber-400" />
+              + New Folder
+            </Button>
+          )}
+          <div className="flex gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => onCreateDocument(null)}
+              className="flex-1 text-xs h-8 gap-1.5 border-border/60 hover:border-primary/40"
+              aria-label="Create new document"
+            >
+              <FileText className="h-3.5 w-3.5 text-sky-400" />
+              + Doc
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => onCreateDesign(null)}
+              className="flex-1 text-xs h-8 gap-1.5 border-border/60 hover:border-primary/40"
+              aria-label="Create new system design"
+            >
+              <GitBranch className="h-3.5 w-3.5 text-purple-400" />
+              + Canvas
+            </Button>
+          </div>
         </div>
       )}
     </aside>

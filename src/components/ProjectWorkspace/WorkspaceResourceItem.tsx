@@ -1,5 +1,5 @@
 import React from 'react';
-import { FileText, GitBranch, MoreVertical, Pencil, Trash2 } from 'lucide-react';
+import { FileText, GitBranch, MoreVertical, Pencil, Trash2, FolderInput } from 'lucide-react';
 import { WorkspaceResource } from '@/types/workspace';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
@@ -17,7 +17,9 @@ interface WorkspaceResourceItemProps {
   onClick: () => void;
   onRename?: (resource: WorkspaceResource) => void;
   onDelete?: (resource: WorkspaceResource) => void;
+  onMove?: (resource: WorkspaceResource) => void;
   collapsed?: boolean;
+  depth?: number;
 }
 
 export const WorkspaceResourceItem: React.FC<WorkspaceResourceItemProps> = ({
@@ -26,7 +28,9 @@ export const WorkspaceResourceItem: React.FC<WorkspaceResourceItemProps> = ({
   onClick,
   onRename,
   onDelete,
+  onMove,
   collapsed = false,
+  depth,
 }) => {
   const isDoc = resource.kind === 'document';
   const Icon = isDoc ? FileText : GitBranch;
@@ -45,37 +49,49 @@ export const WorkspaceResourceItem: React.FC<WorkspaceResourceItemProps> = ({
         }
       }}
       aria-label={`Open ${isDoc ? 'document' : 'system design'}: ${resource.title}`}
+      style={!collapsed && depth !== undefined ? { paddingLeft: `${depth * 14 + 10}px` } : undefined}
       className={cn(
-        'group w-full flex items-center gap-2.5 rounded-lg text-sm transition-all duration-150 cursor-pointer select-none text-left',
-        collapsed ? 'justify-center p-2' : 'px-2.5 py-1.5',
+        'group w-full flex items-center gap-2 rounded-lg text-sm transition-all duration-150 cursor-pointer select-none text-left',
+        collapsed ? 'justify-center p-2' : 'px-2 py-1.5',
         isActive
           ? 'bg-primary/15 text-primary font-medium border-l-2 border-primary'
           : 'text-muted-foreground hover:text-foreground hover:bg-accent/50 border-l-2 border-transparent'
       )}
     >
-      <div className={cn('flex-shrink-0 w-6 h-6 rounded flex items-center justify-center', iconBg)}>
-        <Icon className={cn('h-3.5 w-3.5', iconColor)} />
+      <div className={cn('flex-shrink-0 w-5 h-5 rounded flex items-center justify-center', iconBg)}>
+        <Icon className={cn('h-3 w-3', iconColor)} />
       </div>
 
       {!collapsed && (
         <>
-          <span className="flex-1 min-w-0 truncate font-normal text-sm" title={resource.title}>
+          <span className="flex-1 min-w-0 truncate font-normal text-xs" title={resource.title}>
             {resource.title}
           </span>
 
-          {(onRename || onDelete) && (
+          {(onRename || onDelete || onMove) && (
             <DropdownMenu>
               <DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
                 <Button
                   variant="ghost"
                   size="icon"
-                  className="h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0"
+                  className="h-5 w-5 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0"
                   aria-label={`Options for ${resource.title}`}
                 >
-                  <MoreVertical className="h-3.5 w-3.5" />
+                  <MoreVertical className="h-3 w-3" />
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-32">
+                {onMove && (
+                  <DropdownMenuItem
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onMove(resource);
+                    }}
+                  >
+                    <FolderInput className="h-3.5 w-3.5 mr-2" />
+                    Move to…
+                  </DropdownMenuItem>
+                )}
                 {onRename && (
                   <DropdownMenuItem
                     onClick={(e) => {
