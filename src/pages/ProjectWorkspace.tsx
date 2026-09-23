@@ -218,8 +218,67 @@ const ProjectWorkspace = () => {
     await updateDesign({ id: activeDesign.id, name });
   }, [activeDesign?.id, updateDesign]);
 
+  // Helper to detect duplicate resource names in the same folder / location
+  const isResourceNameDuplicate = useCallback(
+    (candidateName: string, targetFolderId: string | null, excludeResourceId?: string): boolean => {
+      const trimmed = candidateName.trim().toLowerCase();
+      const target = targetFolderId ?? null;
+      return workspaceResources.some(
+        (r) =>
+          r.id !== excludeResourceId &&
+          (r.folderId ?? null) === target &&
+          r.title.trim().toLowerCase() === trimmed
+      );
+    },
+    [workspaceResources]
+  );
+
+  // Helper to suggest a non-colliding default document name for the target folder
+  const defaultNewDocName = useMemo(() => {
+    const base = 'Untitled Document';
+    const target = targetFolderForNewResource ?? null;
+    const exists = (candidate: string) =>
+      workspaceResources.some(
+        (r) => (r.folderId ?? null) === target && r.title.trim().toLowerCase() === candidate.toLowerCase()
+      );
+    if (!exists(base)) return base;
+    let counter = 2;
+    while (exists(`${base} ${counter}`)) {
+      counter++;
+    }
+    return `${base} ${counter}`;
+  }, [workspaceResources, targetFolderForNewResource]);
+
+  // Helper to suggest a non-colliding default system design name for the target folder
+  const defaultNewDesignName = useMemo(() => {
+    const base = 'New System Design';
+    const target = targetFolderForNewResource ?? null;
+    const exists = (candidate: string) =>
+      workspaceResources.some(
+        (r) => (r.folderId ?? null) === target && r.title.trim().toLowerCase() === candidate.toLowerCase()
+      );
+    if (!exists(base)) return base;
+    let counter = 2;
+    while (exists(`${base} ${counter}`)) {
+      counter++;
+    }
+    return `${base} ${counter}`;
+  }, [workspaceResources, targetFolderForNewResource]);
+
   const handleConfirmCreateDocument = async (title: string) => {
     if (!id) return;
+    const trimmed = title.trim();
+    if (!trimmed) {
+      throw new Error('Document title cannot be empty');
+    }
+    if (isResourceNameDuplicate(trimmed, targetFolderForNewResource)) {
+      const location = targetFolderForNewResource
+        ? `in folder "${folders.find((f) => f.id === targetFolderForNewResource)?.name || 'this folder'}"`
+        : 'in Root';
+      const errMsg = `A resource named "${trimmed}" already exists ${location}`;
+      toast.error(errMsg);
+      throw new Error(errMsg);
+    }
     if (!usage.documents.canCreate) {
       setUpgradePrompt({ feature: 'document', used: usage.documents.used, limit: usage.documents.limit! });
       return;
@@ -227,7 +286,7 @@ const ProjectWorkspace = () => {
     try {
       const newDoc = await createDocument({
         projectId: id,
-        title,
+        title: trimmed,
         folderId: targetFolderForNewResource,
       });
       recentlyCreatedRef.current.add(newDoc.id);
@@ -235,20 +294,35 @@ const ProjectWorkspace = () => {
       setIsCreateDocOpen(false);
       setTargetFolderForNewResource(null);
       toast.success('New document created');
-    } catch {
-      toast.error('Failed to create document');
+    } catch (err: any) {
+      if (!err?.message?.includes('already exists')) {
+        toast.error('Failed to create document');
+      }
+      throw err;
     }
   };
 
   const handleConfirmCreateDesign = async (name: string) => {
     if (!id) return;
+    const trimmed = name.trim();
+    if (!trimmed) {
+      throw new Error('Design name cannot be empty');
+    }
+    if (isResourceNameDuplicate(trimmed, targetFolderForNewResource)) {
+      const location = targetFolderForNewResource
+        ? `in folder "${folders.find((f) => f.id === targetFolderForNewResource)?.name || 'this folder'}"`
+        : 'in Root';
+      const errMsg = `A resource named "${trimmed}" already exists ${location}`;
+      toast.error(errMsg);
+      throw new Error(errMsg);
+    }
     if (!usage.systemDesigns.canCreate) {
       setUpgradePrompt({ feature: 'system design', used: usage.systemDesigns.used, limit: usage.systemDesigns.limit! });
       return;
     }
     try {
       const newDesign = await createDesign({
-        name,
+        name: trimmed,
         projectId: id,
         folderId: targetFolderForNewResource,
       });
@@ -257,8 +331,11 @@ const ProjectWorkspace = () => {
       setIsCreateDesignOpen(false);
       setTargetFolderForNewResource(null);
       toast.success('New system design created');
-    } catch {
-      toast.error('Failed to create system design');
+    } catch (err: any) {
+      if (!err?.message?.includes('already exists')) {
+        toast.error('Failed to create system design');
+      }
+      throw err;
     }
   };
 
@@ -342,6 +419,13 @@ const ProjectWorkspace = () => {
 
   const handleMoveResource = async (targetFolderId: string | null) => {
     if (!moveResource) return;
+    if (isResourceNameDuplicate(moveResource.title, targetFolderId, moveResource.id)) {
+      const targetName = targetFolderId
+        ? `folder "${folders.find((f) => f.id === targetFolderId)?.name || 'target folder'}"`
+        : 'Root';
+      toast.error(`A resource named "${moveResource.title}" already exists in ${targetName}`);
+      return;
+    }
     try {
       if (moveResource.kind === 'document') {
         await updateDocument({ id: moveResource.id, folder_id: targetFolderId });
@@ -392,16 +476,64 @@ const ProjectWorkspace = () => {
 
   const handleRenameDocument = async (newTitle: string) => {
     if (!renameDoc) return;
-    await updateDocument({ id: renameDoc.id, title: newTitle });
-    setRenameDoc(null);
-    toast.success('Document renamed');
+    const trimmed = newTitle.trim();
+    if (!trimmed) {
+      throw new Error('Document title cannot be empty');
+    }
+    if (trimmed.toLowerCase() === renameDoc.title.trim().toLowerCase()) {
+      setRenameDoc(null);
+      return;
+    }
+    const currentFolderId = workspaceResources.find((r) => r.id === renameDoc.id)?.folderId ?? null;
+    if (isResourceNameDuplicate(trimmed, currentFolderId, renameDoc.id)) {
+      const location = currentFolderId
+        ? `in folder "${folders.find((f) => f.id === currentFolderId)?.name || 'this folder'}"`
+        : 'in Root';
+      const errMsg = `A resource named "${trimmed}" already exists ${location}`;
+      toast.error(errMsg);
+      throw new Error(errMsg);
+    }
+    try {
+      await updateDocument({ id: renameDoc.id, title: trimmed });
+      setRenameDoc(null);
+      toast.success('Document renamed');
+    } catch (err: any) {
+      if (!err?.message?.includes('already exists')) {
+        toast.error('Failed to rename document');
+      }
+      throw err;
+    }
   };
 
   const handleRenameDesign = async (newName: string) => {
     if (!renameDesign) return;
-    await updateDesign({ id: renameDesign.id, name: newName });
-    setRenameDesign(null);
-    toast.success('Design renamed');
+    const trimmed = newName.trim();
+    if (!trimmed) {
+      throw new Error('Design name cannot be empty');
+    }
+    if (trimmed.toLowerCase() === renameDesign.name.trim().toLowerCase()) {
+      setRenameDesign(null);
+      return;
+    }
+    const currentFolderId = workspaceResources.find((r) => r.id === renameDesign.id)?.folderId ?? null;
+    if (isResourceNameDuplicate(trimmed, currentFolderId, renameDesign.id)) {
+      const location = currentFolderId
+        ? `in folder "${folders.find((f) => f.id === currentFolderId)?.name || 'this folder'}"`
+        : 'in Root';
+      const errMsg = `A resource named "${trimmed}" already exists ${location}`;
+      toast.error(errMsg);
+      throw new Error(errMsg);
+    }
+    try {
+      await updateDesign({ id: renameDesign.id, name: trimmed });
+      setRenameDesign(null);
+      toast.success('Design renamed');
+    } catch (err: any) {
+      if (!err?.message?.includes('already exists')) {
+        toast.error('Failed to rename design');
+      }
+      throw err;
+    }
   };
 
   // Auth / Projects loading
@@ -536,6 +668,19 @@ const ProjectWorkspace = () => {
         currentName={renameDoc?.title || ''}
         onSave={handleRenameDocument}
         title="Rename Document"
+        validate={(newName) => {
+          if (!renameDoc) return null;
+          const trimmed = newName.trim();
+          if (trimmed.toLowerCase() === renameDoc.title.trim().toLowerCase()) return null;
+          const currentFolderId = workspaceResources.find((r) => r.id === renameDoc.id)?.folderId ?? null;
+          if (isResourceNameDuplicate(trimmed, currentFolderId, renameDoc.id)) {
+            const location = currentFolderId
+              ? `in folder "${folders.find((f) => f.id === currentFolderId)?.name || 'this folder'}"`
+              : 'in Root';
+            return `A resource named "${trimmed}" already exists ${location}`;
+          }
+          return null;
+        }}
       />
       <RenameDialog
         open={!!renameDesign}
@@ -545,6 +690,19 @@ const ProjectWorkspace = () => {
         currentName={renameDesign?.name || ''}
         onSave={handleRenameDesign}
         title="Rename System Design"
+        validate={(newName) => {
+          if (!renameDesign) return null;
+          const trimmed = newName.trim();
+          if (trimmed.toLowerCase() === renameDesign.name.trim().toLowerCase()) return null;
+          const currentFolderId = workspaceResources.find((r) => r.id === renameDesign.id)?.folderId ?? null;
+          if (isResourceNameDuplicate(trimmed, currentFolderId, renameDesign.id)) {
+            const location = currentFolderId
+              ? `in folder "${folders.find((f) => f.id === currentFolderId)?.name || 'this folder'}"`
+              : 'in Root';
+            return `A resource named "${trimmed}" already exists ${location}`;
+          }
+          return null;
+        }}
       />
       <RenameDialog
         open={!!renameFolder}
@@ -577,9 +735,19 @@ const ProjectWorkspace = () => {
           setIsCreateDocOpen(open);
           if (!open) setTargetFolderForNewResource(null);
         }}
-        currentName="Untitled Document"
+        currentName={defaultNewDocName}
         onSave={handleConfirmCreateDocument}
         title={targetFolderForNewResource ? 'Create Document in Folder' : 'Create New Document'}
+        validate={(newName) => {
+          const trimmed = newName.trim();
+          if (isResourceNameDuplicate(trimmed, targetFolderForNewResource)) {
+            const location = targetFolderForNewResource
+              ? `in folder "${folders.find((f) => f.id === targetFolderForNewResource)?.name || 'this folder'}"`
+              : 'in Root';
+            return `A resource named "${trimmed}" already exists ${location}`;
+          }
+          return null;
+        }}
       />
       <RenameDialog
         open={isCreateDesignOpen}
@@ -587,9 +755,19 @@ const ProjectWorkspace = () => {
           setIsCreateDesignOpen(open);
           if (!open) setTargetFolderForNewResource(null);
         }}
-        currentName="New System Design"
+        currentName={defaultNewDesignName}
         onSave={handleConfirmCreateDesign}
         title={targetFolderForNewResource ? 'Create Design in Folder' : 'Create New System Design'}
+        validate={(newName) => {
+          const trimmed = newName.trim();
+          if (isResourceNameDuplicate(trimmed, targetFolderForNewResource)) {
+            const location = targetFolderForNewResource
+              ? `in folder "${folders.find((f) => f.id === targetFolderForNewResource)?.name || 'this folder'}"`
+              : 'in Root';
+            return `A resource named "${trimmed}" already exists ${location}`;
+          }
+          return null;
+        }}
       />
       <RenameDialog
         open={isCreateFolderOpen}
