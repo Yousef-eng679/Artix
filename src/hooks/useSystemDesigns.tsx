@@ -30,6 +30,7 @@ export interface SystemDesign {
   board_state: BoardState;
   created_at: string;
   updated_at: string;
+  folder_id?: string | null;
 }
 
 export function useSystemDesigns(projectId: string | undefined) {
@@ -58,7 +59,7 @@ export function useSystemDesigns(projectId: string | undefined) {
   });
 
   const createDesignMutation = useMutation({
-    mutationFn: async ({ name, projectId }: { name: string; projectId: string }) => {
+    mutationFn: async ({ name, projectId, folderId }: { name: string; projectId: string; folderId?: string | null }) => {
       if (!user) throw new Error('Not authenticated');
       
       const { data, error } = await supabase
@@ -68,6 +69,7 @@ export function useSystemDesigns(projectId: string | undefined) {
           project_id: projectId,
           name,
           board_state: JSON.parse(JSON.stringify({ nodes: [], edges: [] })),
+          folder_id: folderId ?? null,
         })
         .select()
         .single();
