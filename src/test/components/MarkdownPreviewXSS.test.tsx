@@ -73,12 +73,13 @@ Detailed description below.
 
     const { container } = render(<MarkdownPreview content={maliciousLinkPayload} />);
 
+    // Assert the anchor element is created and not silently omitted
     const link = container.querySelector('a');
-    if (link) {
-      const href = link.getAttribute('href');
-      // ReactMarkdown sanitizes javascript: URLs by either removing href or setting it to an empty/safe string
-      expect(href).not.toMatch(/^javascript:/i);
-    }
+    expect(link).not.toBeNull();
+
+    // Assert the href has been sanitized and does not contain the javascript: pseudo-protocol
+    const href = link!.getAttribute('href');
+    expect(href).not.toMatch(/^javascript:/i);
   });
 
   it('renders legitimate markdown elements faithfully without sanitization false-positives', () => {
