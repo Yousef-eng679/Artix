@@ -7,6 +7,7 @@ export interface AdaptableDocument {
   updated_at: string;
   created_at?: string;
   format?: string;
+  folder_id?: string | null;
 }
 
 export interface AdaptableDesign {
@@ -15,6 +16,7 @@ export interface AdaptableDesign {
   name: string;
   updated_at: string;
   created_at?: string;
+  folder_id?: string | null;
   board_state?: {
     nodes?: unknown[];
   };
@@ -51,6 +53,7 @@ export function toWorkspaceResources(
         kind: 'document',
         updatedAt: doc.updated_at,
         createdAt: doc.created_at,
+        folderId: doc.folder_id ?? null,
         meta: {
           format: doc.format,
         },
@@ -67,6 +70,7 @@ export function toWorkspaceResources(
         kind: 'design',
         updatedAt: design.updated_at,
         createdAt: design.created_at,
+        folderId: design.folder_id ?? null,
         meta: {
           nodeCount: Array.isArray(design.board_state?.nodes) ? design.board_state.nodes.length : 0,
         },

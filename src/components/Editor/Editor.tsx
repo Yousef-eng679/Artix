@@ -23,6 +23,8 @@ export interface Document {
   content: string;
   format: DocumentFormat;
   updated_at: string;
+  project_id?: string | null;
+  folder_id?: string | null;
 }
 
 interface EditorProps {

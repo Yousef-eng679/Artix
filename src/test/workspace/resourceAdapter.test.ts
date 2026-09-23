@@ -137,14 +137,59 @@ describe('Phase 1: Workspace Resource Adapter & Filtering', () => {
         expect(result.map((r) => r.id)).toEqual(['id-111', 'id-555', 'id-999']);
       });
     });
+    it('normalizes folder_id accurately and defaults to null when missing', () => {
+      const docs: AdaptableDocument[] = [
+        {
+          id: 'doc-with-folder',
+          project_id: projectId,
+          title: 'Auth Spec',
+          updated_at: '2026-09-01T10:00:00Z',
+          folder_id: 'folder-auth-123',
+        },
+        {
+          id: 'doc-no-folder',
+          project_id: projectId,
+          title: 'Root Doc',
+          updated_at: '2026-09-01T09:00:00Z',
+        },
+      ];
+      const designs: AdaptableDesign[] = [
+        {
+          id: 'des-with-folder',
+          project_id: projectId,
+          name: 'Auth Design',
+          updated_at: '2026-09-01T10:00:00Z',
+          folder_id: 'folder-auth-123',
+        },
+        {
+          id: 'des-null-folder',
+          project_id: projectId,
+          name: 'Root Design',
+          updated_at: '2026-09-01T08:00:00Z',
+          folder_id: null,
+        },
+      ];
+
+      const result = toWorkspaceResources(docs, designs, projectId);
+
+      const docWithFolder = result.find((r) => r.id === 'doc-with-folder');
+      const docNoFolder = result.find((r) => r.id === 'doc-no-folder');
+      const desWithFolder = result.find((r) => r.id === 'des-with-folder');
+      const desNullFolder = result.find((r) => r.id === 'des-null-folder');
+
+      expect(docWithFolder?.folderId).toBe('folder-auth-123');
+      expect(docNoFolder?.folderId).toBeNull();
+      expect(desWithFolder?.folderId).toBe('folder-auth-123');
+      expect(desNullFolder?.folderId).toBeNull();
+    });
   });
 
   describe('filterWorkspaceResources (Pure Search & Filter)', () => {
     const mockResources: WorkspaceResource[] = [
-      { id: '1', projectId, title: 'Authentication PRD', kind: 'document', updatedAt: '2026-09-01T00:00:00Z' },
-      { id: '2', projectId, title: 'Auth Service Architecture', kind: 'design', updatedAt: '2026-09-01T00:00:00Z' },
-      { id: '3', projectId, title: 'Database Schema', kind: 'document', updatedAt: '2026-09-01T00:00:00Z' },
-      { id: '4', projectId, title: 'Payment Gateway Diagram', kind: 'design', updatedAt: '2026-09-01T00:00:00Z' },
+      { id: '1', projectId, title: 'Authentication PRD', kind: 'document', updatedAt: '2026-09-01T00:00:00Z', folderId: null },
+      { id: '2', projectId, title: 'Auth Service Architecture', kind: 'design', updatedAt: '2026-09-01T00:00:00Z', folderId: 'folder-auth' },
+      { id: '3', projectId, title: 'Database Schema', kind: 'document', updatedAt: '2026-09-01T00:00:00Z', folderId: null },
+      { id: '4', projectId, title: 'Payment Gateway Diagram', kind: 'design', updatedAt: '2026-09-01T00:00:00Z', folderId: 'folder-payments' },
     ];
 
     it('preserves array reference identity when query is empty and filterKind is "all"', () => {

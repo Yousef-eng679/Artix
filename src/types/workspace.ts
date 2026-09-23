@@ -7,10 +7,19 @@ export interface WorkspaceResource {
   kind: ResourceKind;
   updatedAt: string;
   createdAt?: string;
+  folderId: string | null;
   meta?: {
     format?: string;       // 'markdown' | 'xml' | 'text' (documents)
     nodeCount?: number;    // number of nodes (designs)
   };
+}
+
+export interface WorkspaceFolder {
+  id: string;
+  projectId: string;
+  name: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export type WorkspaceSelection =
@@ -20,3 +29,4 @@ export type WorkspaceSelection =
   | { kind: 'design'; id: string };
 
 export type SidebarFilterKind = 'all' | 'document' | 'design';
+
