@@ -99,8 +99,11 @@ describe('Security Remediation Suite', () => {
     });
   });
 
-  describe('Database Foreign Key Constraint Audit (SEC-08)', () => {
-    it('should verify foreign key constraints reference auth.users for all user tables', async () => {
+  describe('Static Migration Source Audit (SEC-08)', () => {
+    // NOTE: This test performs a static filesystem source audit verifying the presence of
+    // foreign key constraint definitions in migration files. It does not execute live PostgreSQL
+    // runtime constraint enforcement because a local/isolated database test runner is not configured.
+    it('should verify foreign key constraints reference auth.users for all user tables in migration source text', async () => {
       const fs = await import('fs');
       const path = await import('path');
       const migrationsDir = path.join(process.cwd(), 'supabase', 'migrations');

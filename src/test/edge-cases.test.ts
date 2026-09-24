@@ -1,13 +1,16 @@
 /**
  * edge-cases.test.ts
  * ──────────────────
- * Unit tests for the four edge-case mitigations in the Artix caching strategy.
+ * Unit tests for the Artix caching and data-safety strategy.
  *
- *  1. Debounced Auto-Save  — saves after inactivity, not on every keystroke
- *  2. Tab Close Protection — flushes pending content on beforeunload
- *  3. Multi-Tab Sync       — leader election & cross-tab content broadcasting
- *  4. Save Queue           — sequential, version-guarded writes to prevent
- *                            stale overwrites and race conditions
+ * Architecture Classification:
+ *  - Active Production Caching:
+ *      1. Debounced Auto-Save (debouncedSave.ts) — wired into useAutoSave
+ *      2. Tab Close Protection (tabCloseGuard.ts) — wired into useAutoSave
+ *      4. Save Queue (saveQueue.ts)             — wired into useAutoSave
+ *      5. Draft Recovery (draftRecovery.ts)     — wired into Editor / SystemArchitect
+ *  - Unwired / Orphaned Utility Coverage:
+ *      3. Multi-Tab Sync (tabSync.ts)          — standalone utility, not currently wired to production UI
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -180,9 +183,9 @@ describe('TabCloseProtection', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 3.  M U L T I - T A B   S Y N C
+// 3.  M U L T I - T A B   S Y N C   (Unwired / Orphaned Utility Coverage)
 // ─────────────────────────────────────────────────────────────────────────────
-describe('MultiTabSync', () => {
+describe('MultiTabSync (Unwired / Orphaned Utility Coverage)', () => {
   let mockChannel: {
     postMessage: ReturnType<typeof vi.fn>;
     close: ReturnType<typeof vi.fn>;

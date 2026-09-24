@@ -31,6 +31,7 @@ import { createDebouncedSaver } from '@/lib/cache/debouncedSave';
 import { createTabCloseGuard } from '@/lib/cache/tabCloseGuard';
 import { createSaveQueue } from '@/lib/cache/saveQueue';
 import { getRecoverableBoardDraft } from '@/lib/cache/draftRecovery';
+import { dirtyTracker } from '@/lib/workspace/dirtyTracker';
 import { Button } from '@/components/ui/button';
 import { SystemDesign, BoardState } from '@/hooks/useSystemDesigns';
 import { ArchitectNode } from './ArchitectNode';
@@ -180,6 +181,7 @@ export function SystemArchitect({ design, onSave, onUpdateName, onBack, document
           setSaveStatus('saving');
           await queueRef.current.enqueue({ id: design.id, content });
           guardRef.current.markClean(design.id);
+          dirtyTracker.markClean(design.id);
           setSaveStatus('saved');
           setTimeout(() => setSaveStatus('idle'), 2000);
         } catch (err) {
@@ -229,6 +231,7 @@ export function SystemArchitect({ design, onSave, onUpdateName, onBack, document
     };
     const serialized = JSON.stringify(boardState);
     guardRef.current.markDirty(design.id, serialized);
+    dirtyTracker.markDirty(design.id);
     saverRef.current.save(serialized);
   }, [nodes, edges, strokes, design.id]);
 

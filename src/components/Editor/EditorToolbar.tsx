@@ -32,7 +32,9 @@ import {
   FileType,
   Sparkles,
   Wand2,
-  Bot
+  Bot,
+  PanelRightClose,
+  PanelRightOpen,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
@@ -49,6 +51,8 @@ interface EditorToolbarProps {
   onGeneratePRD?: () => void;
   onGenerateVibe?: () => void;
   onGenerateAgentic?: () => void;
+  showPreview?: boolean;
+  onTogglePreview?: () => void;
 }
 
 const SaveIndicator = ({ status }: { status: SaveStatus }) => {
@@ -105,6 +109,8 @@ export function EditorToolbar({
   onGeneratePRD,
   onGenerateVibe,
   onGenerateAgentic,
+  showPreview = true,
+  onTogglePreview,
 }: EditorToolbarProps) {
   const [isExporting, setIsExporting] = useState(false);
 
@@ -161,6 +167,29 @@ export function EditorToolbar({
             ))}
           </SelectContent>
         </Select>
+
+        {format === 'markdown' && onTogglePreview && (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onTogglePreview}
+            className={cn(
+              "h-8 px-2.5 text-xs gap-1.5 transition-colors border",
+              showPreview
+                ? "bg-primary/10 text-primary border-primary/30 hover:bg-primary/20"
+                : "text-muted-foreground border-border/50 hover:text-foreground hover:bg-muted"
+            )}
+            title={showPreview ? "Hide Preview" : "Show Preview"}
+            aria-label="Toggle markdown preview"
+          >
+            {showPreview ? (
+              <PanelRightClose className="h-4 w-4" />
+            ) : (
+              <PanelRightOpen className="h-4 w-4" />
+            )}
+            <span className="hidden sm:inline">Preview</span>
+          </Button>
+        )}
       </div>
 
       <div className="flex items-center gap-3">

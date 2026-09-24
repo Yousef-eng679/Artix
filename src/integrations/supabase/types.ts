@@ -66,6 +66,7 @@ export type Database = {
         Row: {
           content: string
           created_at: string
+          folder_id: string | null
           format: string
           id: string
           project_id: string | null
@@ -76,6 +77,7 @@ export type Database = {
         Insert: {
           content?: string
           created_at?: string
+          folder_id?: string | null
           format?: string
           id?: string
           project_id?: string | null
@@ -86,6 +88,7 @@ export type Database = {
         Update: {
           content?: string
           created_at?: string
+          folder_id?: string | null
           format?: string
           id?: string
           project_id?: string | null
@@ -94,6 +97,13 @@ export type Database = {
           user_id?: string
         }
         Relationships: [
+          {
+            foreignKeyName: "documents_folder_project_fk"
+            columns: ["folder_id", "project_id"]
+            isOneToOne: false
+            referencedRelation: "workspace_folders"
+            referencedColumns: ["id", "project_id"]
+          },
           {
             foreignKeyName: "documents_project_id_fkey"
             columns: ["project_id"]
@@ -200,6 +210,7 @@ export type Database = {
         Row: {
           board_state: Json
           created_at: string
+          folder_id: string | null
           id: string
           name: string
           project_id: string
@@ -209,6 +220,7 @@ export type Database = {
         Insert: {
           board_state?: Json
           created_at?: string
+          folder_id?: string | null
           id?: string
           name?: string
           project_id: string
@@ -218,6 +230,7 @@ export type Database = {
         Update: {
           board_state?: Json
           created_at?: string
+          folder_id?: string | null
           id?: string
           name?: string
           project_id?: string
@@ -226,7 +239,49 @@ export type Database = {
         }
         Relationships: [
           {
+            foreignKeyName: "system_designs_folder_project_fk"
+            columns: ["folder_id", "project_id"]
+            isOneToOne: false
+            referencedRelation: "workspace_folders"
+            referencedColumns: ["id", "project_id"]
+          },
+          {
             foreignKeyName: "system_designs_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      workspace_folders: {
+        Row: {
+          created_at: string
+          id: string
+          name: string
+          project_id: string
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          name: string
+          project_id: string
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          name?: string
+          project_id?: string
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "workspace_folders_project_id_fkey"
             columns: ["project_id"]
             isOneToOne: false
             referencedRelation: "projects"

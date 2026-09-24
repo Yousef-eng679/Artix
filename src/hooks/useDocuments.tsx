@@ -36,17 +36,19 @@ export function useDocuments(projectId?: string) {
         format: doc.format as DocumentFormat,
         updated_at: doc.updated_at,
         project_id: doc.project_id,
+        folder_id: doc.folder_id,
       })) as Document[];
     },
     enabled: !!user,
   });
 
   const createDocumentMutation = useMutation({
-    mutationFn: async (args?: string | { projectId?: string; title?: string }) => {
+    mutationFn: async (args?: string | { projectId?: string; title?: string; folderId?: string | null }) => {
       if (!user) throw new Error('Not authenticated');
       
       const projectId = typeof args === 'string' ? args : args?.projectId;
       const title = typeof args === 'string' ? 'Untitled Document' : (args?.title || 'Untitled Document');
+      const folderId = typeof args === 'object' ? args?.folderId : null;
       
       const { data, error } = await supabase
         .from('documents')
@@ -56,6 +58,7 @@ export function useDocuments(projectId?: string) {
           content: '',
           format: 'markdown',
           project_id: projectId || null,
+          folder_id: folderId ?? null,
         })
         .select()
         .single();
@@ -68,9 +71,14 @@ export function useDocuments(projectId?: string) {
         format: data.format as DocumentFormat,
         updated_at: data.updated_at,
         project_id: data.project_id,
+        folder_id: data.folder_id,
       } as Document;
     },
-    onSuccess: () => {
+    onSuccess: (newDoc) => {
+      queryClient.setQueryData<Document[]>(
+        ['documents', user?.id, projectId],
+        (old = []) => [newDoc, ...old.filter((d) => d.id !== newDoc.id)]
+      );
       queryClient.invalidateQueries({ queryKey: ['documents', user?.id] });
       queryClient.invalidateQueries({ queryKey: ['projects'] });
     },
