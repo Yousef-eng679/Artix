@@ -30,3 +30,13 @@ export type WorkspaceSelection =
 
 export type SidebarFilterKind = 'all' | 'document' | 'design';
 
+export interface WorkspaceTab {
+  id: string;
+  resourceKind: ResourceKind;
+  resourceId: string;
+}
+
+export interface WorkspaceTabsState {
+  tabs: WorkspaceTab[];
+  activeTabId: string | null;
+}
