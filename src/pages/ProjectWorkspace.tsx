@@ -20,6 +20,7 @@ import { WorkspaceMoveResourceDialog } from '@/components/ProjectWorkspace/Works
 import { WorkspaceTabBar } from '@/components/ProjectWorkspace/WorkspaceTabBar';
 import { CloseTabConfirmDialog } from '@/components/ProjectWorkspace/CloseTabConfirmDialog';
 import { useWorkspaceTabs } from '@/hooks/useWorkspaceTabs';
+import { useWorkspaceKeyboard } from '@/hooks/useWorkspaceKeyboard';
 import { parseTabId } from '@/lib/workspace/workspaceTabs';
 import { dirtyTracker } from '@/lib/workspace/dirtyTracker';
 import { UpgradePrompt } from '@/components/UpgradePrompt';
@@ -124,6 +125,15 @@ const ProjectWorkspace = () => {
     );
     return res?.title || (parsed.resourceKind === 'document' ? 'Document' : 'System Design');
   }, [pendingCloseTabId, workspaceResources]);
+
+  // Centralized keyboard navigation for workspace tabs
+  useWorkspaceKeyboard({
+    tabs,
+    activeTabId,
+    onActivateTab: activateTab,
+    onCloseTab: handleRequestCloseTab,
+    enabled: true,
+  });
 
   // Raw URL parameters
   const rawDocId = searchParams.get('doc');
