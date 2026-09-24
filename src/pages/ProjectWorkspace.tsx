@@ -18,7 +18,10 @@ import { SystemArchitect } from '@/components/SystemArchitect/SystemArchitect';
 import { RenameDialog } from '@/components/RenameDialog';
 import { WorkspaceMoveResourceDialog } from '@/components/ProjectWorkspace/WorkspaceMoveResourceDialog';
 import { WorkspaceTabBar } from '@/components/ProjectWorkspace/WorkspaceTabBar';
+import { CloseTabConfirmDialog } from '@/components/ProjectWorkspace/CloseTabConfirmDialog';
 import { useWorkspaceTabs } from '@/hooks/useWorkspaceTabs';
+import { parseTabId } from '@/lib/workspace/workspaceTabs';
+import { dirtyTracker } from '@/lib/workspace/dirtyTracker';
 import { UpgradePrompt } from '@/components/UpgradePrompt';
 import { toast } from 'sonner';
 
@@ -85,6 +88,42 @@ const ProjectWorkspace = () => {
     closeTab,
     closeAllTabs,
   } = useWorkspaceTabs(id || '', workspaceResources, isResourcesLoaded);
+
+  // Close protection for dirty tabs
+  const [pendingCloseTabId, setPendingCloseTabId] = useState<string | null>(null);
+
+  const handleRequestCloseTab = useCallback(
+    (tabId: string) => {
+      const parsed = parseTabId(tabId);
+      if (parsed && dirtyTracker.isDirty(parsed.resourceId, parsed.resourceKind)) {
+        setPendingCloseTabId(tabId);
+      } else {
+        closeTab(tabId);
+      }
+    },
+    [closeTab],
+  );
+
+  const handleConfirmCloseDirtyTab = useCallback(() => {
+    if (pendingCloseTabId) {
+      closeTab(pendingCloseTabId);
+      setPendingCloseTabId(null);
+    }
+  }, [pendingCloseTabId, closeTab]);
+
+  const handleCancelCloseDirtyTab = useCallback(() => {
+    setPendingCloseTabId(null);
+  }, []);
+
+  const pendingCloseTabTitle = useMemo(() => {
+    if (!pendingCloseTabId) return '';
+    const parsed = parseTabId(pendingCloseTabId);
+    if (!parsed) return '';
+    const res = workspaceResources.find(
+      (r) => r.id === parsed.resourceId && r.kind === parsed.resourceKind,
+    );
+    return res?.title || (parsed.resourceKind === 'document' ? 'Document' : 'System Design');
+  }, [pendingCloseTabId, workspaceResources]);
 
   // Raw URL parameters
   const rawDocId = searchParams.get('doc');
@@ -620,7 +659,7 @@ const ProjectWorkspace = () => {
           activeTabId={activeTabId}
           resources={workspaceResources}
           onActivateTab={activateTab}
-          onCloseTab={closeTab}
+          onCloseTab={handleRequestCloseTab}
           onCloseAllTabs={closeAllTabs}
         />
       }
@@ -822,6 +861,14 @@ const ProjectWorkspace = () => {
         feature={upgradePrompt?.feature ?? ''}
         used={upgradePrompt?.used ?? 0}
         limit={upgradePrompt?.limit ?? 0}
+      />
+
+      {/* Dirty Tab Close Protection Confirmation */}
+      <CloseTabConfirmDialog
+        open={!!pendingCloseTabId}
+        tabTitle={pendingCloseTabTitle}
+        onConfirm={handleConfirmCloseDirtyTab}
+        onCancel={handleCancelCloseDirtyTab}
       />
     </ProjectWorkspaceLayout>
   );
