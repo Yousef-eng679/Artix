@@ -14,6 +14,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { createDebouncedSaver, DebouncedSaver } from './cache/debouncedSave';
 import { createTabCloseGuard, TabCloseGuard } from './cache/tabCloseGuard';
 import { createSaveQueue, SaveQueue } from './cache/saveQueue';
+import { dirtyTracker } from './workspace/dirtyTracker';
 
 export type SaveStatus = 'idle' | 'saving' | 'saved' | 'error';
 
@@ -72,7 +73,10 @@ export function useAutoSave({ delay = 1500, onSave, documentId }: UseAutoSaveOpt
         setStatus('saving');
         await queue.enqueue({ id: documentId || 'current-doc', content });
         // Mark clean — DB save succeeded
-        if (documentId) guard.markClean(documentId);
+        if (documentId) {
+          guard.markClean(documentId);
+          dirtyTracker.markClean(documentId);
+        }
         setStatus('saved');
         setTimeout(() => setStatus('idle'), 2000);
       } catch (error) {
@@ -100,9 +104,10 @@ export function useAutoSave({ delay = 1500, onSave, documentId }: UseAutoSaveOpt
 
   const triggerSave = useCallback(
     (content: string) => {
-      // Mark dirty in the tab-close guard
-      if (documentId && guardRef.current) {
-        guardRef.current.markDirty(documentId, content);
+      // Mark dirty in the tab-close guard & dirty tracker
+      if (documentId) {
+        guardRef.current?.markDirty(documentId, content);
+        dirtyTracker.markDirty(documentId);
       }
       saverRef.current?.save(content);
     },
