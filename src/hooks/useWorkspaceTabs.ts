@@ -108,28 +108,26 @@ export function useWorkspaceTabs(
     if (resources.length === 0 && tabs.length === 0) return;
 
     const validIds = new Set(resources.map((r) => r.id));
+    const reconciled = pureReconcileTabs({ tabs, activeTabId }, validIds);
 
-    setTabs((prev) => {
-      const reconciled = pureReconcileTabs({ tabs: prev, activeTabId }, validIds);
-      if (reconciled.tabs.length !== prev.length) {
-        // If the active tab was among the deleted tabs, update navigation
-        if (activeTabId && !reconciled.tabs.some((t) => t.id === activeTabId)) {
-          if (reconciled.activeTabId) {
-            const nextParsed = parseTabId(reconciled.activeTabId);
-            if (nextParsed?.resourceKind === 'document') {
-              openDocument(nextParsed.resourceId);
-            } else if (nextParsed?.resourceKind === 'design') {
-              openDesign(nextParsed.resourceId);
-            }
-          } else {
-            openOverview();
+    if (reconciled.tabs.length !== tabs.length) {
+      setTabs(reconciled.tabs);
+
+      // If the active tab was among the deleted tabs, update navigation
+      if (activeTabId && !reconciled.tabs.some((t) => t.id === activeTabId)) {
+        if (reconciled.activeTabId) {
+          const nextParsed = parseTabId(reconciled.activeTabId);
+          if (nextParsed?.resourceKind === 'document') {
+            openDocument(nextParsed.resourceId);
+          } else if (nextParsed?.resourceKind === 'design') {
+            openDesign(nextParsed.resourceId);
           }
+        } else {
+          openOverview();
         }
-        return reconciled.tabs;
       }
-      return prev;
-    });
-  }, [isLoaded, resources, activeTabId, openDocument, openDesign, openOverview, tabs.length]);
+    }
+  }, [isLoaded, resources, activeTabId, tabs, openDocument, openDesign, openOverview]);
 
   // Active tab object
   const activeTab = useMemo(() => {

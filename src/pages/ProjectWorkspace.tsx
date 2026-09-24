@@ -17,6 +17,8 @@ import { Editor, Document } from '@/components/Editor/Editor';
 import { SystemArchitect } from '@/components/SystemArchitect/SystemArchitect';
 import { RenameDialog } from '@/components/RenameDialog';
 import { WorkspaceMoveResourceDialog } from '@/components/ProjectWorkspace/WorkspaceMoveResourceDialog';
+import { WorkspaceTabBar } from '@/components/ProjectWorkspace/WorkspaceTabBar';
+import { useWorkspaceTabs } from '@/hooks/useWorkspaceTabs';
 import { UpgradePrompt } from '@/components/UpgradePrompt';
 import { toast } from 'sonner';
 
@@ -73,6 +75,16 @@ const ProjectWorkspace = () => {
   const workspaceResources = useMemo(() => {
     return toWorkspaceResources(documents, designs, id || '');
   }, [documents, designs, id]);
+
+  const isResourcesLoaded = !docsLoading && !designsLoading;
+  const {
+    tabs,
+    activeTabId,
+    openTab,
+    activateTab,
+    closeTab,
+    closeAllTabs,
+  } = useWorkspaceTabs(id || '', workspaceResources, isResourcesLoaded);
 
   // Raw URL parameters
   const rawDocId = searchParams.get('doc');
@@ -290,7 +302,7 @@ const ProjectWorkspace = () => {
         folderId: targetFolderForNewResource,
       });
       recentlyCreatedRef.current.add(newDoc.id);
-      openDocument(newDoc.id);
+      openTab({ kind: 'document', id: newDoc.id });
       setIsCreateDocOpen(false);
       setTargetFolderForNewResource(null);
       toast.success('New document created');
@@ -327,7 +339,7 @@ const ProjectWorkspace = () => {
         folderId: targetFolderForNewResource,
       });
       recentlyCreatedRef.current.add(newDesign.id);
-      openDesign(newDesign.id);
+      openTab({ kind: 'design', id: newDesign.id });
       setIsCreateDesignOpen(false);
       setTargetFolderForNewResource(null);
       toast.success('New system design created');
@@ -453,9 +465,7 @@ const ProjectWorkspace = () => {
   const handleDeleteDocument = async (docId: string) => {
     try {
       await deleteDocument(docId);
-      if (selection.kind === 'document' && selection.id === docId) {
-        openOverview();
-      }
+      closeTab(`document:${docId}`);
       toast.success('Document deleted');
     } catch {
       toast.error('Failed to delete document');
@@ -465,9 +475,7 @@ const ProjectWorkspace = () => {
   const handleDeleteDesign = async (designId: string) => {
     try {
       await deleteDesign(designId);
-      if (selection.kind === 'design' && selection.id === designId) {
-        openOverview();
-      }
+      closeTab(`design:${designId}`);
       toast.success('System design deleted');
     } catch {
       toast.error('Failed to delete system design');
@@ -570,11 +578,7 @@ const ProjectWorkspace = () => {
             setIsMobileSidebarOpen(false);
           }}
           onSelectResource={(res) => {
-            if (res.kind === 'document') {
-              openDocument(res.id);
-            } else {
-              openDesign(res.id);
-            }
+            openTab({ kind: res.kind, id: res.id });
             setIsMobileSidebarOpen(false);
           }}
           onCreateDocument={(folderId) => {
@@ -608,6 +612,16 @@ const ProjectWorkspace = () => {
           onBackToDashboard={() => navigate('/dashboard')}
           filterKind={filterKind}
           onFilterKindChange={setFilterKind}
+        />
+      }
+      tabBar={
+        <WorkspaceTabBar
+          tabs={tabs}
+          activeTabId={activeTabId}
+          resources={workspaceResources}
+          onActivateTab={activateTab}
+          onCloseTab={closeTab}
+          onCloseAllTabs={closeAllTabs}
         />
       }
     >
@@ -646,8 +660,8 @@ const ProjectWorkspace = () => {
           projectName={projectName}
           resources={workspaceResources}
           folders={folders}
-          onOpenDocument={openDocument}
-          onOpenDesign={openDesign}
+          onOpenDocument={(docId) => openTab({ kind: 'document', id: docId })}
+          onOpenDesign={(designId) => openTab({ kind: 'design', id: designId })}
           onCreateDocument={() => {
             setTargetFolderForNewResource(null);
             setIsCreateDocOpen(true);

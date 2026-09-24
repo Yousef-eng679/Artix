@@ -5,6 +5,7 @@ import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet';
 
 interface ProjectWorkspaceLayoutProps {
   sidebar: React.ReactNode;
+  tabBar?: React.ReactNode;
   children: React.ReactNode;
   isMobileOpen: boolean;
   onMobileOpenChange: (open: boolean) => void;
@@ -13,6 +14,7 @@ interface ProjectWorkspaceLayoutProps {
 
 export const ProjectWorkspaceLayout: React.FC<ProjectWorkspaceLayoutProps> = ({
   sidebar,
+  tabBar,
   children,
   isMobileOpen,
   onMobileOpenChange,
@@ -52,6 +54,9 @@ export const ProjectWorkspaceLayout: React.FC<ProjectWorkspaceLayoutProps> = ({
             {projectName || 'Project Workspace'}
           </span>
         </header>
+
+        {/* Tab bar */}
+        {tabBar}
 
         {/* Content pane */}
         <main className="flex-1 h-full overflow-hidden min-w-0 relative">
