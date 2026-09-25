@@ -177,20 +177,7 @@ export function useDocuments(projectId?: string) {
     mutationFn: async (updates: Partial<Document> & { id: string; expectedUpdatedAt?: string }) => {
       const { id, expectedUpdatedAt, ...rest } = updates;
 
-      let remoteUpdatedAt: string | undefined;
-      try {
-        let query = supabase.from('documents').update(rest).eq('id', id);
-        if (expectedUpdatedAt) {
-          query = query.eq('updated_at', expectedUpdatedAt);
-        }
-        const { data, error } = await query.select('updated_at').single();
-        if (!error && data) {
-          remoteUpdatedAt = data.updated_at as string;
-        }
-      } catch {
-        // Offline safe
-      }
-
+      // 1. Update in local IndexedDB first (Local-First Authority)
       const existing = await docRepo.getById(id);
       let localDoc = existing;
       if (existing) {
@@ -201,6 +188,23 @@ export function useDocuments(projectId?: string) {
           folderId: rest.folder_id,
           projectId: rest.project_id,
         });
+      }
+
+      // 2. Sync to Supabase in the background if online
+      let remoteUpdatedAt: string | undefined;
+      if (typeof navigator === 'undefined' || navigator.onLine) {
+        try {
+          let query = supabase.from('documents').update(rest).eq('id', id);
+          if (expectedUpdatedAt) {
+            query = query.eq('updated_at', expectedUpdatedAt);
+          }
+          const { data, error } = await query.select('updated_at').single();
+          if (!error && data) {
+            remoteUpdatedAt = data.updated_at as string;
+          }
+        } catch {
+          // Offline safe
+        }
       }
 
       return { updated_at: remoteUpdatedAt || localDoc?.updatedAt || new Date().toISOString() };

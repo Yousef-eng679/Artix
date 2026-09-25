@@ -168,14 +168,16 @@ export function useSystemDesigns(projectId: string | undefined) {
         updatePayload.board_state = JSON.parse(JSON.stringify(board_state));
       }
 
-      try {
-        let query = supabase.from('system_designs').update(updatePayload).eq('id', id);
-        if (expectedUpdatedAt) {
-          query = query.eq('updated_at', expectedUpdatedAt);
+      if (typeof navigator === 'undefined' || navigator.onLine) {
+        try {
+          let query = supabase.from('system_designs').update(updatePayload).eq('id', id);
+          if (expectedUpdatedAt) {
+            query = query.eq('updated_at', expectedUpdatedAt);
+          }
+          await query.select().single();
+        } catch {
+          // Safe to ignore network error — design is already saved locally!
         }
-        await query.select().single();
-      } catch {
-        // Safe to ignore network error — design is already saved locally!
       }
 
       return {
