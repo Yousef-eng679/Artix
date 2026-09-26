@@ -97,7 +97,7 @@ export function useAutoSave({ delay = 1500, onSave, documentId }: UseAutoSaveOpt
 
     return () => {
       window.removeEventListener('beforeunload', onBeforeUnload);
-      saver.flushSync();
+      saver.cancel();
       guard.destroy();
     };
   }, [delay, documentId]);

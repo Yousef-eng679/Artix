@@ -205,7 +205,7 @@ export function SystemArchitect({ design, onSave, onUpdateName, onBack, document
     window.addEventListener('beforeunload', onBeforeUnload);
     return () => {
       window.removeEventListener('beforeunload', onBeforeUnload);
-      saver.flushSync();
+      saver.cancel();
       guard.destroy();
     };
   }, []);
