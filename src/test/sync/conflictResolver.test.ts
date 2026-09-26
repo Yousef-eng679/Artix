@@ -57,6 +57,64 @@ describe('ConflictResolver', () => {
       expect(result.hasConflicts).toBe(false);
       expect(result.mergedText).toBe('line 1 updated');
     });
+
+    it('fast paths when local equals remote', () => {
+      const text = 'identical content\nacross all';
+      const result = ConflictResolver.mergeDocumentText('different base', text, text);
+      expect(result.hasConflicts).toBe(false);
+      expect(result.mergedText).toBe(text);
+      expect(result.conflictBlocksCount).toBe(0);
+    });
+
+    it('fast paths when local has not changed from base', () => {
+      const base = 'original base';
+      const remote = 'updated remote';
+      const result = ConflictResolver.mergeDocumentText(base, base, remote);
+      expect(result.hasConflicts).toBe(false);
+      expect(result.mergedText).toBe(remote);
+    });
+
+    it('fast paths when remote has not changed from base', () => {
+      const base = 'original base';
+      const local = 'updated local';
+      const result = ConflictResolver.mergeDocumentText(base, local, base);
+      expect(result.hasConflicts).toBe(false);
+      expect(result.mergedText).toBe(local);
+    });
+
+    it('handles multiple separate conflict blocks across document', () => {
+      const base = 'section 1\ncommon text\nsection 2';
+      const local = 'section 1 - local edit\ncommon text\nsection 2 - local edit';
+      const remote = 'section 1 - remote edit\ncommon text\nsection 2 - remote edit';
+
+      const result = ConflictResolver.mergeDocumentText(base, local, remote);
+      expect(result.hasConflicts).toBe(true);
+      expect(result.conflictBlocksCount).toBe(2);
+      expect(result.mergedText).toContain('common text');
+      expect(result.mergedText.split('<<<<<<< LOCAL').length - 1).toBe(2);
+    });
+
+    it('handles empty base with conflicting initial additions', () => {
+      const base = '';
+      const local = 'Initial content by Alice';
+      const remote = 'Initial content by Bob';
+
+      const result = ConflictResolver.mergeDocumentText(base, local, remote);
+      expect(result.hasConflicts).toBe(true);
+      expect(result.conflictBlocksCount).toBe(1);
+      expect(result.mergedText).toContain('Alice');
+      expect(result.mergedText).toContain('Bob');
+    });
+
+    it('handles clean append when one side adds lines at the end', () => {
+      const base = 'line 1\nline 2';
+      const local = 'line 1\nline 2\nline 3 appended';
+      const remote = 'line 1\nline 2';
+
+      const result = ConflictResolver.mergeDocumentText(base, local, remote);
+      expect(result.hasConflicts).toBe(false);
+      expect(result.mergedText).toBe('line 1\nline 2\nline 3 appended');
+    });
   });
 
   describe('resolveSystemDesignConflict', () => {
@@ -73,6 +131,28 @@ describe('ConflictResolver', () => {
       expect(result.conflictCopyName).toContain('Backend Architecture (Conflict Copy');
       expect(result.localPayload).toEqual(localPayload);
       expect(result.remotePayload).toEqual(remotePayload);
+    });
+
+    it('handles complex nested boardState structures safely', () => {
+      const localBoard = {
+        nodes: [{ id: 'n1', data: { label: 'Auth' } }],
+        edges: [{ id: 'e1', source: 'n1', target: 'n2' }],
+        strokes: [{ points: [{ x: 0, y: 0 }] }],
+      };
+      const remoteBoard = {
+        nodes: [{ id: 'n1', data: { label: 'Auth V2' } }],
+        edges: [],
+      };
+
+      const result = ConflictResolver.resolveSystemDesignConflict(
+        'Network Topology',
+        localBoard,
+        remoteBoard
+      );
+
+      expect(result.conflictCopyName).toContain('Network Topology (Conflict Copy');
+      expect(result.localPayload).toBe(localBoard);
+      expect(result.remotePayload).toBe(remoteBoard);
     });
   });
 });

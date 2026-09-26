@@ -36,6 +36,21 @@ describe('ConflictRepository', () => {
     expect(fetched).toEqual(conflict);
   });
 
+  it('records conflict with null base payload during concurrent creation collision', async () => {
+    const conflict = await repo.recordConflict({
+      entityType: 'document',
+      entityId: 'doc-collision',
+      userId: 'user-1',
+      basePayload: null,
+      localPayload: { title: 'Doc Created Locally' },
+      remotePayload: { title: 'Doc Created Remotely' },
+    });
+
+    expect(conflict.basePayload).toBeNull();
+    expect(conflict.localPayload).toEqual({ title: 'Doc Created Locally' });
+    expect(conflict.remotePayload).toEqual({ title: 'Doc Created Remotely' });
+  });
+
   it('lists unresolved conflicts and resolves them', async () => {
     const c1 = await repo.recordConflict({
       entityType: 'document',
@@ -67,6 +82,57 @@ describe('ConflictRepository', () => {
 
     const resolvedC1 = await repo.getById(c1.id);
     expect(resolvedC1?.resolvedAt).toBeGreaterThan(0);
+  });
+
+  it('lists conflicts filtered by entityType, entityId, and optional userId', async () => {
+    await repo.recordConflict({
+      entityType: 'document',
+      entityId: 'target-doc',
+      userId: 'user-1',
+      basePayload: 'b1',
+      localPayload: 'l1',
+      remotePayload: 'r1',
+    });
+
+    await repo.recordConflict({
+      entityType: 'document',
+      entityId: 'target-doc',
+      userId: 'user-1',
+      basePayload: 'b2',
+      localPayload: 'l2',
+      remotePayload: 'r2',
+    });
+
+    await repo.recordConflict({
+      entityType: 'document',
+      entityId: 'other-doc',
+      userId: 'user-1',
+      basePayload: null,
+      localPayload: 'l3',
+      remotePayload: 'r3',
+    });
+
+    await repo.recordConflict({
+      entityType: 'document',
+      entityId: 'target-doc',
+      userId: 'user-2',
+      basePayload: null,
+      localPayload: 'u2-l',
+      remotePayload: 'u2-r',
+    });
+
+    // List by entity for user-1
+    const user1Conflicts = await repo.listByEntity('document', 'target-doc', 'user-1');
+    expect(user1Conflicts).toHaveLength(2);
+    expect(user1Conflicts.every((c) => c.entityId === 'target-doc' && c.userId === 'user-1')).toBe(true);
+
+    // List by entity across all users (userId omitted)
+    const allConflictsForDoc = await repo.listByEntity('document', 'target-doc');
+    expect(allConflictsForDoc).toHaveLength(3);
+
+    // List by different entity
+    const otherDocConflicts = await repo.listByEntity('document', 'other-doc');
+    expect(otherDocConflicts).toHaveLength(1);
   });
 
   it('deletes a conflict record', async () => {

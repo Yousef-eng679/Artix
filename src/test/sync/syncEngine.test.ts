@@ -84,6 +84,152 @@ describe('SyncEngine', () => {
     engine.destroy();
   });
 
+  it('pushes update operation for document to Supabase update endpoint', async () => {
+    await outboxRepo.enqueue({
+      userId: 'user-1',
+      projectId: 'proj-1',
+      entityType: 'document',
+      entityId: 'doc-sync-upd',
+      operation: 'update',
+      payload: { title: 'Updated Title', content: 'Updated Body' },
+      localRevision: 2,
+    });
+
+    const mockUpdate = vi.fn().mockReturnValue({
+      eq: vi.fn().mockReturnValue({
+        select: vi.fn().mockReturnValue({
+          single: vi.fn().mockResolvedValue({
+            data: { updated_at: '2026-09-26T12:30:00Z' },
+            error: null,
+          }),
+        }),
+      }),
+    });
+
+    const mockSupabase = {
+      from: vi.fn().mockReturnValue({
+        update: mockUpdate,
+      }),
+    };
+
+    const engine = new SyncEngine({
+      supabaseClient: mockSupabase,
+      outboxRepo,
+      syncMetadataRepo,
+    });
+
+    await engine.triggerSync('user-1');
+
+    expect(mockSupabase.from).toHaveBeenCalledWith('documents');
+    expect(mockUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: 'Updated Title',
+        content: 'Updated Body',
+      })
+    );
+    expect(await outboxRepo.countPending('user-1')).toBe(0);
+
+    const meta = await syncMetadataRepo.get('document', 'doc-sync-upd');
+    expect(meta?.syncState).toBe('synced');
+    expect(meta?.serverUpdatedAt).toBe('2026-09-26T12:30:00Z');
+
+    engine.destroy();
+  });
+
+  it('pushes delete operation for document to Supabase delete endpoint', async () => {
+    await outboxRepo.enqueue({
+      userId: 'user-1',
+      projectId: 'proj-1',
+      entityType: 'document',
+      entityId: 'doc-sync-del',
+      operation: 'delete',
+      payload: null,
+      localRevision: 3,
+    });
+
+    const mockEq = vi.fn().mockResolvedValue({ error: null });
+    const mockDelete = vi.fn().mockReturnValue({ eq: mockEq });
+
+    const mockSupabase = {
+      from: vi.fn().mockReturnValue({
+        delete: mockDelete,
+      }),
+    };
+
+    const engine = new SyncEngine({
+      supabaseClient: mockSupabase,
+      outboxRepo,
+      syncMetadataRepo,
+    });
+
+    await engine.triggerSync('user-1');
+
+    expect(mockSupabase.from).toHaveBeenCalledWith('documents');
+    expect(mockDelete).toHaveBeenCalled();
+    expect(mockEq).toHaveBeenCalledWith('id', 'doc-sync-del');
+    expect(await outboxRepo.countPending('user-1')).toBe(0);
+
+    engine.destroy();
+  });
+
+  it('delegates sync to leader tab when current tab is standby', async () => {
+    const mockTabCoordinator = {
+      isLeaderTab: vi.fn().mockReturnValue(false), // Standby tab
+      requestLeaderSync: vi.fn(),
+      onSyncRequest: vi.fn().mockReturnValue(() => {}),
+    };
+
+    const mockSupabase = {
+      from: vi.fn(),
+    };
+
+    const engine = new SyncEngine({
+      supabaseClient: mockSupabase,
+      outboxRepo,
+      syncMetadataRepo,
+      tabCoordinator: mockTabCoordinator as any,
+    });
+
+    await engine.triggerSync('user-1');
+
+    expect(mockTabCoordinator.isLeaderTab).toHaveBeenCalled();
+    expect(mockTabCoordinator.requestLeaderSync).toHaveBeenCalled();
+    expect(mockSupabase.from).not.toHaveBeenCalled();
+
+    engine.destroy();
+  });
+
+  it('computes accurate pending count via getStatusWithPending', async () => {
+    await outboxRepo.enqueue({
+      userId: 'user-pending-test',
+      projectId: 'proj-1',
+      entityType: 'document',
+      entityId: 'doc-p-1',
+      operation: 'create',
+      payload: { title: 'Doc P1' },
+      localRevision: 1,
+    });
+    await outboxRepo.enqueue({
+      userId: 'user-pending-test',
+      projectId: 'proj-1',
+      entityType: 'document',
+      entityId: 'doc-p-2',
+      operation: 'create',
+      payload: { title: 'Doc P2' },
+      localRevision: 1,
+    });
+
+    const engine = new SyncEngine({
+      outboxRepo,
+      syncMetadataRepo,
+    });
+
+    const status = await engine.getStatusWithPending('user-pending-test');
+    expect(status.pendingCount).toBe(2);
+
+    engine.destroy();
+  });
+
   it('handles transient network error during push and marks entry failed for retry', async () => {
     await outboxRepo.enqueue({
       userId: 'user-1',
