@@ -115,6 +115,34 @@ describe('DocumentRepository', () => {
     expect(reFetched?.title).toBe('Rescue Me');
   });
 
+  it('throws EntityNotFoundError when restoring non-existent document', async () => {
+    await expect(repo.restore('non-existent-doc')).rejects.toThrow(EntityNotFoundError);
+  });
+
+  it('hardDeletes a document completely from database', async () => {
+    const doc = await repo.create({
+      userId: 'user-1',
+      projectId: 'proj-1',
+      title: 'Hard Deleted Doc',
+    });
+
+    await repo.hardDelete(doc.id);
+
+    expect(await repo.getById(doc.id)).toBeNull();
+    expect(await repo.getByIdIncludeDeleted(doc.id)).toBeNull();
+  });
+
+  it('lists all documents for a user across all projects', async () => {
+    await repo.create({ userId: 'user-all', projectId: 'proj-1', title: 'P1 Doc' });
+    await repo.create({ userId: 'user-all', projectId: 'proj-2', title: 'P2 Doc' });
+    await repo.create({ userId: 'user-all', projectId: null, title: 'Unassigned Doc' });
+    await repo.create({ userId: 'other-user', projectId: 'proj-1', title: 'Other Doc' });
+
+    const all = await repo.listAllByUser('user-all');
+    expect(all).toHaveLength(3);
+    expect(all.every((d) => d.userId === 'user-all')).toBe(true);
+  });
+
   it('filters documents by user and project properly', async () => {
     await repo.create({ userId: 'user-1', projectId: 'proj-A', title: 'Doc 1' });
     await repo.create({ userId: 'user-1', projectId: 'proj-A', title: 'Doc 2' });

@@ -2,7 +2,7 @@ import 'fake-indexeddb/auto';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { ArtixDB, deleteArtixDB } from '@/lib/local/db';
 import { WorkspaceFolderRepository } from '@/lib/repositories/folderRepository';
-import { DuplicateNameError } from '@/lib/local/errors';
+import { DuplicateNameError, EntityNotFoundError } from '@/lib/local/errors';
 
 describe('WorkspaceFolderRepository', () => {
   const testDbName = 'ArtixDB_test_folder_repo';
@@ -62,6 +62,16 @@ describe('WorkspaceFolderRepository', () => {
     await expect(repo.rename(f1.id, 'folder 2')).rejects.toThrow(DuplicateNameError);
   });
 
+  it('rejects renaming to empty or whitespace-only name', async () => {
+    const folder = await repo.create({ userId: 'user-1', projectId: 'proj-1', name: 'Valid' });
+    await expect(repo.rename(folder.id, '   ')).rejects.toThrow('Folder name cannot be empty');
+  });
+
+  it('throws EntityNotFoundError when renaming or updating non-existent folder', async () => {
+    await expect(repo.rename('non-existent-id', 'New Name')).rejects.toThrow(EntityNotFoundError);
+    await expect(repo.update('non-existent-id', { name: 'New Name' })).rejects.toThrow(EntityNotFoundError);
+  });
+
   it('supports hierarchy reparenting and soft delete', async () => {
     const parent = await repo.create({ userId: 'user-1', projectId: 'proj-1', name: 'Parent' });
     const child = await repo.create({
@@ -82,5 +92,33 @@ describe('WorkspaceFolderRepository', () => {
     await repo.delete(child.id);
     const list = await repo.listByProject('user-1', 'proj-1');
     expect(list.some((f) => f.id === child.id)).toBe(false);
+  });
+
+  it('restores a soft-deleted folder', async () => {
+    const folder = await repo.create({ userId: 'user-1', projectId: 'proj-1', name: 'Restore Test' });
+    await repo.delete(folder.id);
+
+    let list = await repo.listByProject('user-1', 'proj-1');
+    expect(list.some((f) => f.id === folder.id)).toBe(false);
+
+    const restored = await repo.restore(folder.id);
+    expect(restored.isDeleted).toBe(false);
+    expect(restored.deletedAt).toBeNull();
+    expect(restored.localRevision).toBe(3);
+
+    list = await repo.listByProject('user-1', 'proj-1');
+    expect(list.some((f) => f.id === folder.id)).toBe(true);
+  });
+
+  it('throws EntityNotFoundError when restoring non-existent folder', async () => {
+    await expect(repo.restore('non-existent-id')).rejects.toThrow(EntityNotFoundError);
+  });
+
+  it('hardDeletes a folder completely from IndexedDB', async () => {
+    const folder = await repo.create({ userId: 'user-1', projectId: 'proj-1', name: 'Hard Delete Test' });
+    expect(await repo.getById(folder.id)).toBeDefined();
+
+    await repo.hardDelete(folder.id);
+    expect(await repo.getById(folder.id)).toBeNull();
   });
 });

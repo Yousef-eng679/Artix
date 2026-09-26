@@ -181,6 +181,32 @@ describe('OutboxRepository', () => {
     expect(pending[0].operation).toBe('delete');
   });
 
+  it('treats duplicate delete + delete as a redundant no-op returning existing entry', async () => {
+    const del1 = await repo.enqueue({
+      userId: 'user-1',
+      projectId: 'proj-1',
+      entityType: 'document',
+      entityId: 'doc-dup-del',
+      operation: 'delete',
+      payload: null,
+      localRevision: 10,
+    });
+
+    const del2 = await repo.enqueue({
+      userId: 'user-1',
+      projectId: 'proj-1',
+      entityType: 'document',
+      entityId: 'doc-dup-del',
+      operation: 'delete',
+      payload: null,
+      localRevision: 11,
+    });
+
+    expect(del2?.id).toBe(del1?.id);
+    expect(del2?.operation).toBe('delete');
+    expect(await repo.countPending('user-1')).toBe(1);
+  });
+
   it('tracks failure retry count and transitions to blocked on max retries', async () => {
     const entry = await repo.enqueue({
       userId: 'user-1',
@@ -216,6 +242,11 @@ describe('OutboxRepository', () => {
     expect(pending).toHaveLength(0);
   });
 
+  it('returns undefined when markFailed is called on non-existent entry', async () => {
+    const res = await repo.markFailed('non-existent-id', { code: 'ERR', message: 'msg' });
+    expect(res).toBeUndefined();
+  });
+
   it('marks completed by deleting the entry from outbox', async () => {
     const entry = await repo.enqueue({
       userId: 'user-1',
@@ -230,5 +261,72 @@ describe('OutboxRepository', () => {
     expect(await repo.countPending('user-1')).toBe(1);
     await repo.markCompleted(entry!.id);
     expect(await repo.countPending('user-1')).toBe(0);
+  });
+
+  it('marks entry in_flight during active transmission', async () => {
+    const entry = await repo.enqueue({
+      userId: 'user-1',
+      projectId: 'proj-1',
+      entityType: 'document',
+      entityId: 'doc-inflight',
+      operation: 'create',
+      payload: { title: 'Doc In Flight' },
+      localRevision: 1,
+    });
+
+    await repo.markInFlight(entry!.id);
+
+    const fetched = await repo.getById(entry!.id);
+    expect(fetched?.state).toBe('in_flight');
+  });
+
+  it('supports pagination with limit on getPending', async () => {
+    for (let i = 1; i <= 5; i++) {
+      await repo.enqueue({
+        userId: 'user-paging',
+        projectId: 'proj-1',
+        entityType: 'document',
+        entityId: `doc-page-${i}`,
+        operation: 'create',
+        payload: { title: `Page ${i}` },
+        localRevision: 1,
+      });
+    }
+
+    const firstTwo = await repo.getPending(2, 'user-paging');
+    expect(firstTwo).toHaveLength(2);
+
+    const all = await repo.getPending(undefined, 'user-paging');
+    expect(all).toHaveLength(5);
+  });
+
+  it('clears outbox selectively by user or completely', async () => {
+    await repo.enqueue({
+      userId: 'user-clear-1',
+      projectId: 'proj-1',
+      entityType: 'document',
+      entityId: 'doc-c-1',
+      operation: 'create',
+      payload: {},
+      localRevision: 1,
+    });
+    await repo.enqueue({
+      userId: 'user-clear-2',
+      projectId: 'proj-1',
+      entityType: 'document',
+      entityId: 'doc-c-2',
+      operation: 'create',
+      payload: {},
+      localRevision: 1,
+    });
+
+    // Clear user-clear-1 only
+    await repo.clear('user-clear-1');
+    expect(await repo.countPending('user-clear-1')).toBe(0);
+    expect(await repo.countPending('user-clear-2')).toBe(1);
+
+    // Clear all
+    await repo.clear();
+    expect(await repo.countPending('user-clear-2')).toBe(0);
   });
 });
