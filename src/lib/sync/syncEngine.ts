@@ -2,6 +2,7 @@ import { supabase as defaultSupabaseClient } from '@/integrations/supabase/clien
 import { OutboxRepository } from '../repositories/outboxRepository';
 import { SyncMetadataRepository } from '../repositories/syncMetadataRepository';
 import { OutboxEntry } from '../local/types';
+import { getTabCoordinator, TabCoordinator } from './tabCoordinator';
 
 export type SyncStatusState = 'idle' | 'syncing' | 'offline' | 'error';
 
@@ -17,6 +18,7 @@ export interface SyncEngineOptions {
   supabaseClient?: any;
   outboxRepo?: OutboxRepository;
   syncMetadataRepo?: SyncMetadataRepository;
+  tabCoordinator?: TabCoordinator;
   maxRetries?: number;
   batchSize?: number;
 }
@@ -25,6 +27,7 @@ export class SyncEngine {
   private supabase: any;
   private outboxRepo: OutboxRepository;
   private syncMetadataRepo: SyncMetadataRepository;
+  private tabCoordinator: TabCoordinator;
   private maxRetries: number;
   private batchSize: number;
 
@@ -34,6 +37,7 @@ export class SyncEngine {
   private lastError: { code: string; message: string } | null = null;
   private activeSyncPromise: Promise<void> | null = null;
   private listeners = new Set<(status: SyncStatus) => void>();
+  private unsubSyncRequest?: () => void;
 
   private onlineHandler?: () => void;
   private offlineHandler?: () => void;
@@ -42,6 +46,7 @@ export class SyncEngine {
     this.supabase = options.supabaseClient || defaultSupabaseClient;
     this.outboxRepo = options.outboxRepo || new OutboxRepository();
     this.syncMetadataRepo = options.syncMetadataRepo || new SyncMetadataRepository();
+    this.tabCoordinator = options.tabCoordinator || getTabCoordinator();
     this.maxRetries = options.maxRetries ?? 5;
     this.batchSize = options.batchSize ?? 20;
 
@@ -49,6 +54,13 @@ export class SyncEngine {
     this.state = this.isOnline ? 'idle' : 'offline';
 
     this.setupNetworkListeners();
+
+    // Leader responds to sync requests from standby tabs
+    this.unsubSyncRequest = this.tabCoordinator.onSyncRequest(() => {
+      this.triggerSync().catch((err) => {
+        console.warn('[SyncEngine] Sync on remote request failed:', err);
+      });
+    });
   }
 
   private setupNetworkListeners(): void {
@@ -76,6 +88,10 @@ export class SyncEngine {
    * Cleans up event listeners and background handlers.
    */
   destroy(): void {
+    if (this.unsubSyncRequest) {
+      this.unsubSyncRequest();
+      this.unsubSyncRequest = undefined;
+    }
     if (typeof window !== 'undefined') {
       if (this.onlineHandler) window.removeEventListener('online', this.onlineHandler);
       if (this.offlineHandler) window.removeEventListener('offline', this.offlineHandler);
@@ -153,6 +169,12 @@ export class SyncEngine {
       this.isOnline = false;
       this.state = 'offline';
       this.notifySubscribers();
+      return;
+    }
+
+    // If this tab is not the elected leader, delegate sync to the leader tab
+    if (!this.tabCoordinator.isLeaderTab()) {
+      this.tabCoordinator.requestLeaderSync();
       return;
     }
 
