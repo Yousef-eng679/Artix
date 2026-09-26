@@ -2,6 +2,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from './useAuth';
 import { SystemDesignRepository } from '@/lib/repositories/systemDesignRepository';
+import { OutboxRepository } from '@/lib/repositories/outboxRepository';
 import { useMemo } from 'react';
 
 export interface BoardState {
@@ -38,7 +39,8 @@ export interface SystemDesign {
 export function useSystemDesigns(projectId: string | undefined) {
   const { user } = useAuth();
   const queryClient = useQueryClient();
-  const designRepo = useMemo(() => new SystemDesignRepository(), []);
+  const outboxRepo = useMemo(() => new OutboxRepository(), []);
+  const designRepo = useMemo(() => new SystemDesignRepository(undefined, outboxRepo), [outboxRepo]);
 
   const { data: designs = [], isLoading } = useQuery({
     queryKey: ['system_designs', projectId],
@@ -68,14 +70,14 @@ export function useSystemDesigns(projectId: string | undefined) {
                 folderId: remote.folder_id,
                 name: remote.name,
                 boardState: remote.board_state as unknown as BoardState,
-              });
+              }, { skipOutbox: true });
             } else if (!existing.isDeleted && existing.localRevision <= 1) {
               if (new Date(remote.updated_at).getTime() > new Date(existing.updatedAt).getTime()) {
                 await designRepo.update(remote.id, {
                   name: remote.name,
                   boardState: remote.board_state as unknown as BoardState,
                   folderId: remote.folder_id,
-                });
+                }, { skipOutbox: true });
               }
             }
           }

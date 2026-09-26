@@ -4,12 +4,15 @@ import { useAuth } from './useAuth';
 import { Document } from '@/components/Editor/Editor';
 import { DocumentFormat } from '@/components/Editor/languageMap';
 import { DocumentRepository } from '@/lib/repositories/documentRepository';
+import { OutboxRepository } from '@/lib/repositories/outboxRepository';
+import { getSyncEngine } from '@/lib/sync/syncEngine';
 import { useMemo } from 'react';
 
 export function useDocuments(projectId?: string) {
   const { user } = useAuth();
   const queryClient = useQueryClient();
-  const docRepo = useMemo(() => new DocumentRepository(), []);
+  const outboxRepo = useMemo(() => new OutboxRepository(), []);
+  const docRepo = useMemo(() => new DocumentRepository(undefined, outboxRepo), [outboxRepo]);
 
   const documentsQuery = useQuery({
     queryKey: ['documents', user?.id, projectId],
@@ -43,7 +46,7 @@ export function useDocuments(projectId?: string) {
                 title: remote.title,
                 content: remote.content,
                 format: remote.format as DocumentFormat,
-              });
+              }, { skipOutbox: true });
             } else if (!existing.isDeleted && existing.localRevision <= 1) {
               if (new Date(remote.updated_at).getTime() > new Date(existing.updatedAt).getTime()) {
                 await docRepo.update(remote.id, {
@@ -51,7 +54,7 @@ export function useDocuments(projectId?: string) {
                   content: remote.content,
                   format: remote.format as DocumentFormat,
                   folderId: remote.folder_id,
-                });
+                }, { skipOutbox: true });
               }
             }
           }
@@ -130,7 +133,7 @@ export function useDocuments(projectId?: string) {
             title: remoteDoc.title,
             content: remoteDoc.content,
             format: remoteDoc.format as DocumentFormat,
-          });
+          }, { skipOutbox: true });
         }
         return {
           id: remoteDoc.id,

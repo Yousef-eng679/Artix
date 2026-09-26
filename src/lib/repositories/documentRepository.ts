@@ -2,6 +2,7 @@ import { ArtixDB, getArtixDB } from '../local/db';
 import { LocalDocument } from '../local/types';
 import { EntityNotFoundError } from '../local/errors';
 import { DocumentFormat } from '@/components/Editor/languageMap';
+import { OutboxRepository } from './outboxRepository';
 
 export interface CreateDocumentDTO {
   id?: string;
@@ -22,7 +23,10 @@ export interface UpdateDocumentDTO {
 }
 
 export class DocumentRepository {
-  constructor(private db: ArtixDB = getArtixDB()) {}
+  constructor(
+    private db: ArtixDB = getArtixDB(),
+    private outboxRepo?: OutboxRepository
+  ) {}
 
   async getById(id: string): Promise<LocalDocument | null> {
     const doc = await this.db.documents.get(id);
@@ -58,7 +62,7 @@ export class DocumentRepository {
     return docs.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
   }
 
-  async create(dto: CreateDocumentDTO): Promise<LocalDocument> {
+  async create(dto: CreateDocumentDTO, options?: { skipOutbox?: boolean }): Promise<LocalDocument> {
     const now = new Date().toISOString();
     const doc: LocalDocument = {
       id: dto.id || crypto.randomUUID(),
@@ -75,29 +79,63 @@ export class DocumentRepository {
     };
 
     await this.db.documents.add(doc);
+
+    if (this.outboxRepo && !options?.skipOutbox) {
+      await this.outboxRepo.enqueue({
+        userId: doc.userId,
+        projectId: doc.projectId,
+        entityType: 'document',
+        entityId: doc.id,
+        operation: 'create',
+        payload: {
+          title: doc.title,
+          content: doc.content,
+          format: doc.format,
+          folderId: doc.folderId,
+        },
+        localRevision: doc.localRevision,
+      });
+    }
+
     return doc;
   }
 
-  async update(id: string, updates: UpdateDocumentDTO): Promise<LocalDocument> {
-    return await this.db.transaction('rw', this.db.documents, async () => {
+  async update(id: string, updates: UpdateDocumentDTO, options?: { skipOutbox?: boolean }): Promise<LocalDocument> {
+    const updated = await this.db.transaction('rw', this.db.documents, async () => {
       const existing = await this.db.documents.get(id);
       if (!existing || existing.isDeleted) {
         throw new EntityNotFoundError('Document', id);
       }
 
-      const updated: LocalDocument = {
+      const doc: LocalDocument = {
         ...existing,
         ...updates,
         updatedAt: new Date().toISOString(),
         localRevision: existing.localRevision + 1,
       };
 
-      await this.db.documents.put(updated);
-      return updated;
+      await this.db.documents.put(doc);
+      return doc;
     });
+
+    if (this.outboxRepo && !options?.skipOutbox) {
+      await this.outboxRepo.enqueue({
+        userId: updated.userId,
+        projectId: updated.projectId,
+        entityType: 'document',
+        entityId: updated.id,
+        operation: 'update',
+        payload: updates,
+        localRevision: updated.localRevision,
+      });
+    }
+
+    return updated;
   }
 
-  async delete(id: string): Promise<void> {
+  async delete(id: string, options?: { skipOutbox?: boolean }): Promise<void> {
+    let deletedDoc: LocalDocument | null = null;
+
     await this.db.transaction('rw', this.db.documents, async () => {
       const existing = await this.db.documents.get(id);
       if (!existing) return;
@@ -111,7 +149,20 @@ export class DocumentRepository {
       };
 
       await this.db.documents.put(softDeleted);
+      deletedDoc = softDeleted;
     });
+
+    if (this.outboxRepo && deletedDoc && !options?.skipOutbox) {
+      await this.outboxRepo.enqueue({
+        userId: (deletedDoc as LocalDocument).userId,
+        projectId: (deletedDoc as LocalDocument).projectId,
+        entityType: 'document',
+        entityId: (deletedDoc as LocalDocument).id,
+        operation: 'delete',
+        payload: null,
+        localRevision: (deletedDoc as LocalDocument).localRevision,
+      });
+    }
   }
 
   async hardDelete(id: string): Promise<void> {

@@ -3,12 +3,14 @@ import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from './useAuth';
 import { WorkspaceFolder } from '@/types/workspace';
 import { WorkspaceFolderRepository } from '@/lib/repositories/folderRepository';
+import { OutboxRepository } from '@/lib/repositories/outboxRepository';
 import { useMemo } from 'react';
 
 export function useWorkspaceFolders(projectId?: string) {
   const { user } = useAuth();
   const queryClient = useQueryClient();
-  const folderRepo = useMemo(() => new WorkspaceFolderRepository(), []);
+  const outboxRepo = useMemo(() => new OutboxRepository(), []);
+  const folderRepo = useMemo(() => new WorkspaceFolderRepository(undefined, outboxRepo), [outboxRepo]);
 
   const foldersQuery = useQuery({
     queryKey: ['workspace_folders', projectId],
@@ -38,12 +40,12 @@ export function useWorkspaceFolders(projectId?: string) {
                 projectId: f.project_id,
                 name: f.name,
                 parentFolderId: f.parent_folder_id,
-              });
+              }, { skipOutbox: true });
             } else if (!existing.isDeleted && existing.name !== f.name) {
               await folderRepo.update(f.id, {
                 name: f.name,
                 parentFolderId: f.parent_folder_id,
-              });
+              }, { skipOutbox: true });
             }
           }
         }
@@ -114,7 +116,7 @@ export function useWorkspaceFolders(projectId?: string) {
             userId: remoteFolder.user_id,
             projectId: remoteFolder.project_id,
             name: remoteFolder.name,
-          });
+          }, { skipOutbox: true });
         }
         return {
           id: remoteFolder.id,
