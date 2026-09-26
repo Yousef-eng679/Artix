@@ -101,6 +101,13 @@ export class DocumentRepository {
   }
 
   async update(id: string, updates: UpdateDocumentDTO, options?: { skipOutbox?: boolean }): Promise<LocalDocument> {
+    const cleanUpdates: Partial<LocalDocument> = {};
+    if (updates.title !== undefined) cleanUpdates.title = updates.title;
+    if (updates.content !== undefined) cleanUpdates.content = updates.content;
+    if (updates.format !== undefined) cleanUpdates.format = updates.format;
+    if (updates.folderId !== undefined) cleanUpdates.folderId = updates.folderId;
+    if (updates.projectId !== undefined) cleanUpdates.projectId = updates.projectId;
+
     const updated = await this.db.transaction('rw', this.db.documents, async () => {
       const existing = await this.db.documents.get(id);
       if (!existing || existing.isDeleted) {
@@ -109,7 +116,7 @@ export class DocumentRepository {
 
       const doc: LocalDocument = {
         ...existing,
-        ...updates,
+        ...cleanUpdates,
         updatedAt: new Date().toISOString(),
         localRevision: existing.localRevision + 1,
       };
@@ -125,7 +132,7 @@ export class DocumentRepository {
         entityType: 'document',
         entityId: updated.id,
         operation: 'update',
-        payload: updates,
+        payload: cleanUpdates,
         localRevision: updated.localRevision,
       });
     }

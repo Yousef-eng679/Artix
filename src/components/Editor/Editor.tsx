@@ -83,9 +83,11 @@ export function Editor({ document, onSave, onBack, projectId }: EditorProps) {
         title,
         content: contentToSave,
         format,
+        project_id: document.project_id,
+        folder_id: document.folder_id,
       });
     },
-    [document.id, title, format, onSave]
+    [document.id, document.project_id, document.folder_id, title, format, onSave]
   );
 
   const { status, triggerSave } = useAutoSave({
@@ -114,6 +116,8 @@ export function Editor({ document, onSave, onBack, projectId }: EditorProps) {
     onSave({
       id: document.id,
       format: newFormat,
+      project_id: document.project_id,
+      folder_id: document.folder_id,
     });
   };
 

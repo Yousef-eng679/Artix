@@ -61,6 +61,18 @@ export function useSystemDesigns(projectId: string | undefined) {
       // 1. Read from local IndexedDB first
       let localDesigns = await designRepo.listByProject(user.id, projectId);
 
+      // Self-healing: restore any orphaned system designs for this user
+      if (projectId) {
+        const allUserDesigns = await designRepo.listAllByUser(user.id);
+        const orphaned = allUserDesigns.filter((d) => !d.projectId);
+        if (orphaned.length > 0) {
+          for (const orphan of orphaned) {
+            await designRepo.update(orphan.id, { projectId });
+          }
+          localDesigns = await designRepo.listByProject(user.id, projectId);
+        }
+      }
+
       // 2. Try fetching from Supabase (if online) to hydrate / sync
       try {
         const { data, error } = await supabase
@@ -174,11 +186,18 @@ export function useSystemDesigns(projectId: string | undefined) {
       const localDesign = await designRepo.getById(id);
       let updatedLocal = localDesign;
       if (localDesign) {
-        updatedLocal = await designRepo.update(id, {
-          name: updates.name,
-          boardState: board_state,
-          folderId: updates.folder_id,
-        });
+        const dto: {
+          name?: string;
+          boardState?: BoardState;
+          folderId?: string | null;
+          projectId?: string;
+        } = {};
+        if (updates.name !== undefined) dto.name = updates.name;
+        if (board_state !== undefined) dto.boardState = board_state;
+        if (updates.folder_id !== undefined) dto.folderId = updates.folder_id;
+        if (updates.project_id !== undefined) dto.projectId = updates.project_id;
+
+        updatedLocal = await designRepo.update(id, dto);
       }
 
       // 2. Try remote Supabase update (background / optimistic)
