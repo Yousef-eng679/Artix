@@ -52,6 +52,16 @@ export class SystemDesignRepository {
     return designs.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
   }
 
+  async listAllByUser(userId: string): Promise<LocalSystemDesign[]> {
+    const designs = await this.db.system_designs
+      .where('userId')
+      .equals(userId)
+      .filter((design) => !design.isDeleted)
+      .toArray();
+
+    return designs.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+  }
+
   async create(dto: CreateSystemDesignDTO, options?: { skipOutbox?: boolean }): Promise<LocalSystemDesign> {
     const now = new Date().toISOString();
     const design: LocalSystemDesign = {
