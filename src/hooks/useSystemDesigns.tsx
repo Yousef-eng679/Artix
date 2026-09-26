@@ -3,7 +3,8 @@ import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from './useAuth';
 import { SystemDesignRepository } from '@/lib/repositories/systemDesignRepository';
 import { OutboxRepository } from '@/lib/repositories/outboxRepository';
-import { useMemo } from 'react';
+import { getTabCoordinator } from '@/lib/sync/tabCoordinator';
+import { useMemo, useEffect } from 'react';
 
 export interface BoardState {
   nodes: Array<{
@@ -41,6 +42,16 @@ export function useSystemDesigns(projectId: string | undefined) {
   const queryClient = useQueryClient();
   const outboxRepo = useMemo(() => new OutboxRepository(), []);
   const designRepo = useMemo(() => new SystemDesignRepository(undefined, outboxRepo), [outboxRepo]);
+  const coordinator = useMemo(() => getTabCoordinator(), []);
+
+  useEffect(() => {
+    const unsub = coordinator.onCrossTabChange((event) => {
+      if (event.entityType === 'system_design') {
+        queryClient.invalidateQueries({ queryKey: ['system_designs', projectId] });
+      }
+    });
+    return unsub;
+  }, [coordinator, queryClient, projectId]);
 
   const { data: designs = [], isLoading } = useQuery({
     queryKey: ['system_designs', projectId],
@@ -146,6 +157,12 @@ export function useSystemDesigns(projectId: string | undefined) {
         ['system_designs', projectId],
         (old = []) => [newDesign, ...old.filter((d) => d.id !== newDesign.id)]
       );
+      coordinator.broadcastChange({
+        entityType: 'system_design',
+        entityId: newDesign.id,
+        operation: 'create',
+        localRevision: 1,
+      });
       queryClient.invalidateQueries({ queryKey: ['system_designs', projectId] });
       queryClient.invalidateQueries({ queryKey: ['projects'] });
     },
@@ -193,7 +210,13 @@ export function useSystemDesigns(projectId: string | undefined) {
         folder_id: updatedLocal?.folderId ?? updates.folder_id ?? null,
       } as SystemDesign;
     },
-    onSuccess: () => {
+    onSuccess: (_, variables) => {
+      coordinator.broadcastChange({
+        entityType: 'system_design',
+        entityId: variables.id,
+        operation: 'update',
+        localRevision: 2,
+      });
       queryClient.invalidateQueries({ queryKey: ['system_designs', projectId] });
     },
   });
@@ -210,7 +233,13 @@ export function useSystemDesigns(projectId: string | undefined) {
         // Safe to ignore network error
       }
     },
-    onSuccess: () => {
+    onSuccess: (_, id) => {
+      coordinator.broadcastChange({
+        entityType: 'system_design',
+        entityId: id,
+        operation: 'delete',
+        localRevision: 2,
+      });
       queryClient.invalidateQueries({ queryKey: ['system_designs', projectId] });
       queryClient.invalidateQueries({ queryKey: ['projects'] });
     },

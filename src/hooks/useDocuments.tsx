@@ -6,13 +6,24 @@ import { DocumentFormat } from '@/components/Editor/languageMap';
 import { DocumentRepository } from '@/lib/repositories/documentRepository';
 import { OutboxRepository } from '@/lib/repositories/outboxRepository';
 import { getSyncEngine } from '@/lib/sync/syncEngine';
-import { useMemo } from 'react';
+import { getTabCoordinator } from '@/lib/sync/tabCoordinator';
+import { useMemo, useEffect } from 'react';
 
 export function useDocuments(projectId?: string) {
   const { user } = useAuth();
   const queryClient = useQueryClient();
   const outboxRepo = useMemo(() => new OutboxRepository(), []);
   const docRepo = useMemo(() => new DocumentRepository(undefined, outboxRepo), [outboxRepo]);
+  const coordinator = useMemo(() => getTabCoordinator(), []);
+
+  useEffect(() => {
+    const unsub = coordinator.onCrossTabChange((event) => {
+      if (event.entityType === 'document') {
+        queryClient.invalidateQueries({ queryKey: ['documents', user?.id] });
+      }
+    });
+    return unsub;
+  }, [coordinator, queryClient, user?.id]);
 
   const documentsQuery = useQuery({
     queryKey: ['documents', user?.id, projectId],
@@ -171,6 +182,12 @@ export function useDocuments(projectId?: string) {
         ['documents', user?.id, projectId],
         (old = []) => [newDoc, ...old.filter((d) => d.id !== newDoc.id)]
       );
+      coordinator.broadcastChange({
+        entityType: 'document',
+        entityId: newDoc.id,
+        operation: 'create',
+        localRevision: 1,
+      });
       queryClient.invalidateQueries({ queryKey: ['documents', user?.id] });
       queryClient.invalidateQueries({ queryKey: ['projects'] });
     },
@@ -212,7 +229,13 @@ export function useDocuments(projectId?: string) {
 
       return { updated_at: remoteUpdatedAt || localDoc?.updatedAt || new Date().toISOString() };
     },
-    onSuccess: () => {
+    onSuccess: (_, variables) => {
+      coordinator.broadcastChange({
+        entityType: 'document',
+        entityId: variables.id,
+        operation: 'update',
+        localRevision: 2,
+      });
       queryClient.invalidateQueries({ queryKey: ['documents', user?.id] });
     },
   });
@@ -226,7 +249,13 @@ export function useDocuments(projectId?: string) {
       }
       await docRepo.delete(id);
     },
-    onSuccess: () => {
+    onSuccess: (_, id) => {
+      coordinator.broadcastChange({
+        entityType: 'document',
+        entityId: id,
+        operation: 'delete',
+        localRevision: 2,
+      });
       queryClient.invalidateQueries({ queryKey: ['documents', user?.id] });
       queryClient.invalidateQueries({ queryKey: ['projects'] });
     },

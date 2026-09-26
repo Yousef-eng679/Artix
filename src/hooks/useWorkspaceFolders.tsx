@@ -4,13 +4,24 @@ import { useAuth } from './useAuth';
 import { WorkspaceFolder } from '@/types/workspace';
 import { WorkspaceFolderRepository } from '@/lib/repositories/folderRepository';
 import { OutboxRepository } from '@/lib/repositories/outboxRepository';
-import { useMemo } from 'react';
+import { getTabCoordinator } from '@/lib/sync/tabCoordinator';
+import { useMemo, useEffect } from 'react';
 
 export function useWorkspaceFolders(projectId?: string) {
   const { user } = useAuth();
   const queryClient = useQueryClient();
   const outboxRepo = useMemo(() => new OutboxRepository(), []);
   const folderRepo = useMemo(() => new WorkspaceFolderRepository(undefined, outboxRepo), [outboxRepo]);
+  const coordinator = useMemo(() => getTabCoordinator(), []);
+
+  useEffect(() => {
+    const unsub = coordinator.onCrossTabChange((event) => {
+      if (event.entityType === 'workspace_folder') {
+        queryClient.invalidateQueries({ queryKey: ['workspace_folders', projectId] });
+      }
+    });
+    return unsub;
+  }, [coordinator, queryClient, projectId]);
 
   const foldersQuery = useQuery({
     queryKey: ['workspace_folders', projectId],
@@ -142,7 +153,13 @@ export function useWorkspaceFolders(projectId?: string) {
         updatedAt: localFolder.updatedAt,
       } as WorkspaceFolder;
     },
-    onSuccess: () => {
+    onSuccess: (data) => {
+      coordinator.broadcastChange({
+        entityType: 'workspace_folder',
+        entityId: data.id,
+        operation: 'create',
+        localRevision: 1,
+      });
       queryClient.invalidateQueries({ queryKey: ['workspace_folders', projectId] });
     },
   });
@@ -182,7 +199,13 @@ export function useWorkspaceFolders(projectId?: string) {
         });
       }
     },
-    onSuccess: () => {
+    onSuccess: (_, variables) => {
+      coordinator.broadcastChange({
+        entityType: 'workspace_folder',
+        entityId: variables.id,
+        operation: 'update',
+        localRevision: 2,
+      });
       queryClient.invalidateQueries({ queryKey: ['workspace_folders', projectId] });
     },
   });
@@ -200,7 +223,13 @@ export function useWorkspaceFolders(projectId?: string) {
 
       await folderRepo.delete(id);
     },
-    onSuccess: () => {
+    onSuccess: (_, id) => {
+      coordinator.broadcastChange({
+        entityType: 'workspace_folder',
+        entityId: id,
+        operation: 'delete',
+        localRevision: 2,
+      });
       queryClient.invalidateQueries({ queryKey: ['workspace_folders', projectId] });
       queryClient.invalidateQueries({ queryKey: ['documents'] });
       queryClient.invalidateQueries({ queryKey: ['system_designs', projectId] });
