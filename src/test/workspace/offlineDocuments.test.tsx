@@ -1,6 +1,6 @@
 import 'fake-indexeddb/auto';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { renderHook, act } from '@testing-library/react';
+import { renderHook, act, waitFor } from '@testing-library/react';
 import React from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useDocuments } from '@/hooks/useDocuments';
@@ -148,6 +148,61 @@ describe('Offline-First useDocuments Hook Integration', () => {
     // The documents array must contain the newly created document directly from IndexedDB
     expect(result.current.documents.some((d) => d.id === created.id)).toBe(true);
     expect(result.current.documents.find((d) => d.id === created.id)?.title).toBe('Authoritative Document');
+  });
+
+  it('preserves projectId and folderId when updating content only (preventing file detachment on tab switch)', async () => {
+    const { result } = renderHook(() => useDocuments(projectId), { wrapper });
+
+    let created: any;
+    await act(async () => {
+      created = await result.current.createDocument({
+        projectId,
+        title: 'Project Doc',
+        folderId: 'folder-123',
+      });
+    });
+
+    expect(created.project_id).toBe(projectId);
+
+    // Simulate auto-save or Editor unmount flush sending only { id, content }
+    await act(async () => {
+      await result.current.updateDocument({
+        id: created.id,
+        content: 'New content added offline',
+      });
+    });
+
+    // In IndexedDB, projectId and folderId must NOT have been wiped to undefined!
+    const fromDB = await docRepo.getById(created.id);
+    expect(fromDB).toBeDefined();
+    expect(fromDB?.projectId).toBe(projectId);
+    expect(fromDB?.folderId).toBe('folder-123');
+    expect(fromDB?.content).toBe('New content added offline');
+
+    // And listByProject must still return it
+    const list = await docRepo.listByProject(mockUser.id, projectId);
+    expect(list.some((d) => d.id === created.id)).toBe(true);
+  });
+
+  it('self-heals orphaned documents missing projectId by restoring them to current project', async () => {
+    // Intentionally create an orphaned document with null projectId (as happened in earlier sessions)
+    const orphanedDoc = await docRepo.create({
+      userId: mockUser.id,
+      projectId: null,
+      title: 'Previously Orphaned Doc',
+      content: 'Important thoughts',
+    });
+
+    expect(orphanedDoc.projectId).toBeNull();
+
+    // Now render the hook for this project
+    const { result } = renderHook(() => useDocuments(projectId), { wrapper });
+
+    // The orphaned document must be self-healed and now associated with projectId
+    await waitFor(async () => {
+      const healed = await docRepo.getById(orphanedDoc.id);
+      expect(healed?.projectId).toBe(projectId);
+    });
   });
 });
 
