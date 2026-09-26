@@ -52,7 +52,7 @@ export class ConflictRepository {
     entityId: string,
     userId?: string
   ): Promise<ConflictRecord[]> {
-    let records = await this.db.conflicts
+    const records = await this.db.conflicts
       .where('detectedAt')
       .above(0)
       .toArray();

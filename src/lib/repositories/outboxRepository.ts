@@ -131,7 +131,7 @@ export class OutboxRepository {
    * Retrieves pending outbox entries ordered chronologically (FIFO).
    */
   async getPending(limit?: number, userId?: string): Promise<OutboxEntry[]> {
-    let collection = this.db.outbox.where('state').equals('pending');
+    const collection = this.db.outbox.where('state').equals('pending');
 
     const entries = await collection.sortBy('createdAt');
     let filtered = userId ? entries.filter((e) => e.userId === userId) : entries;
