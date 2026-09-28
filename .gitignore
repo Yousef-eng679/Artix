@@ -66,4 +66,9 @@ docs/internal/
 *.internal.md
 artifacts/
 documentaion monetorization/
+ARTIX_LOCAL_FIRST_SYNC_HARDENING_PLAN.md
+ARTIX_PROJECT_STAGES_TIMETABLE_AND_FOLDER_ANALYSIS.md
+Artix_Offline_First_Infrastructure_and_Synchronization_Plan.md
+PR_DESCRIPTION.md
+PR_DESCRIPTION_OFFLINE_SYNC.md
 
