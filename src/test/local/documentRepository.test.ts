@@ -160,4 +160,39 @@ describe('DocumentRepository', () => {
     expect(user2ProjA).toHaveLength(1);
     expect(user2ProjA[0].title).toBe('User 2 Doc');
   });
+
+  it('preserves existing projectId and folderId when partial updates contain undefined values', async () => {
+    const doc = await repo.create({
+      userId: 'user-defense',
+      projectId: 'proj-safe',
+      folderId: 'folder-safe',
+      title: 'Original Title',
+      content: 'Original Content',
+    });
+
+    const updated = await repo.update(doc.id, {
+      content: 'Updated Content Only',
+      projectId: undefined,
+      folderId: undefined,
+    });
+
+    expect(updated.projectId).toBe('proj-safe');
+    expect(updated.folderId).toBe('folder-safe');
+    expect(updated.content).toBe('Updated Content Only');
+
+    // Crucial check: document must still be discoverable by listByProject
+    const listed = await repo.listByProject('user-defense', 'proj-safe');
+    expect(listed.some((d) => d.id === doc.id)).toBe(true);
+  });
+
+  it('handles null and undefined projectId in listByProject defensively', async () => {
+    const doc = await repo.create({
+      userId: 'user-root',
+      projectId: null,
+      title: 'Root Document',
+    });
+
+    const rootDocs = await repo.listByProject('user-root', null);
+    expect(rootDocs.some((d) => d.id === doc.id)).toBe(true);
+  });
 });

@@ -105,9 +105,17 @@ export class SystemDesignRepository {
         throw new EntityNotFoundError('SystemDesign', id);
       }
 
+      // Filter out undefined fields to prevent accidental overwrites of existing metadata
+      const cleanUpdates: Partial<LocalSystemDesign> = {};
+      for (const [key, value] of Object.entries(updates)) {
+        if (value !== undefined) {
+          (cleanUpdates as any)[key] = value;
+        }
+      }
+
       const doc: LocalSystemDesign = {
         ...existing,
-        ...updates,
+        ...cleanUpdates,
         updatedAt: new Date().toISOString(),
         localRevision: existing.localRevision + 1,
       };

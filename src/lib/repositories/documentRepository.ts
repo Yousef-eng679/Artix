@@ -44,7 +44,9 @@ export class DocumentRepository {
       .where('userId')
       .equals(userId)
       .filter((doc) => {
-        const matchesProject = projectId ? doc.projectId === projectId : doc.projectId === null;
+        const matchesProject = projectId
+          ? doc.projectId === projectId
+          : (doc.projectId === null || doc.projectId === undefined);
         return matchesProject && !doc.isDeleted;
       })
       .toArray();
@@ -107,9 +109,17 @@ export class DocumentRepository {
         throw new EntityNotFoundError('Document', id);
       }
 
+      // Filter out undefined fields to prevent accidental overwrites of existing metadata
+      const cleanUpdates: Partial<LocalDocument> = {};
+      for (const [key, value] of Object.entries(updates)) {
+        if (value !== undefined) {
+          (cleanUpdates as any)[key] = value;
+        }
+      }
+
       const doc: LocalDocument = {
         ...existing,
-        ...updates,
+        ...cleanUpdates,
         updatedAt: new Date().toISOString(),
         localRevision: existing.localRevision + 1,
       };
