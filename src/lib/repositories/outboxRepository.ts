@@ -223,10 +223,26 @@ export class OutboxRepository {
 
   /**
    * Reclaims stale 'in_flight' entries whose lease has expired,
+   * or entries orphaned by other crashed tabs when promoted to leader,
    * restoring them back to 'pending' state so they can be re-synchronized.
-   * Useful on SyncEngine startup or before draining outbox.
+   * Useful on SyncEngine startup, leadership election, or before draining outbox.
    */
-  async recoverStaleLeases(now = Date.now()): Promise<number> {
+  async recoverStaleLeases(
+    optionsOrNow?:
+      | number
+      | {
+          now?: number;
+          forceOrphanedByOtherTabs?: boolean;
+          currentTabId?: string;
+        }
+  ): Promise<number> {
+    const opts =
+      typeof optionsOrNow === 'number'
+        ? { now: optionsOrNow }
+        : optionsOrNow || {};
+    const now = opts.now ?? Date.now();
+    const { forceOrphanedByOtherTabs, currentTabId } = opts;
+
     return await this.db.transaction('rw', this.db.outbox, async () => {
       const inFlightEntries = await this.db.outbox
         .where('state')
@@ -235,7 +251,14 @@ export class OutboxRepository {
 
       let recoveredCount = 0;
       for (const entry of inFlightEntries) {
-        if (!entry.leaseExpiresAt || entry.leaseExpiresAt <= now) {
+        const isStaleByTime = !entry.leaseExpiresAt || entry.leaseExpiresAt <= now;
+        const isOrphanedByOtherTab =
+          Boolean(forceOrphanedByOtherTabs) &&
+          Boolean(currentTabId) &&
+          Boolean(entry.leaseOwner) &&
+          entry.leaseOwner !== currentTabId;
+
+        if (isStaleByTime || isOrphanedByOtherTab) {
           await this.db.outbox.update(entry.id, {
             state: 'pending',
             leaseOwner: null,

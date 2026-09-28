@@ -50,6 +50,7 @@ export class SyncEngine {
   private activeSyncPromise: Promise<void> | null = null;
   private listeners = new Set<(status: SyncStatus) => void>();
   private unsubSyncRequest?: () => void;
+  private unsubLeadershipChange?: () => void;
 
   private onlineHandler?: () => void;
   private offlineHandler?: () => void;
@@ -77,17 +78,35 @@ export class SyncEngine {
     this.setupNetworkListeners();
 
     // Reclaim any crashed in-flight leases on startup
-    this.outboxRepo.recoverStaleLeases().catch((err) => {
+    this.outboxRepo.recoverStaleLeases({
+      currentTabId: this.tabCoordinator?.getTabId?.(),
+      forceOrphanedByOtherTabs: this.tabCoordinator?.isLeaderTab?.() ?? false,
+    }).catch((err) => {
       if (this.isDestroyed || err?.name === 'DatabaseClosedError') return;
       console.warn('[SyncEngine] Initial stale lease recovery error:', err);
     });
 
-    // Leader responds to sync requests from standby tabs
-    this.unsubSyncRequest = this.tabCoordinator.onSyncRequest(() => {
-      this.triggerSync().catch((err) => {
-        console.warn('[SyncEngine] Sync on remote request failed:', err);
+    // React immediately when this tab is promoted to leader
+    if (typeof this.tabCoordinator?.onLeadershipChange === 'function') {
+      this.unsubLeadershipChange = this.tabCoordinator.onLeadershipChange((isLeader) => {
+        if (isLeader && !this.isDestroyed) {
+          this.triggerSync().catch((err) => {
+            if (!this.isDestroyed && err?.name !== 'DatabaseClosedError') {
+              console.warn('[SyncEngine] Sync on leadership election failed:', err);
+            }
+          });
+        }
       });
-    });
+    }
+
+    // Leader responds to sync requests from standby tabs
+    if (typeof this.tabCoordinator?.onSyncRequest === 'function') {
+      this.unsubSyncRequest = this.tabCoordinator.onSyncRequest(() => {
+        this.triggerSync().catch((err) => {
+          console.warn('[SyncEngine] Sync on remote request failed:', err);
+        });
+      });
+    }
   }
 
   private setupNetworkListeners(): void {
@@ -119,6 +138,10 @@ export class SyncEngine {
     if (this.unsubSyncRequest) {
       this.unsubSyncRequest();
       this.unsubSyncRequest = undefined;
+    }
+    if (this.unsubLeadershipChange) {
+      this.unsubLeadershipChange();
+      this.unsubLeadershipChange = undefined;
     }
     if (typeof window !== 'undefined') {
       if (this.onlineHandler) window.removeEventListener('online', this.onlineHandler);
@@ -239,8 +262,12 @@ export class SyncEngine {
 
       if (this.isDestroyed) return;
 
-      // Reclaim any stalled or crashed leases prior to processing the drain batch
-      await this.outboxRepo.recoverStaleLeases();
+      // Reclaim any stalled or crashed leases prior to processing the drain batch.
+      // Since this tab is the elected leader, immediately recover leases orphaned by dead tabs.
+      await this.outboxRepo.recoverStaleLeases({
+        currentTabId: this.tabCoordinator?.getTabId?.(),
+        forceOrphanedByOtherTabs: true,
+      });
 
       while (true) {
         // Check network availability

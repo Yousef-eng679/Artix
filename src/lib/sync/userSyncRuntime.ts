@@ -105,7 +105,10 @@ export class UserSyncRuntime {
     }
 
     // Reclaim stale in-flight leases from crashed previous sessions
-    await this.outboxRepo.recoverStaleLeases();
+    await this.outboxRepo.recoverStaleLeases({
+      currentTabId: this.tabCoordinator?.getTabId?.(),
+      forceOrphanedByOtherTabs: this.tabCoordinator?.isLeaderTab?.() ?? false,
+    });
 
     // Listen for entity change announcements from other tabs
     this.unsubCrossTab = this.tabCoordinator.onCrossTabChange(() => {

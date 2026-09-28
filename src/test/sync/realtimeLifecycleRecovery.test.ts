@@ -45,6 +45,7 @@ describe('Phase C7: Realtime Lifecycle & Recovery', () => {
       isLeaderTab: vi.fn().mockReturnValue(true),
       onCrossTabChange: vi.fn().mockReturnValue(() => {}),
       onSyncRequest: vi.fn().mockReturnValue(() => {}),
+      onLeadershipChange: vi.fn().mockReturnValue(() => {}),
       destroy: vi.fn(),
     };
 
