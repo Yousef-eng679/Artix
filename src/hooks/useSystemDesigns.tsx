@@ -4,6 +4,7 @@ import { useAuth } from './useAuth';
 import { SystemDesignRepository } from '@/lib/repositories/systemDesignRepository';
 import { OutboxRepository } from '@/lib/repositories/outboxRepository';
 import { getTabCoordinator } from '@/lib/sync/tabCoordinator';
+import { getUserArtixDB, migrateLegacyArtixDB } from '@/lib/local/db';
 import { useMemo, useEffect } from 'react';
 
 export interface BoardState {
@@ -40,9 +41,16 @@ export interface SystemDesign {
 export function useSystemDesigns(projectId: string | undefined) {
   const { user } = useAuth();
   const queryClient = useQueryClient();
-  const outboxRepo = useMemo(() => new OutboxRepository(), []);
-  const designRepo = useMemo(() => new SystemDesignRepository(undefined, outboxRepo), [outboxRepo]);
+  const userDb = useMemo(() => getUserArtixDB(user?.id), [user?.id]);
+  const outboxRepo = useMemo(() => new OutboxRepository(userDb), [userDb]);
+  const designRepo = useMemo(() => new SystemDesignRepository(userDb, outboxRepo), [userDb, outboxRepo]);
   const coordinator = useMemo(() => getTabCoordinator(), []);
+
+  useEffect(() => {
+    if (user?.id) {
+      migrateLegacyArtixDB(userDb, user.id).catch(() => {});
+    }
+  }, [userDb, user?.id]);
 
   useEffect(() => {
     const unsub = coordinator.onCrossTabChange((event) => {
@@ -74,21 +82,28 @@ export function useSystemDesigns(projectId: string | undefined) {
           for (const remote of data) {
             const existing = await designRepo.getByIdIncludeDeleted(remote.id);
             if (!existing) {
-              await designRepo.create({
+              await designRepo.applyRemoteSnapshot({
                 id: remote.id,
                 userId: remote.user_id,
                 projectId: remote.project_id,
                 folderId: remote.folder_id,
                 name: remote.name,
                 boardState: remote.board_state as unknown as BoardState,
-              }, { skipOutbox: true });
+                updatedAt: remote.updated_at,
+                createdAt: remote.created_at,
+              });
             } else if (!existing.isDeleted && existing.localRevision <= 1) {
               if (new Date(remote.updated_at).getTime() > new Date(existing.updatedAt).getTime()) {
-                await designRepo.update(remote.id, {
+                await designRepo.applyRemoteSnapshot({
+                  id: remote.id,
+                  userId: remote.user_id,
+                  projectId: remote.project_id,
+                  folderId: remote.folder_id,
                   name: remote.name,
                   boardState: remote.board_state as unknown as BoardState,
-                  folderId: remote.folder_id,
-                }, { skipOutbox: true });
+                  updatedAt: remote.updated_at,
+                  createdAt: remote.created_at,
+                });
               }
             }
           }
@@ -116,7 +131,7 @@ export function useSystemDesigns(projectId: string | undefined) {
     mutationFn: async ({ name, projectId, folderId }: { name: string; projectId: string; folderId?: string | null }) => {
       if (!user) throw new Error('Not authenticated');
 
-      // 1. Create immediately in local IndexedDB
+      // 1. Create immediately in local IndexedDB + Outbox (Local-First Authority)
       const localDesign = await designRepo.create({
         userId: user.id,
         projectId,
@@ -124,22 +139,6 @@ export function useSystemDesigns(projectId: string | undefined) {
         boardState: { nodes: [], edges: [] },
         folderId: folderId ?? null,
       });
-
-      // 2. Try remote Supabase insert (background / optimistic)
-      try {
-        await supabase
-          .from('system_designs')
-          .insert({
-            id: localDesign.id,
-            user_id: user.id,
-            project_id: projectId,
-            name: localDesign.name,
-            board_state: localDesign.boardState,
-            folder_id: localDesign.folderId,
-          });
-      } catch {
-        // Safe to ignore network error — design is already saved locally!
-      }
 
       return {
         id: localDesign.id,
@@ -170,7 +169,7 @@ export function useSystemDesigns(projectId: string | undefined) {
 
   const updateDesignMutation = useMutation({
     mutationFn: async ({ id, board_state, expectedUpdatedAt, ...updates }: Partial<SystemDesign> & { id: string; expectedUpdatedAt?: string }) => {
-      // 1. Update immediately in local IndexedDB
+      // 1. Update immediately in local IndexedDB + Outbox (Local-First Authority)
       const localDesign = await designRepo.getById(id);
       let updatedLocal = localDesign;
       if (localDesign) {
@@ -179,24 +178,6 @@ export function useSystemDesigns(projectId: string | undefined) {
           boardState: board_state,
           folderId: updates.folder_id,
         });
-      }
-
-      // 2. Try remote Supabase update (background / optimistic)
-      const updatePayload: Record<string, unknown> = { ...updates };
-      if (board_state) {
-        updatePayload.board_state = JSON.parse(JSON.stringify(board_state));
-      }
-
-      if (typeof navigator === 'undefined' || navigator.onLine) {
-        try {
-          let query = supabase.from('system_designs').update(updatePayload).eq('id', id);
-          if (expectedUpdatedAt) {
-            query = query.eq('updated_at', expectedUpdatedAt);
-          }
-          await query.select().single();
-        } catch {
-          // Safe to ignore network error — design is already saved locally!
-        }
       }
 
       return {
@@ -210,7 +191,19 @@ export function useSystemDesigns(projectId: string | undefined) {
         folder_id: updatedLocal?.folderId ?? updates.folder_id ?? null,
       } as SystemDesign;
     },
-    onSuccess: (_, variables) => {
+    onSuccess: (updatedDesign, variables) => {
+      queryClient.setQueryData<SystemDesign[]>(
+        ['system_designs', projectId],
+        (old = []) =>
+          old.map((d) =>
+            d.id === variables.id
+              ? {
+                  ...d,
+                  ...updatedDesign,
+                }
+              : d
+          )
+      );
       coordinator.broadcastChange({
         entityType: 'system_design',
         entityId: variables.id,
@@ -223,17 +216,14 @@ export function useSystemDesigns(projectId: string | undefined) {
 
   const deleteDesignMutation = useMutation({
     mutationFn: async (id: string) => {
-      // 1. Soft-delete immediately in local IndexedDB
+      // 1. Soft-delete immediately in local IndexedDB + Outbox (Local-First Authority)
       await designRepo.delete(id);
-
-      // 2. Try remote Supabase delete
-      try {
-        await supabase.from('system_designs').delete().eq('id', id);
-      } catch {
-        // Safe to ignore network error
-      }
     },
     onSuccess: (_, id) => {
+      queryClient.setQueryData<SystemDesign[]>(
+        ['system_designs', projectId],
+        (old = []) => old.filter((d) => d.id !== id)
+      );
       coordinator.broadcastChange({
         entityType: 'system_design',
         entityId: id,

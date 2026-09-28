@@ -4,8 +4,10 @@ import { renderHook, act } from '@testing-library/react';
 import React from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useSystemDesigns } from '@/hooks/useSystemDesigns';
-import { deleteArtixDB } from '@/lib/local/db';
+import { deleteArtixDB, getUserArtixDB } from '@/lib/local/db';
 import { SystemDesignRepository } from '@/lib/repositories/systemDesignRepository';
+
+import { OutboxRepository } from '@/lib/repositories/outboxRepository';
 
 const mockUser = { id: 'user-offline-2', email: 'offline2@artix.dev' };
 
@@ -36,11 +38,14 @@ vi.mock('@/integrations/supabase/client', () => {
 describe('Offline-First useSystemDesigns Hook Integration', () => {
   let queryClient: QueryClient;
   let designRepo: SystemDesignRepository;
+  let outboxRepo: OutboxRepository;
   const projectId = 'proj-offline-beta';
 
   beforeEach(async () => {
     await deleteArtixDB();
-    designRepo = new SystemDesignRepository();
+    const userDb = getUserArtixDB(mockUser.id);
+    outboxRepo = new OutboxRepository(userDb);
+    designRepo = new SystemDesignRepository(userDb, outboxRepo);
     queryClient = new QueryClient({
       defaultOptions: {
         queries: { retry: false, gcTime: 0 },
@@ -91,5 +96,30 @@ describe('Offline-First useSystemDesigns Hook Integration', () => {
     expect(local?.boardState.nodes).toHaveLength(1);
     expect(local?.boardState.nodes[0].data.label).toBe('Cluster');
     expect(local?.localRevision).toBe(2);
+  });
+
+  it('soft-deletes design locally and updates optimistic query cache', async () => {
+    const { result } = renderHook(() => useSystemDesigns(projectId), { wrapper });
+
+    let created: any;
+    await act(async () => {
+      created = await result.current.createDesign({
+        name: 'To Delete Design',
+        projectId,
+      });
+    });
+
+    expect(result.current.designs.some((d) => d.id === created.id)).toBe(true);
+
+    await act(async () => {
+      await result.current.deleteDesign(created.id);
+    });
+
+    // Check IndexedDB
+    const local = await designRepo.getById(created.id);
+    expect(local).toBeNull();
+
+    // Check query cache
+    expect(result.current.designs.some((d) => d.id === created.id)).toBe(false);
   });
 });
