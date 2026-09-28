@@ -65,6 +65,9 @@ export interface OutboxEntry {
   attemptCount: number;
   createdAt: number;
   updatedAt: number;
+  leaseOwner?: string | null;
+  leaseExpiresAt?: number | null;
+  nextRetryAt?: number | null;
   lastError?: {
     code: string;
     message: string;
@@ -82,6 +85,43 @@ export interface SyncMetadata {
   localRevision: number;
   syncState: SyncState;
   lastSyncedAt: number | null;
+  baseSnapshot?: unknown | null;
+}
+
+export interface RemoteWorkspaceFolderSnapshot {
+  id: string;
+  userId: string;
+  projectId: string;
+  name: string;
+  parentFolderId?: string | null;
+  serverVersion?: string | null;
+  updatedAt?: string;
+  createdAt?: string;
+}
+
+export interface RemoteDocumentSnapshot {
+  id: string;
+  userId: string;
+  projectId?: string | null;
+  folderId?: string | null;
+  title: string;
+  content: string;
+  format?: DocumentFormat;
+  serverVersion?: string | null;
+  updatedAt?: string;
+  createdAt?: string;
+}
+
+export interface RemoteSystemDesignSnapshot {
+  id: string;
+  userId: string;
+  projectId: string;
+  folderId?: string | null;
+  name: string;
+  boardState?: BoardState;
+  serverVersion?: string | null;
+  updatedAt?: string;
+  createdAt?: string;
 }
 
 export interface ConflictRecord {
@@ -100,4 +140,15 @@ export interface DatabaseMeta {
   key: string;
   value: unknown;
   updatedAt: number;
+}
+
+export interface ServerSyncChange {
+  sequence: number;
+  userId: string;
+  entityType: EntityType;
+  entityId: string;
+  operation: 'create' | 'update' | 'delete';
+  entityVersion: number;
+  payload: unknown;
+  changedAt: string;
 }
