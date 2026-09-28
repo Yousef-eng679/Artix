@@ -53,6 +53,7 @@ export interface LocalWorkspaceFolder {
 
 export interface OutboxEntry {
   id: string;
+  mutationId: string;
   entityType: EntityType;
   entityId: string;
   userId: string;

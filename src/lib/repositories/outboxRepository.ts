@@ -10,6 +10,7 @@ export interface EnqueueOutboxParams {
   payload: unknown;
   localRevision: number;
   baseServerVersion?: string | null;
+  mutationId?: string;
 }
 
 export class OutboxRepository {
@@ -36,11 +37,14 @@ export class OutboxRepository {
     const now = Date.now();
 
     if (existing) {
+      const stableMutationId = existing.mutationId || existing.id || crypto.randomUUID();
+
       // Case 1: create + update -> keep as create, merge payload
       if (existing.operation === 'create' && params.operation === 'update') {
         const mergedPayload = this.mergePayloads(existing.payload, params.payload);
         const updated: OutboxEntry = {
           ...existing,
+          mutationId: stableMutationId,
           payload: mergedPayload,
           localRevision: Math.max(existing.localRevision, params.localRevision),
           updatedAt: now,
@@ -60,6 +64,7 @@ export class OutboxRepository {
         const mergedPayload = this.mergePayloads(existing.payload, params.payload);
         const updated: OutboxEntry = {
           ...existing,
+          mutationId: stableMutationId,
           payload: mergedPayload,
           localRevision: Math.max(existing.localRevision, params.localRevision),
           updatedAt: now,
@@ -72,6 +77,7 @@ export class OutboxRepository {
       if (existing.operation === 'update' && params.operation === 'delete') {
         const updated: OutboxEntry = {
           ...existing,
+          mutationId: stableMutationId,
           operation: 'delete',
           payload: params.payload ?? null,
           localRevision: Math.max(existing.localRevision, params.localRevision),
@@ -90,6 +96,7 @@ export class OutboxRepository {
     // No compactable pending entry found; append new entry
     const newEntry: OutboxEntry = {
       id: crypto.randomUUID(),
+      mutationId: params.mutationId || crypto.randomUUID(),
       userId: params.userId,
       projectId: params.projectId,
       entityType: params.entityType,

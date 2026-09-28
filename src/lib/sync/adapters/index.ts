@@ -8,6 +8,7 @@ export * from './types';
 export * from './folderPushAdapter';
 export * from './documentPushAdapter';
 export * from './systemDesignPushAdapter';
+export * from './idempotency';
 
 const adapters: Record<EntityType, EntityPushAdapter> = {
   workspace_folder: new WorkspaceFolderPushAdapter(),
