@@ -12,6 +12,22 @@ vi.mock('@/hooks/useAuth', () => ({
   useAuth: () => ({ user: mockUser, loading: false }),
 }));
 
+vi.mock('@/integrations/supabase/client', () => {
+  const mockBuilder: any = {
+    select: vi.fn(() => mockBuilder),
+    single: vi.fn(() => Promise.resolve({ data: { updated_at: new Date().toISOString() }, error: null })),
+    upsert: vi.fn(() => mockBuilder),
+    update: vi.fn(() => mockBuilder),
+    delete: vi.fn(() => Promise.resolve({ error: null })),
+  };
+
+  return {
+    supabase: {
+      from: vi.fn(() => mockBuilder),
+    },
+  };
+});
+
 describe('useSyncStatus hook', () => {
   let outboxRepo: OutboxRepository;
 
