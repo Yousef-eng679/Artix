@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from './useAuth';
+import { useUserSyncRuntime } from '@/contexts/UserSyncRuntimeContext';
 import { SystemDesignRepository } from '@/lib/repositories/systemDesignRepository';
 import { OutboxRepository } from '@/lib/repositories/outboxRepository';
 import { getTabCoordinator } from '@/lib/sync/tabCoordinator';
@@ -41,16 +41,19 @@ export interface SystemDesign {
 export function useSystemDesigns(projectId: string | undefined) {
   const { user } = useAuth();
   const queryClient = useQueryClient();
-  const userDb = useMemo(() => getUserArtixDB(user?.id), [user?.id]);
-  const outboxRepo = useMemo(() => new OutboxRepository(userDb), [userDb]);
-  const designRepo = useMemo(() => new SystemDesignRepository(userDb, outboxRepo), [userDb, outboxRepo]);
-  const coordinator = useMemo(() => getTabCoordinator(), []);
+  const runtimeContext = useUserSyncRuntime();
+
+  const userDb = useMemo(() => runtimeContext?.db || getUserArtixDB(user?.id), [runtimeContext?.db, user?.id]);
+  const outboxRepo = useMemo(() => runtimeContext?.outboxRepo || new OutboxRepository(userDb), [runtimeContext?.outboxRepo, userDb]);
+  const designRepo = useMemo(() => runtimeContext?.systemDesignRepo || new SystemDesignRepository(userDb, outboxRepo), [runtimeContext?.systemDesignRepo, userDb, outboxRepo]);
+  const coordinator = useMemo(() => runtimeContext?.tabCoordinator || getTabCoordinator(user?.id), [runtimeContext?.tabCoordinator, user?.id]);
 
   useEffect(() => {
-    if (user?.id) {
+    // Only run fallback migration if not managed by runtime
+    if (user?.id && !runtimeContext?.runtime) {
       migrateLegacyArtixDB(userDb, user.id).catch(() => {});
     }
-  }, [userDb, user?.id]);
+  }, [userDb, user?.id, runtimeContext?.runtime]);
 
   useEffect(() => {
     const unsub = coordinator.onCrossTabChange((event) => {
@@ -66,52 +69,7 @@ export function useSystemDesigns(projectId: string | undefined) {
     queryFn: async () => {
       if (!user || !projectId) return [];
 
-      // 1. Read from local IndexedDB first
-      let localDesigns = await designRepo.listByProject(user.id, projectId);
-
-      // 2. Try fetching from Supabase (if online) to hydrate / sync
-      try {
-        const { data, error } = await supabase
-          .from('system_designs')
-          .select('*')
-          .eq('project_id', projectId)
-          .eq('user_id', user.id)
-          .order('updated_at', { ascending: false });
-
-        if (!error && data) {
-          for (const remote of data) {
-            const existing = await designRepo.getByIdIncludeDeleted(remote.id);
-            if (!existing) {
-              await designRepo.applyRemoteSnapshot({
-                id: remote.id,
-                userId: remote.user_id,
-                projectId: remote.project_id,
-                folderId: remote.folder_id,
-                name: remote.name,
-                boardState: remote.board_state as unknown as BoardState,
-                updatedAt: remote.updated_at,
-                createdAt: remote.created_at,
-              });
-            } else if (!existing.isDeleted && existing.localRevision <= 1) {
-              if (new Date(remote.updated_at).getTime() > new Date(existing.updatedAt).getTime()) {
-                await designRepo.applyRemoteSnapshot({
-                  id: remote.id,
-                  userId: remote.user_id,
-                  projectId: remote.project_id,
-                  folderId: remote.folder_id,
-                  name: remote.name,
-                  boardState: remote.board_state as unknown as BoardState,
-                  updatedAt: remote.updated_at,
-                  createdAt: remote.created_at,
-                });
-              }
-            }
-          }
-          localDesigns = await designRepo.listByProject(user.id, projectId);
-        }
-      } catch {
-        // Offline or network error: gracefully serve localDesigns from IndexedDB!
-      }
+      const localDesigns = await designRepo.listByProject(user.id, projectId);
 
       return localDesigns.map((d) => ({
         id: d.id,

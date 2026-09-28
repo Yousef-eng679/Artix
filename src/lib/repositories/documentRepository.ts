@@ -77,10 +77,26 @@ export class DocumentRepository {
    * Applies an authoritative remote snapshot from Supabase into local IndexedDB.
    * Updates entity store and sync metadata (marking synced) with ZERO outbox entries.
    */
-  async applyRemoteSnapshot(snapshot: RemoteDocumentSnapshot): Promise<LocalDocument> {
-    return await this.db.transaction('rw', [this.db.documents, this.db.sync_metadata], async () => {
+  async applyRemoteSnapshot(snapshot: RemoteDocumentSnapshot, options?: { force?: boolean }): Promise<LocalDocument> {
+    return await this.db.transaction('rw', [this.db.documents, this.db.outbox, this.db.sync_metadata], async () => {
       const now = new Date().toISOString();
       const existing = await this.db.documents.get(snapshot.id);
+
+      // Defense-in-depth: do not overwrite active local pending intent unless forced
+      if (!options?.force) {
+        const outboxEntries = await this.db.outbox
+          .where('[userId+entityType+entityId]')
+          .equals([snapshot.userId, 'document', snapshot.id])
+          .toArray();
+
+        const activeOutbox = outboxEntries.find(
+          (e) => e.state === 'pending' || e.state === 'in_flight' || e.state === 'blocked'
+        );
+
+        if (activeOutbox && existing) {
+          return existing;
+        }
+      }
 
       const doc: LocalDocument = {
         id: snapshot.id,
@@ -104,7 +120,7 @@ export class DocumentRepository {
         entityId: doc.id,
         userId: doc.userId,
         syncState: 'synced',
-        serverVersion: snapshot.serverVersion ?? null,
+        serverVersion: snapshot.serverVersion ? String(snapshot.serverVersion) : null,
         serverUpdatedAt: snapshot.updatedAt ?? null,
         localRevision: doc.localRevision,
         lastSyncedAt: Date.now(),
@@ -213,6 +229,12 @@ export class DocumentRepository {
 
       await this.db.documents.put(doc);
 
+      let baseServerVersion: string | null = null;
+      const existingMeta = await this.db.sync_metadata.get(`document:${id}`);
+      if (existingMeta?.serverVersion) {
+        baseServerVersion = existingMeta.serverVersion;
+      }
+
       if (this.outboxRepo) {
         await this.outboxRepo.enqueueInTx({
           userId: doc.userId,
@@ -222,6 +244,7 @@ export class DocumentRepository {
           operation: 'update',
           payload: updates,
           localRevision: doc.localRevision,
+          baseServerVersion,
         });
       }
 
@@ -252,6 +275,12 @@ export class DocumentRepository {
 
       await this.db.documents.put(softDeleted);
 
+      let baseServerVersion: string | null = null;
+      const existingMeta = await this.db.sync_metadata.get(`document:${id}`);
+      if (existingMeta?.serverVersion) {
+        baseServerVersion = existingMeta.serverVersion;
+      }
+
       if (this.outboxRepo && !options?.skipOutbox) {
         await this.outboxRepo.enqueueInTx({
           userId: softDeleted.userId,
@@ -259,8 +288,9 @@ export class DocumentRepository {
           entityType: 'document',
           entityId: softDeleted.id,
           operation: 'delete',
-          payload: null,
+          payload: { folderId: softDeleted.folderId },
           localRevision: softDeleted.localRevision,
+          baseServerVersion,
         });
       }
 

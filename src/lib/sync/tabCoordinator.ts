@@ -34,6 +34,7 @@ export class TabCoordinator {
   private lockAbortController: AbortController | null = null;
   private changeListeners = new Set<(event: CrossTabChangeEvent) => void>();
   private syncRequestListeners = new Set<() => void>();
+  private leadershipChangeListeners = new Set<(isLeader: boolean) => void>();
   private recentEvents = new Map<string, number>();
 
   constructor(channelName?: string, userScope = 'default') {
@@ -57,7 +58,31 @@ export class TabCoordinator {
    * Directly sets leadership state for unit/integration testing.
    */
   setLeaderForTesting(leader: boolean): void {
+    const changed = this.isLeader !== leader;
     this.isLeader = leader;
+    if (changed) {
+      this.notifyLeadershipChange(leader);
+    }
+  }
+
+  /**
+   * Subscribes to leadership state changes.
+   */
+  onLeadershipChange(callback: (isLeader: boolean) => void): () => void {
+    this.leadershipChangeListeners.add(callback);
+    return () => {
+      this.leadershipChangeListeners.delete(callback);
+    };
+  }
+
+  private notifyLeadershipChange(isLeader: boolean): void {
+    for (const listener of this.leadershipChangeListeners) {
+      try {
+        listener(isLeader);
+      } catch (err) {
+        console.error('[TabCoordinator] Error in leadership change listener:', err);
+      }
+    }
   }
 
   private initBroadcastChannel(): void {
@@ -124,12 +149,14 @@ export class TabCoordinator {
           { signal: this.lockAbortController.signal },
           () => {
             this.isLeader = true;
+            this.notifyLeadershipChange(true);
 
             // Keep lock held indefinitely until tab closes or abort is triggered
             return new Promise<void>((resolve) => {
               if (this.lockAbortController) {
                 this.lockAbortController.signal.addEventListener('abort', () => {
                   this.isLeader = false;
+                  this.notifyLeadershipChange(false);
                   resolve();
                 });
               }
@@ -141,7 +168,10 @@ export class TabCoordinator {
           if (err.name !== 'AbortError') {
             console.warn('[TabCoordinator] Leader lock error:', err);
           }
-          this.isLeader = false;
+          if (this.isLeader) {
+            this.isLeader = false;
+            this.notifyLeadershipChange(false);
+          }
         });
     } else {
       // In environments without Web Locks API (e.g. Node tests), default this tab to leader
@@ -225,7 +255,11 @@ export class TabCoordinator {
       this.lockAbortController.abort();
       this.lockAbortController = null;
     }
+    const wasLeader = this.isLeader;
     this.isLeader = false;
+    if (wasLeader) {
+      this.notifyLeadershipChange(false);
+    }
 
     if (this.channel) {
       try {
@@ -238,6 +272,7 @@ export class TabCoordinator {
 
     this.changeListeners.clear();
     this.syncRequestListeners.clear();
+    this.leadershipChangeListeners.clear();
   }
 }
 

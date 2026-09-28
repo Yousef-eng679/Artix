@@ -74,6 +74,45 @@ export class SyncMetadataRepository {
   }
 
   /**
+   * Applies a server acknowledgement in a revision-safe manner.
+   * If localRevision in the metadata has advanced beyond ackLocalRevision (due to a concurrent local edit while push was in flight),
+   * the entity remains 'pending' with the newest localRevision, while updating serverVersion, serverUpdatedAt, and baseSnapshot.
+   */
+  async acknowledgePush(params: {
+    entityType: EntityType;
+    entityId: string;
+    userId: string;
+    ackLocalRevision: number;
+    serverVersion?: string | null;
+    serverUpdatedAt?: string | null;
+    baseSnapshot?: unknown | null;
+  }): Promise<{ isFullySynced: boolean; metadata: SyncMetadata }> {
+    return await this.db.transaction('rw', this.db.sync_metadata, async () => {
+      const id = this.makeId(params.entityType, params.entityId);
+      const existing = await this.db.sync_metadata.get(id);
+
+      const currentLocalRevision = existing?.localRevision ?? params.ackLocalRevision;
+      const isNewerLocalWorkPresent = currentLocalRevision > params.ackLocalRevision;
+
+      const metadata: SyncMetadata = {
+        id,
+        entityType: params.entityType,
+        entityId: params.entityId,
+        userId: params.userId,
+        syncState: isNewerLocalWorkPresent ? 'pending' : 'synced',
+        serverVersion: params.serverVersion !== undefined ? params.serverVersion : (existing?.serverVersion ?? null),
+        serverUpdatedAt: params.serverUpdatedAt !== undefined ? params.serverUpdatedAt : (existing?.serverUpdatedAt ?? null),
+        localRevision: currentLocalRevision,
+        lastSyncedAt: Date.now(),
+        baseSnapshot: params.baseSnapshot !== undefined ? params.baseSnapshot : (existing?.baseSnapshot ?? null),
+      };
+
+      await this.db.sync_metadata.put(metadata);
+      return { isFullySynced: !isNewerLocalWorkPresent, metadata };
+    });
+  }
+
+  /**
    * Marks an entity as successfully synced with the cloud.
    */
   async markSynced(
@@ -82,7 +121,8 @@ export class SyncMetadataRepository {
     userId: string,
     serverVersion?: string | null,
     serverUpdatedAt?: string | null,
-    localRevision?: number
+    localRevision?: number,
+    baseSnapshot?: unknown | null
   ): Promise<SyncMetadata> {
     return await this.upsert({
       entityType,
@@ -93,6 +133,7 @@ export class SyncMetadataRepository {
       serverUpdatedAt,
       localRevision,
       lastSyncedAt: Date.now(),
+      baseSnapshot,
     });
   }
 

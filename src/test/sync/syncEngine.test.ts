@@ -177,6 +177,7 @@ describe('SyncEngine', () => {
       isLeaderTab: vi.fn().mockReturnValue(false), // Standby tab
       requestLeaderSync: vi.fn(),
       onSyncRequest: vi.fn().mockReturnValue(() => {}),
+      onLeadershipChange: vi.fn().mockReturnValue(() => {}),
     };
 
     const mockSupabase = {

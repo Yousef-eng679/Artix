@@ -75,10 +75,26 @@ export class SystemDesignRepository {
    * Applies an authoritative remote snapshot from Supabase into local IndexedDB.
    * Updates entity store and sync metadata (marking synced) with ZERO outbox entries.
    */
-  async applyRemoteSnapshot(snapshot: RemoteSystemDesignSnapshot): Promise<LocalSystemDesign> {
-    return await this.db.transaction('rw', [this.db.system_designs, this.db.sync_metadata], async () => {
+  async applyRemoteSnapshot(snapshot: RemoteSystemDesignSnapshot, options?: { force?: boolean }): Promise<LocalSystemDesign> {
+    return await this.db.transaction('rw', [this.db.system_designs, this.db.outbox, this.db.sync_metadata], async () => {
       const now = new Date().toISOString();
       const existing = await this.db.system_designs.get(snapshot.id);
+
+      // Defense-in-depth: do not overwrite active local pending intent unless forced
+      if (!options?.force) {
+        const outboxEntries = await this.db.outbox
+          .where('[userId+entityType+entityId]')
+          .equals([snapshot.userId, 'system_design', snapshot.id])
+          .toArray();
+
+        const activeOutbox = outboxEntries.find(
+          (e) => e.state === 'pending' || e.state === 'in_flight' || e.state === 'blocked'
+        );
+
+        if (activeOutbox && existing) {
+          return existing;
+        }
+      }
 
       const design: LocalSystemDesign = {
         id: snapshot.id,
@@ -101,7 +117,7 @@ export class SystemDesignRepository {
         entityId: design.id,
         userId: design.userId,
         syncState: 'synced',
-        serverVersion: snapshot.serverVersion ?? null,
+        serverVersion: snapshot.serverVersion ? String(snapshot.serverVersion) : null,
         serverUpdatedAt: snapshot.updatedAt ?? null,
         localRevision: design.localRevision,
         lastSyncedAt: Date.now(),
@@ -206,6 +222,12 @@ export class SystemDesignRepository {
 
       await this.db.system_designs.put(doc);
 
+      let baseServerVersion: string | null = null;
+      const existingMeta = await this.db.sync_metadata.get(`system_design:${id}`);
+      if (existingMeta?.serverVersion) {
+        baseServerVersion = existingMeta.serverVersion;
+      }
+
       if (this.outboxRepo) {
         await this.outboxRepo.enqueueInTx({
           userId: doc.userId,
@@ -215,6 +237,7 @@ export class SystemDesignRepository {
           operation: 'update',
           payload: updates,
           localRevision: doc.localRevision,
+          baseServerVersion,
         });
       }
 
@@ -245,6 +268,12 @@ export class SystemDesignRepository {
 
       await this.db.system_designs.put(softDeleted);
 
+      let baseServerVersion: string | null = null;
+      const existingMeta = await this.db.sync_metadata.get(`system_design:${id}`);
+      if (existingMeta?.serverVersion) {
+        baseServerVersion = existingMeta.serverVersion;
+      }
+
       if (this.outboxRepo && !options?.skipOutbox) {
         await this.outboxRepo.enqueueInTx({
           userId: softDeleted.userId,
@@ -252,8 +281,9 @@ export class SystemDesignRepository {
           entityType: 'system_design',
           entityId: softDeleted.id,
           operation: 'delete',
-          payload: null,
+          payload: { folderId: softDeleted.folderId },
           localRevision: softDeleted.localRevision,
+          baseServerVersion,
         });
       }
 

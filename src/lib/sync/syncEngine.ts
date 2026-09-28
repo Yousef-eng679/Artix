@@ -31,29 +31,7 @@ export interface SyncEngineOptions {
   batchSize?: number;
 }
 
-export const TRANSPORT_TIMEOUT_MS = 10000;
-
-export async function withTimeout<T>(
-  promise: Promise<T> | PromiseLike<T>,
-  timeoutMs = TRANSPORT_TIMEOUT_MS,
-  errorMsg = 'Network transport request timed out'
-): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeoutPromise = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => {
-      const err = new Error(errorMsg);
-      (err as any).name = 'TimeoutError';
-      (err as any).code = 'ETIMEDOUT';
-      reject(err);
-    }, timeoutMs);
-  });
-
-  try {
-    return await Promise.race([promise, timeoutPromise]);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
-}
+export { TRANSPORT_TIMEOUT_MS, withTimeout } from './transportTimeout';
 
 export class SyncEngine {
   private supabase: any;
@@ -72,6 +50,7 @@ export class SyncEngine {
   private activeSyncPromise: Promise<void> | null = null;
   private listeners = new Set<(status: SyncStatus) => void>();
   private unsubSyncRequest?: () => void;
+  private unsubLeadershipChange?: () => void;
 
   private onlineHandler?: () => void;
   private offlineHandler?: () => void;
@@ -99,17 +78,35 @@ export class SyncEngine {
     this.setupNetworkListeners();
 
     // Reclaim any crashed in-flight leases on startup
-    this.outboxRepo.recoverStaleLeases().catch((err) => {
+    this.outboxRepo.recoverStaleLeases({
+      currentTabId: this.tabCoordinator?.getTabId?.(),
+      forceOrphanedByOtherTabs: this.tabCoordinator?.isLeaderTab?.() ?? false,
+    }).catch((err) => {
       if (this.isDestroyed || err?.name === 'DatabaseClosedError') return;
       console.warn('[SyncEngine] Initial stale lease recovery error:', err);
     });
 
-    // Leader responds to sync requests from standby tabs
-    this.unsubSyncRequest = this.tabCoordinator.onSyncRequest(() => {
-      this.triggerSync().catch((err) => {
-        console.warn('[SyncEngine] Sync on remote request failed:', err);
+    // React immediately when this tab is promoted to leader
+    if (typeof this.tabCoordinator?.onLeadershipChange === 'function') {
+      this.unsubLeadershipChange = this.tabCoordinator.onLeadershipChange((isLeader) => {
+        if (isLeader && !this.isDestroyed) {
+          this.triggerSync().catch((err) => {
+            if (!this.isDestroyed && err?.name !== 'DatabaseClosedError') {
+              console.warn('[SyncEngine] Sync on leadership election failed:', err);
+            }
+          });
+        }
       });
-    });
+    }
+
+    // Leader responds to sync requests from standby tabs
+    if (typeof this.tabCoordinator?.onSyncRequest === 'function') {
+      this.unsubSyncRequest = this.tabCoordinator.onSyncRequest(() => {
+        this.triggerSync().catch((err) => {
+          console.warn('[SyncEngine] Sync on remote request failed:', err);
+        });
+      });
+    }
   }
 
   private setupNetworkListeners(): void {
@@ -141,6 +138,10 @@ export class SyncEngine {
     if (this.unsubSyncRequest) {
       this.unsubSyncRequest();
       this.unsubSyncRequest = undefined;
+    }
+    if (this.unsubLeadershipChange) {
+      this.unsubLeadershipChange();
+      this.unsubLeadershipChange = undefined;
     }
     if (typeof window !== 'undefined') {
       if (this.onlineHandler) window.removeEventListener('online', this.onlineHandler);
@@ -261,8 +262,12 @@ export class SyncEngine {
 
       if (this.isDestroyed) return;
 
-      // Reclaim any stalled or crashed leases prior to processing the drain batch
-      await this.outboxRepo.recoverStaleLeases();
+      // Reclaim any stalled or crashed leases prior to processing the drain batch.
+      // Since this tab is the elected leader, immediately recover leases orphaned by dead tabs.
+      await this.outboxRepo.recoverStaleLeases({
+        currentTabId: this.tabCoordinator?.getTabId?.(),
+        forceOrphanedByOtherTabs: true,
+      });
 
       while (true) {
         // Check network availability
@@ -293,14 +298,26 @@ export class SyncEngine {
 
             // Mutation pushed successfully
             await this.outboxRepo.markCompleted(entry.id);
-            await this.syncMetadataRepo.markSynced(
-              entry.entityType,
-              entry.entityId,
-              entry.userId,
-              serverResult?.version || null,
-              serverResult?.updated_at || new Date().toISOString(),
-              entry.localRevision
-            );
+            const { isFullySynced } = await this.syncMetadataRepo.acknowledgePush({
+              entityType: entry.entityType,
+              entityId: entry.entityId,
+              userId: entry.userId,
+              ackLocalRevision: entry.localRevision,
+              serverVersion: serverResult?.version ? String(serverResult.version) : null,
+              serverUpdatedAt: serverResult?.updated_at || new Date().toISOString(),
+              baseSnapshot: entry.payload || null,
+            });
+
+            // If there is newer local work pending for this entity, refresh its CAS baseline to the newly acknowledged server version
+            if (!isFullySynced && serverResult?.version) {
+              const pendingEntries = await this.outboxRepo.getPending(undefined, entry.userId);
+              const nextEntry = pendingEntries.find(
+                (e) => e.entityType === entry.entityType && e.entityId === entry.entityId
+              );
+              if (nextEntry) {
+                await this.outboxRepo.updateBaseServerVersion(nextEntry.id, String(serverResult.version));
+              }
+            }
 
             this.lastSyncedAt = new Date();
           } catch (err: any) {

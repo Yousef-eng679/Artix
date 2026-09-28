@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from './useAuth';
+import { useUserSyncRuntime } from '@/contexts/UserSyncRuntimeContext';
 import { WorkspaceFolder } from '@/types/workspace';
 import { WorkspaceFolderRepository } from '@/lib/repositories/folderRepository';
 import { OutboxRepository } from '@/lib/repositories/outboxRepository';
@@ -11,16 +11,19 @@ import { useMemo, useEffect } from 'react';
 export function useWorkspaceFolders(projectId?: string) {
   const { user } = useAuth();
   const queryClient = useQueryClient();
-  const userDb = useMemo(() => getUserArtixDB(user?.id), [user?.id]);
-  const outboxRepo = useMemo(() => new OutboxRepository(userDb), [userDb]);
-  const folderRepo = useMemo(() => new WorkspaceFolderRepository(userDb, outboxRepo), [userDb, outboxRepo]);
-  const coordinator = useMemo(() => getTabCoordinator(), []);
+  const runtimeContext = useUserSyncRuntime();
+
+  const userDb = useMemo(() => runtimeContext?.db || getUserArtixDB(user?.id), [runtimeContext?.db, user?.id]);
+  const outboxRepo = useMemo(() => runtimeContext?.outboxRepo || new OutboxRepository(userDb), [runtimeContext?.outboxRepo, userDb]);
+  const folderRepo = useMemo(() => runtimeContext?.folderRepo || new WorkspaceFolderRepository(userDb, outboxRepo), [runtimeContext?.folderRepo, userDb, outboxRepo]);
+  const coordinator = useMemo(() => runtimeContext?.tabCoordinator || getTabCoordinator(user?.id), [runtimeContext?.tabCoordinator, user?.id]);
 
   useEffect(() => {
-    if (user?.id) {
+    // Only run fallback migration if not managed by runtime
+    if (user?.id && !runtimeContext?.runtime) {
       migrateLegacyArtixDB(userDb, user.id).catch(() => {});
     }
-  }, [userDb, user?.id]);
+  }, [userDb, user?.id, runtimeContext?.runtime]);
 
   useEffect(() => {
     const unsub = coordinator.onCrossTabChange((event) => {
@@ -36,38 +39,7 @@ export function useWorkspaceFolders(projectId?: string) {
     queryFn: async () => {
       if (!user || !projectId) return [];
 
-      // 1. Read from local IndexedDB first
-      let localFolders = await folderRepo.listByProject(user.id, projectId);
-
-      // 2. Try fetching from Supabase (if online) to reconcile remote updates
-      try {
-        const { data, error } = await supabase
-          .from('workspace_folders')
-          .select('*')
-          .eq('project_id', projectId)
-          .eq('user_id', user.id)
-          .order('name', { ascending: true });
-
-        if (!error && data) {
-          for (const f of data) {
-            const existing = await folderRepo.getByIdIncludeDeleted(f.id);
-            if (!existing || (!existing.isDeleted && existing.name !== f.name)) {
-              await folderRepo.applyRemoteSnapshot({
-                id: f.id,
-                userId: f.user_id,
-                projectId: f.project_id,
-                name: f.name,
-                parentFolderId: f.parent_folder_id,
-                updatedAt: f.updated_at,
-                createdAt: f.created_at,
-              });
-            }
-          }
-          localFolders = await folderRepo.listByProject(user.id, projectId);
-        }
-      } catch {
-        // Offline or network error: gracefully serve localFolders from IndexedDB!
-      }
+      const localFolders = await folderRepo.listByProject(user.id, projectId);
 
       return localFolders.map((f) => ({
         id: f.id,

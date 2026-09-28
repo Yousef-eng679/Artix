@@ -1,11 +1,10 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from './useAuth';
+import { useUserSyncRuntime } from '@/contexts/UserSyncRuntimeContext';
 import { Document } from '@/components/Editor/Editor';
 import { DocumentFormat } from '@/components/Editor/languageMap';
 import { DocumentRepository } from '@/lib/repositories/documentRepository';
 import { OutboxRepository } from '@/lib/repositories/outboxRepository';
-import { getSyncEngine } from '@/lib/sync/syncEngine';
 import { getTabCoordinator } from '@/lib/sync/tabCoordinator';
 import { getUserArtixDB, migrateLegacyArtixDB } from '@/lib/local/db';
 import { useMemo, useEffect } from 'react';
@@ -13,16 +12,19 @@ import { useMemo, useEffect } from 'react';
 export function useDocuments(projectId?: string) {
   const { user } = useAuth();
   const queryClient = useQueryClient();
-  const userDb = useMemo(() => getUserArtixDB(user?.id), [user?.id]);
-  const outboxRepo = useMemo(() => new OutboxRepository(userDb), [userDb]);
-  const docRepo = useMemo(() => new DocumentRepository(userDb, outboxRepo), [userDb, outboxRepo]);
-  const coordinator = useMemo(() => getTabCoordinator(), []);
+  const runtimeContext = useUserSyncRuntime();
+
+  const userDb = useMemo(() => runtimeContext?.db || getUserArtixDB(user?.id), [runtimeContext?.db, user?.id]);
+  const outboxRepo = useMemo(() => runtimeContext?.outboxRepo || new OutboxRepository(userDb), [runtimeContext?.outboxRepo, userDb]);
+  const docRepo = useMemo(() => runtimeContext?.documentRepo || new DocumentRepository(userDb, outboxRepo), [runtimeContext?.documentRepo, userDb, outboxRepo]);
+  const coordinator = useMemo(() => runtimeContext?.tabCoordinator || getTabCoordinator(user?.id), [runtimeContext?.tabCoordinator, user?.id]);
 
   useEffect(() => {
-    if (user?.id) {
+    // Only run fallback migration if not managed by runtime
+    if (user?.id && !runtimeContext?.runtime) {
       migrateLegacyArtixDB(userDb, user.id).catch(() => {});
     }
-  }, [userDb, user?.id]);
+  }, [userDb, user?.id, runtimeContext?.runtime]);
 
   useEffect(() => {
     const unsub = coordinator.onCrossTabChange((event) => {
@@ -38,60 +40,7 @@ export function useDocuments(projectId?: string) {
     queryFn: async () => {
       if (!user) return [];
 
-      // 1. Read from local IndexedDB first
-      let localDocs = await docRepo.listByProject(user.id, projectId ?? null);
-
-      // 2. Try fetching from Supabase (if online) to reconcile remote updates
-      try {
-        let builder = supabase
-          .from('documents')
-          .select('*')
-          .eq('user_id', user.id);
-
-        if (projectId) {
-          builder = builder.eq('project_id', projectId);
-        } else {
-          builder = builder.is('project_id', null);
-        }
-
-        const { data, error } = await builder.order('updated_at', { ascending: false });
-        if (!error && data) {
-          for (const remote of data) {
-            const existing = await docRepo.getByIdIncludeDeleted(remote.id);
-            if (!existing) {
-              await docRepo.applyRemoteSnapshot({
-                id: remote.id,
-                userId: remote.user_id,
-                projectId: remote.project_id,
-                folderId: remote.folder_id,
-                title: remote.title,
-                content: remote.content,
-                format: remote.format as DocumentFormat,
-                updatedAt: remote.updated_at,
-                createdAt: remote.created_at,
-              });
-            } else if (!existing.isDeleted && existing.localRevision <= 1) {
-              if (new Date(remote.updated_at).getTime() > new Date(existing.updatedAt).getTime()) {
-                await docRepo.applyRemoteSnapshot({
-                  id: remote.id,
-                  userId: remote.user_id,
-                  projectId: remote.project_id,
-                  folderId: remote.folder_id,
-                  title: remote.title,
-                  content: remote.content,
-                  format: remote.format as DocumentFormat,
-                  updatedAt: remote.updated_at,
-                  createdAt: remote.created_at,
-                });
-              }
-            }
-          }
-          // Re-query local IndexedDB after remote reconciliation
-          localDocs = await docRepo.listByProject(user.id, projectId ?? null);
-        }
-      } catch {
-        // Offline or network error: gracefully serve localDocs from IndexedDB!
-      }
+      const localDocs = await docRepo.listByProject(user.id, projectId ?? null);
 
       return localDocs.map((doc) => ({
         id: doc.id,
@@ -110,7 +59,7 @@ export function useDocuments(projectId?: string) {
     mutationFn: async (args?: string | { projectId?: string; title?: string; folderId?: string | null }) => {
       if (!user) throw new Error('Not authenticated');
 
-      const targetProjectId = typeof args === 'string' ? args : args?.projectId;
+      const targetProjectId = (typeof args === 'string' ? args : args?.projectId) || projectId;
       const title = typeof args === 'string' ? 'Untitled Document' : (args?.title || 'Untitled Document');
       const folderId = typeof args === 'object' ? args?.folderId : null;
 

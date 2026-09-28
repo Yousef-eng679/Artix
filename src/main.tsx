@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter } from "react-router-dom";
 import { AuthProvider } from "@/hooks/useAuth";
+import { UserSyncRuntimeProvider } from "@/contexts/UserSyncRuntimeContext";
 import { ThemeProvider } from "@/hooks/useTheme";
 import App from "./App.tsx";
 import "./index.css";
@@ -31,9 +32,11 @@ createRoot(document.getElementById("root")!).render(
     <QueryClientProvider client={queryClient}>
       <BrowserRouter>
         <AuthProvider>
-          <ThemeProvider>
-            <App />
-          </ThemeProvider>
+          <UserSyncRuntimeProvider>
+            <ThemeProvider>
+              <App />
+            </ThemeProvider>
+          </UserSyncRuntimeProvider>
         </AuthProvider>
       </BrowserRouter>
     </QueryClientProvider>

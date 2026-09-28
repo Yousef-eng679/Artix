@@ -56,10 +56,26 @@ export class WorkspaceFolderRepository {
    * Applies an authoritative remote snapshot from Supabase into local IndexedDB.
    * Updates entity store and sync metadata (marking synced) with ZERO outbox entries.
    */
-  async applyRemoteSnapshot(snapshot: RemoteWorkspaceFolderSnapshot): Promise<LocalWorkspaceFolder> {
-    return await this.db.transaction('rw', [this.db.workspace_folders, this.db.sync_metadata], async () => {
+  async applyRemoteSnapshot(snapshot: RemoteWorkspaceFolderSnapshot, options?: { force?: boolean }): Promise<LocalWorkspaceFolder> {
+    return await this.db.transaction('rw', [this.db.workspace_folders, this.db.outbox, this.db.sync_metadata], async () => {
       const now = new Date().toISOString();
       const existing = await this.db.workspace_folders.get(snapshot.id);
+
+      // Defense-in-depth: do not overwrite active local pending intent unless forced
+      if (!options?.force) {
+        const outboxEntries = await this.db.outbox
+          .where('[userId+entityType+entityId]')
+          .equals([snapshot.userId, 'workspace_folder', snapshot.id])
+          .toArray();
+
+        const activeOutbox = outboxEntries.find(
+          (e) => e.state === 'pending' || e.state === 'in_flight' || e.state === 'blocked'
+        );
+
+        if (activeOutbox && existing) {
+          return existing;
+        }
+      }
 
       const folder: LocalWorkspaceFolder = {
         id: snapshot.id,
@@ -81,7 +97,7 @@ export class WorkspaceFolderRepository {
         entityId: folder.id,
         userId: folder.userId,
         syncState: 'synced',
-        serverVersion: snapshot.serverVersion ?? null,
+        serverVersion: snapshot.serverVersion ? String(snapshot.serverVersion) : null,
         serverUpdatedAt: snapshot.updatedAt ?? null,
         localRevision: folder.localRevision,
         lastSyncedAt: Date.now(),
@@ -218,6 +234,12 @@ export class WorkspaceFolderRepository {
 
       await this.db.workspace_folders.put(folder);
 
+      let baseServerVersion: string | null = null;
+      const existingMeta = await this.db.sync_metadata.get(`workspace_folder:${id}`);
+      if (existingMeta?.serverVersion) {
+        baseServerVersion = existingMeta.serverVersion;
+      }
+
       if (this.outboxRepo) {
         await this.outboxRepo.enqueueInTx({
           userId: folder.userId,
@@ -227,6 +249,7 @@ export class WorkspaceFolderRepository {
           operation: 'update',
           payload: { name: folder.name },
           localRevision: folder.localRevision,
+          baseServerVersion,
         });
       }
 
@@ -292,6 +315,12 @@ export class WorkspaceFolderRepository {
 
       await this.db.workspace_folders.put(folder);
 
+      let updateBaseServerVersion: string | null = null;
+      const existingUpdateMeta = await this.db.sync_metadata.get(`workspace_folder:${id}`);
+      if (existingUpdateMeta?.serverVersion) {
+        updateBaseServerVersion = existingUpdateMeta.serverVersion;
+      }
+
       if (this.outboxRepo) {
         await this.outboxRepo.enqueueInTx({
           userId: folder.userId,
@@ -301,6 +330,7 @@ export class WorkspaceFolderRepository {
           operation: 'update',
           payload: updates,
           localRevision: folder.localRevision,
+          baseServerVersion: updateBaseServerVersion,
         });
       }
 
@@ -331,6 +361,12 @@ export class WorkspaceFolderRepository {
 
       await this.db.workspace_folders.put(softDeleted);
 
+      let deleteBaseServerVersion: string | null = null;
+      const existingDeleteMeta = await this.db.sync_metadata.get(`workspace_folder:${id}`);
+      if (existingDeleteMeta?.serverVersion) {
+        deleteBaseServerVersion = existingDeleteMeta.serverVersion;
+      }
+
       if (this.outboxRepo && !options?.skipOutbox) {
         await this.outboxRepo.enqueueInTx({
           userId: softDeleted.userId,
@@ -338,8 +374,9 @@ export class WorkspaceFolderRepository {
           entityType: 'workspace_folder',
           entityId: softDeleted.id,
           operation: 'delete',
-          payload: null,
+          payload: { parentFolderId: softDeleted.parentFolderId },
           localRevision: softDeleted.localRevision,
+          baseServerVersion: deleteBaseServerVersion,
         });
       }
 
@@ -374,6 +411,12 @@ export class WorkspaceFolderRepository {
 
       await this.db.workspace_folders.put(restored);
 
+      let restoreBaseServerVersion: string | null = null;
+      const existingRestoreMeta = await this.db.sync_metadata.get(`workspace_folder:${id}`);
+      if (existingRestoreMeta?.serverVersion) {
+        restoreBaseServerVersion = existingRestoreMeta.serverVersion;
+      }
+
       if (this.outboxRepo) {
         await this.outboxRepo.enqueueInTx({
           userId: restored.userId,
@@ -386,6 +429,7 @@ export class WorkspaceFolderRepository {
             parentFolderId: restored.parentFolderId,
           },
           localRevision: restored.localRevision,
+          baseServerVersion: restoreBaseServerVersion,
         });
       }
 
@@ -401,3 +445,5 @@ export class WorkspaceFolderRepository {
     });
   }
 }
+
+export { WorkspaceFolderRepository as FolderRepository };

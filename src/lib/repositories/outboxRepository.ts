@@ -10,6 +10,7 @@ export interface EnqueueOutboxParams {
   payload: unknown;
   localRevision: number;
   baseServerVersion?: string | null;
+  mutationId?: string;
 }
 
 export class OutboxRepository {
@@ -36,11 +37,14 @@ export class OutboxRepository {
     const now = Date.now();
 
     if (existing) {
+      const stableMutationId = existing.mutationId || existing.id || crypto.randomUUID();
+
       // Case 1: create + update -> keep as create, merge payload
       if (existing.operation === 'create' && params.operation === 'update') {
         const mergedPayload = this.mergePayloads(existing.payload, params.payload);
         const updated: OutboxEntry = {
           ...existing,
+          mutationId: stableMutationId,
           payload: mergedPayload,
           localRevision: Math.max(existing.localRevision, params.localRevision),
           updatedAt: now,
@@ -60,6 +64,8 @@ export class OutboxRepository {
         const mergedPayload = this.mergePayloads(existing.payload, params.payload);
         const updated: OutboxEntry = {
           ...existing,
+          mutationId: stableMutationId,
+          baseServerVersion: existing.baseServerVersion ?? params.baseServerVersion ?? null,
           payload: mergedPayload,
           localRevision: Math.max(existing.localRevision, params.localRevision),
           updatedAt: now,
@@ -72,7 +78,9 @@ export class OutboxRepository {
       if (existing.operation === 'update' && params.operation === 'delete') {
         const updated: OutboxEntry = {
           ...existing,
+          mutationId: stableMutationId,
           operation: 'delete',
+          baseServerVersion: existing.baseServerVersion ?? params.baseServerVersion ?? null,
           payload: params.payload ?? null,
           localRevision: Math.max(existing.localRevision, params.localRevision),
           updatedAt: now,
@@ -85,11 +93,27 @@ export class OutboxRepository {
       if (existing.operation === 'delete' && params.operation === 'delete') {
         return existing;
       }
+
+      // Case 6: existing is delete and incoming is update -> explicit restore/un-delete
+      if (existing.operation === 'delete' && params.operation === 'update') {
+        const updated: OutboxEntry = {
+          ...existing,
+          mutationId: stableMutationId,
+          operation: 'update',
+          baseServerVersion: existing.baseServerVersion ?? params.baseServerVersion ?? null,
+          payload: params.payload ?? null,
+          localRevision: Math.max(existing.localRevision, params.localRevision),
+          updatedAt: now,
+        };
+        await this.db.outbox.put(updated);
+        return updated;
+      }
     }
 
     // No compactable pending entry found; append new entry
     const newEntry: OutboxEntry = {
       id: crypto.randomUUID(),
+      mutationId: params.mutationId || crypto.randomUUID(),
       userId: params.userId,
       projectId: params.projectId,
       entityType: params.entityType,
@@ -199,10 +223,26 @@ export class OutboxRepository {
 
   /**
    * Reclaims stale 'in_flight' entries whose lease has expired,
+   * or entries orphaned by other crashed tabs when promoted to leader,
    * restoring them back to 'pending' state so they can be re-synchronized.
-   * Useful on SyncEngine startup or before draining outbox.
+   * Useful on SyncEngine startup, leadership election, or before draining outbox.
    */
-  async recoverStaleLeases(now = Date.now()): Promise<number> {
+  async recoverStaleLeases(
+    optionsOrNow?:
+      | number
+      | {
+          now?: number;
+          forceOrphanedByOtherTabs?: boolean;
+          currentTabId?: string;
+        }
+  ): Promise<number> {
+    const opts =
+      typeof optionsOrNow === 'number'
+        ? { now: optionsOrNow }
+        : optionsOrNow || {};
+    const now = opts.now ?? Date.now();
+    const { forceOrphanedByOtherTabs, currentTabId } = opts;
+
     return await this.db.transaction('rw', this.db.outbox, async () => {
       const inFlightEntries = await this.db.outbox
         .where('state')
@@ -211,7 +251,14 @@ export class OutboxRepository {
 
       let recoveredCount = 0;
       for (const entry of inFlightEntries) {
-        if (!entry.leaseExpiresAt || entry.leaseExpiresAt <= now) {
+        const isStaleByTime = !entry.leaseExpiresAt || entry.leaseExpiresAt <= now;
+        const isOrphanedByOtherTab =
+          Boolean(forceOrphanedByOtherTabs) &&
+          Boolean(currentTabId) &&
+          Boolean(entry.leaseOwner) &&
+          entry.leaseOwner !== currentTabId;
+
+        if (isStaleByTime || isOrphanedByOtherTab) {
           await this.db.outbox.update(entry.id, {
             state: 'pending',
             leaseOwner: null,
@@ -286,6 +333,16 @@ export class OutboxRepository {
   async countPending(userId?: string): Promise<number> {
     const entries = await this.getPending(undefined, userId);
     return entries.length;
+  }
+
+  /**
+   * Updates baseServerVersion for a pending outbox entry (e.g. after previous mutation in pipeline succeeded).
+   */
+  async updateBaseServerVersion(id: string, baseServerVersion: string): Promise<void> {
+    await this.db.outbox.update(id, {
+      baseServerVersion,
+      updatedAt: Date.now(),
+    });
   }
 
   /**

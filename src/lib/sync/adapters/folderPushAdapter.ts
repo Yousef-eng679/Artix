@@ -1,9 +1,13 @@
 import { OutboxEntry } from '@/lib/local/types';
 import { EntityPushAdapter, PushResult } from './types';
-import { withTimeout } from '../syncEngine';
+import { withTimeout } from '../transportTimeout';
+import { checkIdempotency, recordIdempotency } from './idempotency';
 
 export class WorkspaceFolderPushAdapter implements EntityPushAdapter {
   async push(entry: OutboxEntry, supabase: any): Promise<PushResult | null> {
+    const cached = await checkIdempotency(entry, supabase);
+    if (cached) return cached;
+
     const { entityId, operation, payload, userId, projectId } = entry;
     const body = (payload as Record<string, any>) || {};
 
@@ -24,10 +28,12 @@ export class WorkspaceFolderPushAdapter implements EntityPushAdapter {
       );
 
       if (error) throw error;
-      return {
+      const result: PushResult = {
         version: data?.version !== undefined ? String(data.version) : undefined,
         updated_at: data?.updated_at,
       };
+      await recordIdempotency(entry, result, supabase);
+      return result;
     }
 
     if (operation === 'update') {
@@ -69,10 +75,12 @@ export class WorkspaceFolderPushAdapter implements EntityPushAdapter {
         throw conflictErr;
       }
 
-      return {
+      const result: PushResult = {
         version: data?.version !== undefined ? String(data.version) : undefined,
         updated_at: data?.updated_at,
       };
+      await recordIdempotency(entry, result, supabase);
+      return result;
     }
 
     if (operation === 'delete') {
@@ -83,8 +91,31 @@ export class WorkspaceFolderPushAdapter implements EntityPushAdapter {
           query = query.eq('version', baseVer);
         }
       }
-      const { error } = await withTimeout(query);
+      const selectBuilder = typeof query.select === 'function' ? query.select('id') : query;
+      const { data, error } = await withTimeout(selectBuilder);
       if (error) throw error;
+
+      if (entry.baseServerVersion && (data === null || (Array.isArray(data) && data.length === 0))) {
+        try {
+          const checkQuery = supabase.from('workspace_folders').select('version').eq('id', entityId);
+          const executeCheck = typeof checkQuery?.maybeSingle === 'function'
+            ? checkQuery.maybeSingle()
+            : (typeof checkQuery?.single === 'function' ? checkQuery.single() : checkQuery);
+          const { data: remoteRow } = await executeCheck;
+          if (remoteRow && remoteRow.version !== undefined) {
+            const conflictErr = new Error(
+              `Conflict detected: folder '${entityId}' was modified remotely before delete (base version ${entry.baseServerVersion} mismatched)`
+            );
+            (conflictErr as any).status = 409;
+            (conflictErr as any).code = 'CONFLICT';
+            throw conflictErr;
+          }
+        } catch (fetchErr: any) {
+          if (fetchErr.status === 409 || fetchErr.code === 'CONFLICT') throw fetchErr;
+        }
+      }
+
+      await recordIdempotency(entry, null, supabase);
       return null;
     }
 
