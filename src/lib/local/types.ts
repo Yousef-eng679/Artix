@@ -7,7 +7,7 @@ export type OutboxOperation = 'create' | 'update' | 'delete';
 
 export type OutboxState = 'pending' | 'in_flight' | 'blocked' | 'failed';
 
-export type SyncState = 'synced' | 'pending' | 'syncing' | 'conflict' | 'error';
+export type SyncState = 'synced' | 'pending' | 'syncing' | 'conflict' | 'error' | 'deleted_pending' | 'deleted_synced';
 
 export interface LocalDocument {
   id: string;

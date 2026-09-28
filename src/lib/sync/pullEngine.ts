@@ -163,17 +163,39 @@ export class PullEngine {
               : (syncMeta?.serverVersion ? parseInt(syncMeta.serverVersion, 10) : 0);
             const remoteVersion = version !== undefined && version !== null ? parseInt(String(version), 10) : 0;
 
+            if (activeOutbox.operation === 'delete' && operation === 'delete') {
+              // Concurrent delete convergence: both sides deleted it!
+              // Remove pending outbox delete and mark sync metadata deleted_synced
+              await this.db.outbox.delete(activeOutbox.id);
+              if (entityType === 'document') {
+                await this.documentRepo.delete(entityId, { skipOutbox: true });
+              } else if (entityType === 'workspace_folder') {
+                await this.folderRepo.delete(entityId, { skipOutbox: true });
+              } else if (entityType === 'system_design') {
+                await this.systemDesignRepo.delete(entityId, { skipOutbox: true });
+              }
+              await this.syncMetadataRepo.upsertInTx({
+                entityType,
+                entityId,
+                userId,
+                syncState: 'deleted_synced',
+                serverVersion: version !== undefined && version !== null ? String(version) : syncMeta?.serverVersion ?? null,
+                serverUpdatedAt: change.changed_at,
+              });
+              continue;
+            }
+
             const isNewerRemote = remoteVersion > baselineVersion || operation === 'delete';
 
             if (isNewerRemote) {
-              // Concurrent modification detected: local draft must NOT be overwritten!
+              // Concurrent modification detected: local draft/intent must NOT be overwritten!
               const conflictRecord: ConflictRecord = {
                 id: crypto.randomUUID(),
                 entityType,
                 entityId,
                 userId,
                 basePayload: syncMeta?.baseSnapshot ?? null,
-                localPayload: activeOutbox.payload,
+                localPayload: activeOutbox.operation === 'delete' ? { deleted: true } : activeOutbox.payload,
                 remotePayload: operation === 'delete' ? { deleted: true } : payload,
                 detectedAt: Date.now(),
                 resolvedAt: null,
@@ -202,6 +224,18 @@ export class PullEngine {
             }
           } else {
             // Clean application of remote change
+            let localEntity: { isDeleted?: boolean } | null = null;
+            if (entityType === 'document') {
+              localEntity = (await this.db.documents.get(entityId)) ?? null;
+            } else if (entityType === 'workspace_folder') {
+              localEntity = (await this.db.workspace_folders.get(entityId)) ?? null;
+            } else if (entityType === 'system_design') {
+              localEntity = (await this.db.system_designs.get(entityId)) ?? null;
+            }
+
+            const syncMetaId = `${entityType}:${entityId}`;
+            const syncMeta = await this.db.sync_metadata.get(syncMetaId);
+
             if (operation === 'delete') {
               if (entityType === 'document') {
                 await this.documentRepo.delete(entityId, { skipOutbox: true });
@@ -210,7 +244,26 @@ export class PullEngine {
               } else if (entityType === 'system_design') {
                 await this.systemDesignRepo.delete(entityId, { skipOutbox: true });
               }
+              await this.syncMetadataRepo.upsertInTx({
+                entityType,
+                entityId,
+                userId,
+                syncState: 'deleted_synced',
+                serverVersion: version !== undefined && version !== null ? String(version) : syncMeta?.serverVersion ?? null,
+                serverUpdatedAt: change.changed_at,
+              });
             } else {
+              // Remote operation is create or update
+              if (localEntity?.isDeleted) {
+                // Entity is locally deleted. Check if remote version is stale!
+                const baselineVersion = syncMeta?.serverVersion ? parseInt(syncMeta.serverVersion, 10) : 0;
+                const remoteVersion = version !== undefined && version !== null ? parseInt(String(version), 10) : 0;
+                if (remoteVersion <= baselineVersion) {
+                  // Stale remote update arriving for an already confirmed tombstone!
+                  // NON-RESURRECTION INVARIANT: Do not resurrect!
+                  continue;
+                }
+              }
               // 'create' or 'update'
               if (entityType === 'document') {
                 const snapshot: RemoteDocumentSnapshot = {
