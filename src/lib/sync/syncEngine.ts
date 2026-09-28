@@ -271,15 +271,26 @@ export class SyncEngine {
 
             // Mutation pushed successfully
             await this.outboxRepo.markCompleted(entry.id);
-            await this.syncMetadataRepo.markSynced(
-              entry.entityType,
-              entry.entityId,
-              entry.userId,
-              serverResult?.version || null,
-              serverResult?.updated_at || new Date().toISOString(),
-              entry.localRevision,
-              entry.payload || null
-            );
+            const { isFullySynced } = await this.syncMetadataRepo.acknowledgePush({
+              entityType: entry.entityType,
+              entityId: entry.entityId,
+              userId: entry.userId,
+              ackLocalRevision: entry.localRevision,
+              serverVersion: serverResult?.version ? String(serverResult.version) : null,
+              serverUpdatedAt: serverResult?.updated_at || new Date().toISOString(),
+              baseSnapshot: entry.payload || null,
+            });
+
+            // If there is newer local work pending for this entity, refresh its CAS baseline to the newly acknowledged server version
+            if (!isFullySynced && serverResult?.version) {
+              const pendingEntries = await this.outboxRepo.getPending(undefined, entry.userId);
+              const nextEntry = pendingEntries.find(
+                (e) => e.entityType === entry.entityType && e.entityId === entry.entityId
+              );
+              if (nextEntry) {
+                await this.outboxRepo.updateBaseServerVersion(nextEntry.id, String(serverResult.version));
+              }
+            }
 
             this.lastSyncedAt = new Date();
           } catch (err: any) {

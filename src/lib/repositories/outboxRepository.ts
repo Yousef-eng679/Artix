@@ -298,6 +298,16 @@ export class OutboxRepository {
   }
 
   /**
+   * Updates baseServerVersion for a pending outbox entry (e.g. after previous mutation in pipeline succeeded).
+   */
+  async updateBaseServerVersion(id: string, baseServerVersion: string): Promise<void> {
+    await this.db.outbox.update(id, {
+      baseServerVersion,
+      updatedAt: Date.now(),
+    });
+  }
+
+  /**
    * Clears outbox entries (useful in testing or manual sync resets).
    */
   async clear(userId?: string): Promise<void> {
