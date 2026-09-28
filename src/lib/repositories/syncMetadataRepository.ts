@@ -82,7 +82,8 @@ export class SyncMetadataRepository {
     userId: string,
     serverVersion?: string | null,
     serverUpdatedAt?: string | null,
-    localRevision?: number
+    localRevision?: number,
+    baseSnapshot?: unknown | null
   ): Promise<SyncMetadata> {
     return await this.upsert({
       entityType,
@@ -93,6 +94,7 @@ export class SyncMetadataRepository {
       serverUpdatedAt,
       localRevision,
       lastSyncedAt: Date.now(),
+      baseSnapshot,
     });
   }
 

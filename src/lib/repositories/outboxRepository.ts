@@ -65,6 +65,7 @@ export class OutboxRepository {
         const updated: OutboxEntry = {
           ...existing,
           mutationId: stableMutationId,
+          baseServerVersion: existing.baseServerVersion ?? params.baseServerVersion ?? null,
           payload: mergedPayload,
           localRevision: Math.max(existing.localRevision, params.localRevision),
           updatedAt: now,
@@ -79,6 +80,7 @@ export class OutboxRepository {
           ...existing,
           mutationId: stableMutationId,
           operation: 'delete',
+          baseServerVersion: existing.baseServerVersion ?? params.baseServerVersion ?? null,
           payload: params.payload ?? null,
           localRevision: Math.max(existing.localRevision, params.localRevision),
           updatedAt: now,

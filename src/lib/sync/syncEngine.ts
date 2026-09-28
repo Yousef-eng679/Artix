@@ -277,7 +277,8 @@ export class SyncEngine {
               entry.userId,
               serverResult?.version || null,
               serverResult?.updated_at || new Date().toISOString(),
-              entry.localRevision
+              entry.localRevision,
+              entry.payload || null
             );
 
             this.lastSyncedAt = new Date();

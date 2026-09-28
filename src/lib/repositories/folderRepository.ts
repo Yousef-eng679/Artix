@@ -218,6 +218,12 @@ export class WorkspaceFolderRepository {
 
       await this.db.workspace_folders.put(folder);
 
+      let baseServerVersion: string | null = null;
+      const existingMeta = await this.db.sync_metadata.get(`workspace_folder:${id}`);
+      if (existingMeta?.serverVersion) {
+        baseServerVersion = existingMeta.serverVersion;
+      }
+
       if (this.outboxRepo) {
         await this.outboxRepo.enqueueInTx({
           userId: folder.userId,
@@ -227,6 +233,7 @@ export class WorkspaceFolderRepository {
           operation: 'update',
           payload: { name: folder.name },
           localRevision: folder.localRevision,
+          baseServerVersion,
         });
       }
 
@@ -292,6 +299,12 @@ export class WorkspaceFolderRepository {
 
       await this.db.workspace_folders.put(folder);
 
+      let updateBaseServerVersion: string | null = null;
+      const existingUpdateMeta = await this.db.sync_metadata.get(`workspace_folder:${id}`);
+      if (existingUpdateMeta?.serverVersion) {
+        updateBaseServerVersion = existingUpdateMeta.serverVersion;
+      }
+
       if (this.outboxRepo) {
         await this.outboxRepo.enqueueInTx({
           userId: folder.userId,
@@ -301,6 +314,7 @@ export class WorkspaceFolderRepository {
           operation: 'update',
           payload: updates,
           localRevision: folder.localRevision,
+          baseServerVersion: updateBaseServerVersion,
         });
       }
 
@@ -331,6 +345,12 @@ export class WorkspaceFolderRepository {
 
       await this.db.workspace_folders.put(softDeleted);
 
+      let deleteBaseServerVersion: string | null = null;
+      const existingDeleteMeta = await this.db.sync_metadata.get(`workspace_folder:${id}`);
+      if (existingDeleteMeta?.serverVersion) {
+        deleteBaseServerVersion = existingDeleteMeta.serverVersion;
+      }
+
       if (this.outboxRepo && !options?.skipOutbox) {
         await this.outboxRepo.enqueueInTx({
           userId: softDeleted.userId,
@@ -340,6 +360,7 @@ export class WorkspaceFolderRepository {
           operation: 'delete',
           payload: null,
           localRevision: softDeleted.localRevision,
+          baseServerVersion: deleteBaseServerVersion,
         });
       }
 
@@ -374,6 +395,12 @@ export class WorkspaceFolderRepository {
 
       await this.db.workspace_folders.put(restored);
 
+      let restoreBaseServerVersion: string | null = null;
+      const existingRestoreMeta = await this.db.sync_metadata.get(`workspace_folder:${id}`);
+      if (existingRestoreMeta?.serverVersion) {
+        restoreBaseServerVersion = existingRestoreMeta.serverVersion;
+      }
+
       if (this.outboxRepo) {
         await this.outboxRepo.enqueueInTx({
           userId: restored.userId,
@@ -386,6 +413,7 @@ export class WorkspaceFolderRepository {
             parentFolderId: restored.parentFolderId,
           },
           localRevision: restored.localRevision,
+          baseServerVersion: restoreBaseServerVersion,
         });
       }
 
@@ -401,3 +429,5 @@ export class WorkspaceFolderRepository {
     });
   }
 }
+
+export { WorkspaceFolderRepository as FolderRepository };

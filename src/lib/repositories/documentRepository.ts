@@ -213,6 +213,12 @@ export class DocumentRepository {
 
       await this.db.documents.put(doc);
 
+      let baseServerVersion: string | null = null;
+      const existingMeta = await this.db.sync_metadata.get(`document:${id}`);
+      if (existingMeta?.serverVersion) {
+        baseServerVersion = existingMeta.serverVersion;
+      }
+
       if (this.outboxRepo) {
         await this.outboxRepo.enqueueInTx({
           userId: doc.userId,
@@ -222,6 +228,7 @@ export class DocumentRepository {
           operation: 'update',
           payload: updates,
           localRevision: doc.localRevision,
+          baseServerVersion,
         });
       }
 
@@ -252,6 +259,12 @@ export class DocumentRepository {
 
       await this.db.documents.put(softDeleted);
 
+      let baseServerVersion: string | null = null;
+      const existingMeta = await this.db.sync_metadata.get(`document:${id}`);
+      if (existingMeta?.serverVersion) {
+        baseServerVersion = existingMeta.serverVersion;
+      }
+
       if (this.outboxRepo && !options?.skipOutbox) {
         await this.outboxRepo.enqueueInTx({
           userId: softDeleted.userId,
@@ -261,6 +274,7 @@ export class DocumentRepository {
           operation: 'delete',
           payload: null,
           localRevision: softDeleted.localRevision,
+          baseServerVersion,
         });
       }
 

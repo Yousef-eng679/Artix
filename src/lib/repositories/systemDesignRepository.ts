@@ -206,6 +206,12 @@ export class SystemDesignRepository {
 
       await this.db.system_designs.put(doc);
 
+      let baseServerVersion: string | null = null;
+      const existingMeta = await this.db.sync_metadata.get(`system_design:${id}`);
+      if (existingMeta?.serverVersion) {
+        baseServerVersion = existingMeta.serverVersion;
+      }
+
       if (this.outboxRepo) {
         await this.outboxRepo.enqueueInTx({
           userId: doc.userId,
@@ -215,6 +221,7 @@ export class SystemDesignRepository {
           operation: 'update',
           payload: updates,
           localRevision: doc.localRevision,
+          baseServerVersion,
         });
       }
 
@@ -245,6 +252,12 @@ export class SystemDesignRepository {
 
       await this.db.system_designs.put(softDeleted);
 
+      let baseServerVersion: string | null = null;
+      const existingMeta = await this.db.sync_metadata.get(`system_design:${id}`);
+      if (existingMeta?.serverVersion) {
+        baseServerVersion = existingMeta.serverVersion;
+      }
+
       if (this.outboxRepo && !options?.skipOutbox) {
         await this.outboxRepo.enqueueInTx({
           userId: softDeleted.userId,
@@ -254,6 +267,7 @@ export class SystemDesignRepository {
           operation: 'delete',
           payload: null,
           localRevision: softDeleted.localRevision,
+          baseServerVersion,
         });
       }
 
