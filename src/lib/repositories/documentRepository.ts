@@ -1,8 +1,9 @@
 import { ArtixDB, getArtixDB } from '../local/db';
-import { LocalDocument } from '../local/types';
+import { LocalDocument, RemoteDocumentSnapshot } from '../local/types';
 import { EntityNotFoundError } from '../local/errors';
 import { DocumentFormat } from '@/components/Editor/languageMap';
 import { OutboxRepository } from './outboxRepository';
+import { SyncMetadataRepository } from './syncMetadataRepository';
 
 export interface CreateDocumentDTO {
   id?: string;
@@ -23,10 +24,18 @@ export interface UpdateDocumentDTO {
 }
 
 export class DocumentRepository {
+  private syncMetadataRepo: SyncMetadataRepository;
+
   constructor(
     private db: ArtixDB = getArtixDB(),
-    private outboxRepo?: OutboxRepository
-  ) {}
+    private outboxRepo?: OutboxRepository,
+    syncMetadataRepo?: SyncMetadataRepository
+  ) {
+    this.syncMetadataRepo = syncMetadataRepo || new SyncMetadataRepository(this.db);
+    if (!this.outboxRepo) {
+      this.outboxRepo = new OutboxRepository(this.db);
+    }
+  }
 
   async getById(id: string): Promise<LocalDocument | null> {
     const doc = await this.db.documents.get(id);
@@ -64,46 +73,124 @@ export class DocumentRepository {
     return docs.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
   }
 
-  async create(dto: CreateDocumentDTO, options?: { skipOutbox?: boolean }): Promise<LocalDocument> {
-    const now = new Date().toISOString();
-    const doc: LocalDocument = {
-      id: dto.id || crypto.randomUUID(),
-      userId: dto.userId,
-      projectId: dto.projectId ?? null,
-      folderId: dto.folderId ?? null,
-      title: dto.title || 'Untitled Document',
-      content: dto.content || '',
-      format: dto.format || 'markdown',
-      createdAt: now,
-      updatedAt: now,
-      localRevision: 1,
-      isDeleted: false,
-    };
+  /**
+   * Applies an authoritative remote snapshot from Supabase into local IndexedDB.
+   * Updates entity store and sync metadata (marking synced) with ZERO outbox entries.
+   */
+  async applyRemoteSnapshot(snapshot: RemoteDocumentSnapshot): Promise<LocalDocument> {
+    return await this.db.transaction('rw', [this.db.documents, this.db.sync_metadata], async () => {
+      const now = new Date().toISOString();
+      const existing = await this.db.documents.get(snapshot.id);
 
-    await this.db.documents.add(doc);
+      const doc: LocalDocument = {
+        id: snapshot.id,
+        userId: snapshot.userId,
+        projectId: snapshot.projectId ?? existing?.projectId ?? null,
+        folderId: snapshot.folderId !== undefined ? snapshot.folderId : (existing?.folderId ?? null),
+        title: snapshot.title ?? existing?.title ?? 'Untitled Document',
+        content: snapshot.content ?? existing?.content ?? '',
+        format: snapshot.format || existing?.format || 'markdown',
+        createdAt: snapshot.createdAt || existing?.createdAt || now,
+        updatedAt: snapshot.updatedAt || now,
+        localRevision: existing ? existing.localRevision : 1,
+        isDeleted: false,
+        deletedAt: null,
+      };
 
-    if (this.outboxRepo && !options?.skipOutbox) {
-      await this.outboxRepo.enqueue({
-        userId: doc.userId,
-        projectId: doc.projectId,
+      await this.db.documents.put(doc);
+
+      await this.syncMetadataRepo.upsertInTx({
         entityType: 'document',
         entityId: doc.id,
-        operation: 'create',
-        payload: {
-          title: doc.title,
-          content: doc.content,
-          format: doc.format,
-          folderId: doc.folderId,
-        },
+        userId: doc.userId,
+        syncState: 'synced',
+        serverVersion: snapshot.serverVersion ?? null,
+        serverUpdatedAt: snapshot.updatedAt ?? null,
         localRevision: doc.localRevision,
+        lastSyncedAt: Date.now(),
+        baseSnapshot: snapshot,
+      });
+
+      return doc;
+    });
+  }
+
+  async create(dto: CreateDocumentDTO, options?: { skipOutbox?: boolean }): Promise<LocalDocument> {
+    if (options?.skipOutbox) {
+      return this.applyRemoteSnapshot({
+        id: dto.id || crypto.randomUUID(),
+        userId: dto.userId,
+        projectId: dto.projectId,
+        folderId: dto.folderId,
+        title: dto.title || 'Untitled Document',
+        content: dto.content || '',
+        format: dto.format || 'markdown',
       });
     }
 
-    return doc;
+    return await this.db.transaction('rw', [this.db.documents, this.db.outbox, this.db.sync_metadata], async () => {
+      const now = new Date().toISOString();
+      const doc: LocalDocument = {
+        id: dto.id || crypto.randomUUID(),
+        userId: dto.userId,
+        projectId: dto.projectId ?? null,
+        folderId: dto.folderId ?? null,
+        title: dto.title || 'Untitled Document',
+        content: dto.content || '',
+        format: dto.format || 'markdown',
+        createdAt: now,
+        updatedAt: now,
+        localRevision: 1,
+        isDeleted: false,
+      };
+
+      await this.db.documents.add(doc);
+
+      if (this.outboxRepo) {
+        await this.outboxRepo.enqueueInTx({
+          userId: doc.userId,
+          projectId: doc.projectId,
+          entityType: 'document',
+          entityId: doc.id,
+          operation: 'create',
+          payload: {
+            title: doc.title,
+            content: doc.content,
+            format: doc.format,
+            folderId: doc.folderId,
+          },
+          localRevision: doc.localRevision,
+        });
+      }
+
+      await this.syncMetadataRepo.upsertInTx({
+        entityType: 'document',
+        entityId: doc.id,
+        userId: doc.userId,
+        syncState: 'pending',
+        localRevision: doc.localRevision,
+      });
+
+      return doc;
+    });
   }
 
   async update(id: string, updates: UpdateDocumentDTO, options?: { skipOutbox?: boolean }): Promise<LocalDocument> {
-    const updated = await this.db.transaction('rw', this.db.documents, async () => {
+    if (options?.skipOutbox) {
+      const existing = await this.getByIdIncludeDeleted(id);
+      if (!existing) throw new EntityNotFoundError('Document', id);
+      return this.applyRemoteSnapshot({
+        id,
+        userId: existing.userId,
+        projectId: updates.projectId !== undefined ? updates.projectId : existing.projectId,
+        folderId: updates.folderId !== undefined ? updates.folderId : existing.folderId,
+        title: updates.title !== undefined ? updates.title : existing.title,
+        content: updates.content !== undefined ? updates.content : existing.content,
+        format: updates.format !== undefined ? updates.format : existing.format,
+      });
+    }
+
+    return await this.db.transaction('rw', [this.db.documents, this.db.outbox, this.db.sync_metadata], async () => {
       const existing = await this.db.documents.get(id);
       if (!existing || existing.isDeleted) {
         throw new EntityNotFoundError('Document', id);
@@ -125,28 +212,33 @@ export class DocumentRepository {
       };
 
       await this.db.documents.put(doc);
+
+      if (this.outboxRepo) {
+        await this.outboxRepo.enqueueInTx({
+          userId: doc.userId,
+          projectId: doc.projectId,
+          entityType: 'document',
+          entityId: doc.id,
+          operation: 'update',
+          payload: updates,
+          localRevision: doc.localRevision,
+        });
+      }
+
+      await this.syncMetadataRepo.upsertInTx({
+        entityType: 'document',
+        entityId: doc.id,
+        userId: doc.userId,
+        syncState: 'pending',
+        localRevision: doc.localRevision,
+      });
+
       return doc;
     });
-
-    if (this.outboxRepo && !options?.skipOutbox) {
-      await this.outboxRepo.enqueue({
-        userId: updated.userId,
-        projectId: updated.projectId,
-        entityType: 'document',
-        entityId: updated.id,
-        operation: 'update',
-        payload: updates,
-        localRevision: updated.localRevision,
-      });
-    }
-
-    return updated;
   }
 
   async delete(id: string, options?: { skipOutbox?: boolean }): Promise<void> {
-    let deletedDoc: LocalDocument | null = null;
-
-    await this.db.transaction('rw', this.db.documents, async () => {
+    await this.db.transaction('rw', [this.db.documents, this.db.outbox, this.db.sync_metadata], async () => {
       const existing = await this.db.documents.get(id);
       if (!existing) return;
 
@@ -159,20 +251,27 @@ export class DocumentRepository {
       };
 
       await this.db.documents.put(softDeleted);
-      deletedDoc = softDeleted;
-    });
 
-    if (this.outboxRepo && deletedDoc && !options?.skipOutbox) {
-      await this.outboxRepo.enqueue({
-        userId: (deletedDoc as LocalDocument).userId,
-        projectId: (deletedDoc as LocalDocument).projectId,
+      if (this.outboxRepo && !options?.skipOutbox) {
+        await this.outboxRepo.enqueueInTx({
+          userId: softDeleted.userId,
+          projectId: softDeleted.projectId,
+          entityType: 'document',
+          entityId: softDeleted.id,
+          operation: 'delete',
+          payload: null,
+          localRevision: softDeleted.localRevision,
+        });
+      }
+
+      await this.syncMetadataRepo.upsertInTx({
         entityType: 'document',
-        entityId: (deletedDoc as LocalDocument).id,
-        operation: 'delete',
-        payload: null,
-        localRevision: (deletedDoc as LocalDocument).localRevision,
+        entityId: softDeleted.id,
+        userId: softDeleted.userId,
+        syncState: options?.skipOutbox ? 'synced' : 'pending',
+        localRevision: softDeleted.localRevision,
       });
-    }
+    });
   }
 
   async hardDelete(id: string): Promise<void> {
@@ -180,7 +279,7 @@ export class DocumentRepository {
   }
 
   async restore(id: string): Promise<LocalDocument> {
-    return await this.db.transaction('rw', this.db.documents, async () => {
+    return await this.db.transaction('rw', [this.db.documents, this.db.outbox, this.db.sync_metadata], async () => {
       const existing = await this.db.documents.get(id);
       if (!existing) {
         throw new EntityNotFoundError('Document', id);
@@ -195,6 +294,32 @@ export class DocumentRepository {
       };
 
       await this.db.documents.put(restored);
+
+      if (this.outboxRepo) {
+        await this.outboxRepo.enqueueInTx({
+          userId: restored.userId,
+          projectId: restored.projectId,
+          entityType: 'document',
+          entityId: restored.id,
+          operation: 'update',
+          payload: {
+            title: restored.title,
+            content: restored.content,
+            format: restored.format,
+            folderId: restored.folderId,
+          },
+          localRevision: restored.localRevision,
+        });
+      }
+
+      await this.syncMetadataRepo.upsertInTx({
+        entityType: 'document',
+        entityId: restored.id,
+        userId: restored.userId,
+        syncState: 'pending',
+        localRevision: restored.localRevision,
+      });
+
       return restored;
     });
   }
