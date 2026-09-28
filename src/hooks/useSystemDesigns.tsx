@@ -1,5 +1,4 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from './useAuth';
 import { SystemDesignRepository } from '@/lib/repositories/systemDesignRepository';
 import { OutboxRepository } from '@/lib/repositories/outboxRepository';
@@ -66,52 +65,7 @@ export function useSystemDesigns(projectId: string | undefined) {
     queryFn: async () => {
       if (!user || !projectId) return [];
 
-      // 1. Read from local IndexedDB first
-      let localDesigns = await designRepo.listByProject(user.id, projectId);
-
-      // 2. Try fetching from Supabase (if online) to hydrate / sync
-      try {
-        const { data, error } = await supabase
-          .from('system_designs')
-          .select('*')
-          .eq('project_id', projectId)
-          .eq('user_id', user.id)
-          .order('updated_at', { ascending: false });
-
-        if (!error && data) {
-          for (const remote of data) {
-            const existing = await designRepo.getByIdIncludeDeleted(remote.id);
-            if (!existing) {
-              await designRepo.applyRemoteSnapshot({
-                id: remote.id,
-                userId: remote.user_id,
-                projectId: remote.project_id,
-                folderId: remote.folder_id,
-                name: remote.name,
-                boardState: remote.board_state as unknown as BoardState,
-                updatedAt: remote.updated_at,
-                createdAt: remote.created_at,
-              });
-            } else if (!existing.isDeleted && existing.localRevision <= 1) {
-              if (new Date(remote.updated_at).getTime() > new Date(existing.updatedAt).getTime()) {
-                await designRepo.applyRemoteSnapshot({
-                  id: remote.id,
-                  userId: remote.user_id,
-                  projectId: remote.project_id,
-                  folderId: remote.folder_id,
-                  name: remote.name,
-                  boardState: remote.board_state as unknown as BoardState,
-                  updatedAt: remote.updated_at,
-                  createdAt: remote.created_at,
-                });
-              }
-            }
-          }
-          localDesigns = await designRepo.listByProject(user.id, projectId);
-        }
-      } catch {
-        // Offline or network error: gracefully serve localDesigns from IndexedDB!
-      }
+      const localDesigns = await designRepo.listByProject(user.id, projectId);
 
       return localDesigns.map((d) => ({
         id: d.id,

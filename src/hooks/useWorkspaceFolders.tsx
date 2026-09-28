@@ -1,5 +1,4 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from './useAuth';
 import { WorkspaceFolder } from '@/types/workspace';
 import { WorkspaceFolderRepository } from '@/lib/repositories/folderRepository';
@@ -36,38 +35,7 @@ export function useWorkspaceFolders(projectId?: string) {
     queryFn: async () => {
       if (!user || !projectId) return [];
 
-      // 1. Read from local IndexedDB first
-      let localFolders = await folderRepo.listByProject(user.id, projectId);
-
-      // 2. Try fetching from Supabase (if online) to reconcile remote updates
-      try {
-        const { data, error } = await supabase
-          .from('workspace_folders')
-          .select('*')
-          .eq('project_id', projectId)
-          .eq('user_id', user.id)
-          .order('name', { ascending: true });
-
-        if (!error && data) {
-          for (const f of data) {
-            const existing = await folderRepo.getByIdIncludeDeleted(f.id);
-            if (!existing || (!existing.isDeleted && existing.name !== f.name)) {
-              await folderRepo.applyRemoteSnapshot({
-                id: f.id,
-                userId: f.user_id,
-                projectId: f.project_id,
-                name: f.name,
-                parentFolderId: f.parent_folder_id,
-                updatedAt: f.updated_at,
-                createdAt: f.created_at,
-              });
-            }
-          }
-          localFolders = await folderRepo.listByProject(user.id, projectId);
-        }
-      } catch {
-        // Offline or network error: gracefully serve localFolders from IndexedDB!
-      }
+      const localFolders = await folderRepo.listByProject(user.id, projectId);
 
       return localFolders.map((f) => ({
         id: f.id,

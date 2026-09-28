@@ -74,4 +74,25 @@ describe('Architectural Boundary: Direct Network Write Enforcement (Phase 0)', (
     expect(designAdapter).toContain('withTimeout');
     expect(folderAdapter).toContain('withTimeout');
   });
+
+  it('prohibits direct Supabase reads in core workspace entity hooks (Phase C4 Cutover Enforced)', () => {
+    const workspaceHookFiles = [
+      'src/hooks/useDocuments.tsx',
+      'src/hooks/useSystemDesigns.tsx',
+      'src/hooks/useWorkspaceFolders.tsx',
+    ];
+
+    for (const relPath of workspaceHookFiles) {
+      const fullPath = path.resolve(process.cwd(), relPath);
+      expect(fs.existsSync(fullPath)).toBe(true);
+      const content = fs.readFileSync(fullPath, 'utf-8');
+
+      expect(
+        content.includes("from('@/integrations/supabase/client')") ||
+        content.includes('from("@/integrations/supabase/client")') ||
+        content.includes('supabase.from('),
+        `Forbidden direct Supabase usage in ${relPath}. Workspace hooks must query IndexedDB repositories exclusively!`
+      ).toBe(false);
+    }
+  });
 });
