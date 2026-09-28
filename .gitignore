@@ -64,4 +64,6 @@ SECURITY_AUDIT.md
 docs/internal/
 *.doc.md
 *.internal.md
+artifacts/
+documentaion monetorization/
 
