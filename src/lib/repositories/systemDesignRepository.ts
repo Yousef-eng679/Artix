@@ -99,12 +99,6 @@ export class SystemDesignRepository {
   }
 
   async update(id: string, updates: UpdateSystemDesignDTO, options?: { skipOutbox?: boolean }): Promise<LocalSystemDesign> {
-    const cleanUpdates: Partial<LocalSystemDesign> = {};
-    if (updates.name !== undefined) cleanUpdates.name = updates.name;
-    if (updates.boardState !== undefined) cleanUpdates.boardState = updates.boardState;
-    if (updates.folderId !== undefined) cleanUpdates.folderId = updates.folderId;
-    if (updates.projectId !== undefined) cleanUpdates.projectId = updates.projectId;
-
     const updated = await this.db.transaction('rw', this.db.system_designs, async () => {
       const existing = await this.db.system_designs.get(id);
       if (!existing || existing.isDeleted) {
@@ -113,7 +107,7 @@ export class SystemDesignRepository {
 
       const doc: LocalSystemDesign = {
         ...existing,
-        ...cleanUpdates,
+        ...updates,
         updatedAt: new Date().toISOString(),
         localRevision: existing.localRevision + 1,
       };
@@ -129,7 +123,7 @@ export class SystemDesignRepository {
         entityType: 'system_design',
         entityId: updated.id,
         operation: 'update',
-        payload: cleanUpdates,
+        payload: updates,
         localRevision: updated.localRevision,
       });
     }

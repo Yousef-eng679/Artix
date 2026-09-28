@@ -33,18 +33,6 @@ export function useDocuments(projectId?: string) {
       // 1. Read from local IndexedDB first (Local-First Authority)
       let localDocs = await docRepo.listByProject(user.id, projectId ?? null);
 
-      // Self-healing: restore any orphaned documents for this user whose projectId was set to null/undefined
-      if (projectId) {
-        const allUserDocs = await docRepo.listAllByUser(user.id);
-        const orphaned = allUserDocs.filter((d) => !d.projectId);
-        if (orphaned.length > 0) {
-          for (const orphan of orphaned) {
-            await docRepo.update(orphan.id, { projectId });
-          }
-          localDocs = await docRepo.listByProject(user.id, projectId);
-        }
-      }
-
       // 2. Try fetching from Supabase (if online) to hydrate / sync
       try {
         let builder = supabase
@@ -173,20 +161,13 @@ export function useDocuments(projectId?: string) {
       const existing = await docRepo.getById(id);
       let localDoc = existing;
       if (existing) {
-        const dto: {
-          title?: string;
-          content?: string;
-          format?: DocumentFormat;
-          folderId?: string | null;
-          projectId?: string | null;
-        } = {};
-        if (rest.title !== undefined) dto.title = rest.title;
-        if (rest.content !== undefined) dto.content = rest.content;
-        if (rest.format !== undefined) dto.format = rest.format;
-        if (rest.folder_id !== undefined) dto.folderId = rest.folder_id;
-        if (rest.project_id !== undefined) dto.projectId = rest.project_id;
-
-        localDoc = await docRepo.update(id, dto);
+        localDoc = await docRepo.update(id, {
+          title: rest.title,
+          content: rest.content,
+          format: rest.format,
+          folderId: rest.folder_id,
+          projectId: rest.project_id,
+        });
       }
 
       // 2. Sync to Supabase in the background if online
@@ -213,9 +194,6 @@ export function useDocuments(projectId?: string) {
       };
     },
     onSuccess: (result, variables) => {
-      const definedVariables = Object.fromEntries(
-        Object.entries(variables).filter(([_, v]) => v !== undefined)
-      );
       queryClient.setQueryData<Document[]>(
         ['documents', user?.id, projectId],
         (old = []) =>
@@ -223,7 +201,7 @@ export function useDocuments(projectId?: string) {
             d.id === variables.id
               ? {
                   ...d,
-                  ...definedVariables,
+                  ...variables,
                   updated_at: result.updated_at,
                 }
               : d
