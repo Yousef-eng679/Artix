@@ -281,7 +281,7 @@ export class SystemDesignRepository {
           entityType: 'system_design',
           entityId: softDeleted.id,
           operation: 'delete',
-          payload: null,
+          payload: { folderId: softDeleted.folderId },
           localRevision: softDeleted.localRevision,
           baseServerVersion,
         });

@@ -139,3 +139,23 @@ CREATE TABLE public.sync_changes (
 - Local deletion sets `isDeleted: true` and `deletedAt: ISO_TIMESTAMP` on the entity, queues a `delete` mutation in the outbox, and sets `syncState: 'deleted_pending'`.
 - Upon server acknowledgement, the cloud sets `deleted_at` (soft delete) or cascades deletes, logging a `delete` event in `sync_changes`.
 - Local metadata transitions to `'deleted_synced'`. The local entity record is retained as a tombstone until the server cursor passes the deletion event, after which local garbage collection safely purges it.
+
+### 3.7 Outbox Mutation Algebra & Topological Dependency Rules
+Local client modifications coalesce in the outbox using a formally verified state transition algebra:
+
+| Existing Outbox Operation | Incoming User Operation | Compacted Result | Invariant & Side Effects |
+|---|---|---|---|
+| `create` | `update` | `create` | Merges payload deltas into creation payload; bumps `localRevision`; preserves `operation: 'create'`. |
+| `create` | `delete` | *(cancelled)* | Entity was born and died offline before server exposure; removes entry from outbox completely. |
+| `update` | `update` | `update` | Merges payload fields; bumps `localRevision`; retains original `baseServerVersion`. |
+| `update` | `delete` | `delete` | Converts operation to `delete`; retains original `baseServerVersion` for server CAS delete guard. |
+| `delete` | `update` | `update` | Explicit restore/un-delete semantics; replaces delete with update payload; bumps `localRevision`. |
+| `delete` | `delete` | `delete` | Idempotent no-op; retains existing delete entry without creating duplicates. |
+
+#### Topological Dependency Ordering (Kahn's Algorithm)
+Before mutations are pushed over the wire, `orderOutboxByDependency` arranges them using a directed acyclic graph (DAG):
+1. **Root & Parent Folders First**: Parent folder creations precede child folder creations (`parentFolderId`).
+2. **Folders Before Children**: Folder creations precede documents and system designs referencing their `folderId`.
+3. **Children Before Parents on Delete**: Child documents and child designs are deleted before their parent folder is deleted.
+4. **FIFO on Same Entity**: Sequential mutations targeting the same entity preserve strict FIFO chronological order.
+

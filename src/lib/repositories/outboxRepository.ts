@@ -93,6 +93,21 @@ export class OutboxRepository {
       if (existing.operation === 'delete' && params.operation === 'delete') {
         return existing;
       }
+
+      // Case 6: existing is delete and incoming is update -> explicit restore/un-delete
+      if (existing.operation === 'delete' && params.operation === 'update') {
+        const updated: OutboxEntry = {
+          ...existing,
+          mutationId: stableMutationId,
+          operation: 'update',
+          baseServerVersion: existing.baseServerVersion ?? params.baseServerVersion ?? null,
+          payload: params.payload ?? null,
+          localRevision: Math.max(existing.localRevision, params.localRevision),
+          updatedAt: now,
+        };
+        await this.db.outbox.put(updated);
+        return updated;
+      }
     }
 
     // No compactable pending entry found; append new entry

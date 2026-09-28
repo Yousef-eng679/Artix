@@ -288,7 +288,7 @@ export class DocumentRepository {
           entityType: 'document',
           entityId: softDeleted.id,
           operation: 'delete',
-          payload: null,
+          payload: { folderId: softDeleted.folderId },
           localRevision: softDeleted.localRevision,
           baseServerVersion,
         });

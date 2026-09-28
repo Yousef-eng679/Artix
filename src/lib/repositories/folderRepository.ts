@@ -374,7 +374,7 @@ export class WorkspaceFolderRepository {
           entityType: 'workspace_folder',
           entityId: softDeleted.id,
           operation: 'delete',
-          payload: null,
+          payload: { parentFolderId: softDeleted.parentFolderId },
           localRevision: softDeleted.localRevision,
           baseServerVersion: deleteBaseServerVersion,
         });
