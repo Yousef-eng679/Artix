@@ -513,6 +513,7 @@ const ProjectWorkspace = () => {
 
   const handleDeleteDocument = async (docId: string) => {
     try {
+      recentlyCreatedRef.current.delete(docId);
       await deleteDocument(docId);
       closeTab(`document:${docId}`);
       toast.success('Document deleted');
@@ -523,6 +524,7 @@ const ProjectWorkspace = () => {
 
   const handleDeleteDesign = async (designId: string) => {
     try {
+      recentlyCreatedRef.current.delete(designId);
       await deleteDesign(designId);
       closeTab(`design:${designId}`);
       toast.success('System design deleted');

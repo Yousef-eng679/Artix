@@ -126,4 +126,110 @@ describe('Offline-First useDocuments Hook Integration', () => {
     const raw = await docRepo.getByIdIncludeDeleted(created.id);
     expect(raw?.isDeleted).toBe(true);
   });
+
+  it('preserves offline documents in query state even when remote Supabase returns empty array', async () => {
+    const { supabase } = await import('@/integrations/supabase/client');
+    const mockBuilder = (supabase.from as any)();
+    mockBuilder.order.mockResolvedValueOnce({ data: [], error: null });
+
+    const { result } = renderHook(() => useDocuments(projectId), { wrapper });
+
+    let created: any;
+    await act(async () => {
+      created = await result.current.createDocument({
+        projectId,
+        title: 'Offline Document Must Not Vanish',
+      });
+    });
+
+    expect(created.id).toBeDefined();
+
+    // When remote returns empty array, local documents must NOT be discarded
+    mockBuilder.order.mockResolvedValue({ data: [], error: null });
+    const refetched = await queryClient.fetchQuery({
+      queryKey: ['documents', mockUser.id, projectId],
+      queryFn: async () => {
+        // Query directly via hook or queryClient
+        return queryClient.getQueryData<any[]>(['documents', mockUser.id, projectId]);
+      },
+    });
+
+    // Invalidate and await the queryFn to finish
+    await act(async () => {
+      await queryClient.refetchQueries({ queryKey: ['documents', mockUser.id, projectId] });
+    });
+
+    const activeDocs = queryClient.getQueryData<any[]>(['documents', mockUser.id, projectId]) ?? [];
+    expect(activeDocs.some((d) => d.id === created.id)).toBe(true);
+    expect(result.current.documents.some((d) => d.id === created.id)).toBe(true);
+  });
+
+  it('retains multiple offline documents when navigating or creating in sequence', async () => {
+    const { result } = renderHook(() => useDocuments(projectId), { wrapper });
+
+    let docA: any;
+    let docB: any;
+
+    await act(async () => {
+      docA = await result.current.createDocument({
+        projectId,
+        title: 'Doc A',
+      });
+    });
+
+    await act(async () => {
+      docB = await result.current.createDocument({
+        projectId,
+        title: 'Doc B',
+      });
+    });
+
+    // Invalidate to simulate tab or component switch
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: ['documents', mockUser.id, projectId] });
+    });
+
+    expect(result.current.documents.some((d) => d.id === docA.id)).toBe(true);
+    expect(result.current.documents.some((d) => d.id === docB.id)).toBe(true);
+  });
+});
+
+describe('useAutoSave Unmount Flush Integration', () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  it('flushes pending debounced save synchronously upon unmount (tab switch)', async () => {
+    const { useAutoSave } = await import('@/lib/autosave');
+    const onSave = vi.fn().mockResolvedValue(undefined);
+
+    const { result, unmount } = renderHook(() =>
+      useAutoSave({
+        delay: 1500,
+        onSave,
+        documentId: 'doc-unmount-test',
+      })
+    );
+
+    act(() => {
+      result.current.triggerSave('Critical offline edits before switching tabs');
+    });
+
+    // Save should NOT have fired yet because delay is 1500ms
+    expect(onSave).not.toHaveBeenCalled();
+
+    // Unmount immediately simulates leaving the file or tab
+    act(() => {
+      unmount();
+    });
+
+    // Await promise microtasks so save queue processes the enqueued save
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    // flushSync in unmount cleanup must have triggered onSave immediately
+    expect(onSave).toHaveBeenCalledTimes(1);
+    expect(onSave).toHaveBeenCalledWith('Critical offline edits before switching tabs');
+  });
 });
