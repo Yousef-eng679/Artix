@@ -56,10 +56,26 @@ export class WorkspaceFolderRepository {
    * Applies an authoritative remote snapshot from Supabase into local IndexedDB.
    * Updates entity store and sync metadata (marking synced) with ZERO outbox entries.
    */
-  async applyRemoteSnapshot(snapshot: RemoteWorkspaceFolderSnapshot): Promise<LocalWorkspaceFolder> {
-    return await this.db.transaction('rw', [this.db.workspace_folders, this.db.sync_metadata], async () => {
+  async applyRemoteSnapshot(snapshot: RemoteWorkspaceFolderSnapshot, options?: { force?: boolean }): Promise<LocalWorkspaceFolder> {
+    return await this.db.transaction('rw', [this.db.workspace_folders, this.db.outbox, this.db.sync_metadata], async () => {
       const now = new Date().toISOString();
       const existing = await this.db.workspace_folders.get(snapshot.id);
+
+      // Defense-in-depth: do not overwrite active local pending intent unless forced
+      if (!options?.force) {
+        const outboxEntries = await this.db.outbox
+          .where('[userId+entityType+entityId]')
+          .equals([snapshot.userId, 'workspace_folder', snapshot.id])
+          .toArray();
+
+        const activeOutbox = outboxEntries.find(
+          (e) => e.state === 'pending' || e.state === 'in_flight' || e.state === 'blocked'
+        );
+
+        if (activeOutbox && existing) {
+          return existing;
+        }
+      }
 
       const folder: LocalWorkspaceFolder = {
         id: snapshot.id,
@@ -81,7 +97,7 @@ export class WorkspaceFolderRepository {
         entityId: folder.id,
         userId: folder.userId,
         syncState: 'synced',
-        serverVersion: snapshot.serverVersion ?? null,
+        serverVersion: snapshot.serverVersion ? String(snapshot.serverVersion) : null,
         serverUpdatedAt: snapshot.updatedAt ?? null,
         localRevision: folder.localRevision,
         lastSyncedAt: Date.now(),

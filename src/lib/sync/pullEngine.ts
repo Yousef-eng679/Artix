@@ -144,42 +144,62 @@ export class PullEngine {
           const version = change.entity_version;
           const payload = change.payload || {};
 
-          // Check if local client has an unpushed outbox entry for this entity
-          const pendingOutbox = await this.db.outbox
+          // Check if local client has an active outbox entry for this entity
+          const outboxEntries = await this.db.outbox
             .where('[userId+entityType+entityId]')
             .equals([userId, entityType, entityId])
-            .first();
+            .toArray();
 
-          const hasLocalModifications =
-            pendingOutbox && (pendingOutbox.state === 'pending' || pendingOutbox.state === 'in_flight' || pendingOutbox.state === 'blocked');
+          const activeOutbox = outboxEntries.find(
+            (e) => e.state === 'pending' || e.state === 'in_flight' || e.state === 'blocked'
+          );
 
-          if (hasLocalModifications) {
-            // Concurrent modification detected: local draft must NOT be overwritten!
+          if (activeOutbox) {
             const syncMetaId = `${entityType}:${entityId}`;
             const syncMeta = await this.db.sync_metadata.get(syncMetaId);
 
-            const conflictRecord: ConflictRecord = {
-              id: crypto.randomUUID(),
-              entityType,
-              entityId,
-              userId,
-              basePayload: syncMeta?.baseSnapshot ?? null,
-              localPayload: pendingOutbox.payload,
-              remotePayload: payload,
-              detectedAt: Date.now(),
-              resolvedAt: null,
-            };
+            const baselineVersion = activeOutbox.baseServerVersion
+              ? parseInt(activeOutbox.baseServerVersion, 10)
+              : (syncMeta?.serverVersion ? parseInt(syncMeta.serverVersion, 10) : 0);
+            const remoteVersion = version !== undefined && version !== null ? parseInt(String(version), 10) : 0;
 
-            await this.db.conflicts.add(conflictRecord);
+            const isNewerRemote = remoteVersion > baselineVersion || operation === 'delete';
 
-            await this.syncMetadataRepo.upsertInTx({
-              entityType,
-              entityId,
-              userId,
-              syncState: 'conflict',
-              serverVersion: String(version),
-              serverUpdatedAt: change.changed_at,
-            });
+            if (isNewerRemote) {
+              // Concurrent modification detected: local draft must NOT be overwritten!
+              const conflictRecord: ConflictRecord = {
+                id: crypto.randomUUID(),
+                entityType,
+                entityId,
+                userId,
+                basePayload: syncMeta?.baseSnapshot ?? null,
+                localPayload: activeOutbox.payload,
+                remotePayload: operation === 'delete' ? { deleted: true } : payload,
+                detectedAt: Date.now(),
+                resolvedAt: null,
+              };
+
+              await this.db.conflicts.add(conflictRecord);
+
+              await this.syncMetadataRepo.upsertInTx({
+                entityType,
+                entityId,
+                userId,
+                syncState: 'conflict',
+                serverVersion: version !== undefined && version !== null ? String(version) : syncMeta?.serverVersion ?? null,
+                serverUpdatedAt: change.changed_at,
+              });
+
+              // Block outbox entry to prevent CAS churn
+              await this.db.outbox.update(activeOutbox.id, {
+                state: 'blocked',
+                leaseOwner: null,
+                leaseExpiresAt: null,
+                updatedAt: Date.now(),
+              });
+            } else {
+              // Stale remote observation (remoteVersion <= baselineVersion) -> ignore cleanly, preserve local intent
+            }
           } else {
             // Clean application of remote change
             if (operation === 'delete') {
