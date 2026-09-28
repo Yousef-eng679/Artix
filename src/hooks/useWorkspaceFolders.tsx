@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAuth } from './useAuth';
+import { useUserSyncRuntime } from '@/contexts/UserSyncRuntimeContext';
 import { WorkspaceFolder } from '@/types/workspace';
 import { WorkspaceFolderRepository } from '@/lib/repositories/folderRepository';
 import { OutboxRepository } from '@/lib/repositories/outboxRepository';
@@ -10,16 +11,19 @@ import { useMemo, useEffect } from 'react';
 export function useWorkspaceFolders(projectId?: string) {
   const { user } = useAuth();
   const queryClient = useQueryClient();
-  const userDb = useMemo(() => getUserArtixDB(user?.id), [user?.id]);
-  const outboxRepo = useMemo(() => new OutboxRepository(userDb), [userDb]);
-  const folderRepo = useMemo(() => new WorkspaceFolderRepository(userDb, outboxRepo), [userDb, outboxRepo]);
-  const coordinator = useMemo(() => getTabCoordinator(), []);
+  const runtimeContext = useUserSyncRuntime();
+
+  const userDb = useMemo(() => runtimeContext?.db || getUserArtixDB(user?.id), [runtimeContext?.db, user?.id]);
+  const outboxRepo = useMemo(() => runtimeContext?.outboxRepo || new OutboxRepository(userDb), [runtimeContext?.outboxRepo, userDb]);
+  const folderRepo = useMemo(() => runtimeContext?.folderRepo || new WorkspaceFolderRepository(userDb, outboxRepo), [runtimeContext?.folderRepo, userDb, outboxRepo]);
+  const coordinator = useMemo(() => runtimeContext?.tabCoordinator || getTabCoordinator(user?.id), [runtimeContext?.tabCoordinator, user?.id]);
 
   useEffect(() => {
-    if (user?.id) {
+    // Only run fallback migration if not managed by runtime
+    if (user?.id && !runtimeContext?.runtime) {
       migrateLegacyArtixDB(userDb, user.id).catch(() => {});
     }
-  }, [userDb, user?.id]);
+  }, [userDb, user?.id, runtimeContext?.runtime]);
 
   useEffect(() => {
     const unsub = coordinator.onCrossTabChange((event) => {

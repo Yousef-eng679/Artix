@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback, useMemo } from 'react';
 import { getSyncEngine, SyncStatus } from '@/lib/sync/syncEngine';
 import { useAuth } from './useAuth';
+import { useUserSyncRuntime } from '@/contexts/UserSyncRuntimeContext';
 
 export interface UseSyncStatusReturn {
   isOnline: boolean;
@@ -13,7 +14,11 @@ export interface UseSyncStatusReturn {
 
 export function useSyncStatus(): UseSyncStatusReturn {
   const { user } = useAuth();
-  const engine = useMemo(() => getSyncEngine(user?.id), [user?.id]);
+  const runtimeContext = useUserSyncRuntime();
+  const engine = useMemo(
+    () => runtimeContext?.syncEngine || getSyncEngine(user?.id),
+    [runtimeContext?.syncEngine, user?.id]
+  );
 
   const [status, setStatus] = useState<SyncStatus>(() => engine.getStatus());
   const [pendingCount, setPendingCount] = useState<number>(0);

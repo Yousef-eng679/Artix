@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAuth } from './useAuth';
+import { useUserSyncRuntime } from '@/contexts/UserSyncRuntimeContext';
 import { SystemDesignRepository } from '@/lib/repositories/systemDesignRepository';
 import { OutboxRepository } from '@/lib/repositories/outboxRepository';
 import { getTabCoordinator } from '@/lib/sync/tabCoordinator';
@@ -40,16 +41,19 @@ export interface SystemDesign {
 export function useSystemDesigns(projectId: string | undefined) {
   const { user } = useAuth();
   const queryClient = useQueryClient();
-  const userDb = useMemo(() => getUserArtixDB(user?.id), [user?.id]);
-  const outboxRepo = useMemo(() => new OutboxRepository(userDb), [userDb]);
-  const designRepo = useMemo(() => new SystemDesignRepository(userDb, outboxRepo), [userDb, outboxRepo]);
-  const coordinator = useMemo(() => getTabCoordinator(), []);
+  const runtimeContext = useUserSyncRuntime();
+
+  const userDb = useMemo(() => runtimeContext?.db || getUserArtixDB(user?.id), [runtimeContext?.db, user?.id]);
+  const outboxRepo = useMemo(() => runtimeContext?.outboxRepo || new OutboxRepository(userDb), [runtimeContext?.outboxRepo, userDb]);
+  const designRepo = useMemo(() => runtimeContext?.systemDesignRepo || new SystemDesignRepository(userDb, outboxRepo), [runtimeContext?.systemDesignRepo, userDb, outboxRepo]);
+  const coordinator = useMemo(() => runtimeContext?.tabCoordinator || getTabCoordinator(user?.id), [runtimeContext?.tabCoordinator, user?.id]);
 
   useEffect(() => {
-    if (user?.id) {
+    // Only run fallback migration if not managed by runtime
+    if (user?.id && !runtimeContext?.runtime) {
       migrateLegacyArtixDB(userDb, user.id).catch(() => {});
     }
-  }, [userDb, user?.id]);
+  }, [userDb, user?.id, runtimeContext?.runtime]);
 
   useEffect(() => {
     const unsub = coordinator.onCrossTabChange((event) => {

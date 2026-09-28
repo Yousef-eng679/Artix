@@ -1,5 +1,5 @@
 import { supabase as defaultSupabaseClient } from '@/integrations/supabase/client';
-import { ArtixDB, getUserArtixDB } from '../local/db';
+import { ArtixDB, getUserArtixDB, migrateLegacyArtixDB } from '../local/db';
 import { DocumentRepository } from '../repositories/documentRepository';
 import { WorkspaceFolderRepository } from '../repositories/folderRepository';
 import { SystemDesignRepository } from '../repositories/systemDesignRepository';
@@ -76,14 +76,21 @@ export class UserSyncRuntime {
   }
 
   /**
-   * Initializes the runtime: opens database, reclaims in-flight crash leases,
-   * binds tab communication, and kicks off asynchronous synchronization.
+   * Initializes the runtime: opens database, runs legacy migrations,
+   * reclaims in-flight crash leases, binds tab communication, and kicks off asynchronous synchronization.
    */
   async start(): Promise<void> {
     if (this.isStarted) return;
 
     if (!this.db.isOpen()) {
       await this.db.open();
+    }
+
+    // Run legacy database migrations if needed
+    try {
+      await migrateLegacyArtixDB(this.db, this.userId);
+    } catch (migErr) {
+      console.warn(`[UserSyncRuntime] Legacy migration warning for user ${this.userId}:`, migErr);
     }
 
     // Reclaim stale in-flight leases from crashed previous sessions
