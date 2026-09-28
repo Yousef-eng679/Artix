@@ -30,6 +30,15 @@ export class ArtixDB extends Dexie {
       conflicts: 'id, [userId+entityType+entityId], detectedAt',
       database_meta: 'key, updatedAt',
     });
+
+    this.on('versionchange', () => {
+      console.warn(`[ArtixDB] Database schema version change detected for ${dbName}. Closing connection to permit upgrade.`);
+      this.close();
+    });
+
+    this.on('blocked', () => {
+      console.warn(`[ArtixDB] Database upgrade for ${dbName} is blocked by another open tab.`);
+    });
   }
 }
 
@@ -159,11 +168,20 @@ export async function deleteUserArtixDB(userId?: string | null): Promise<void> {
   await deleteArtixDB(dbName);
 }
 
+export interface MigrationResult {
+  success: boolean;
+  migrated: boolean;
+  recordsCount: number;
+  error?: Error;
+}
+
 /**
  * Idempotently migrates records belonging to userId from legacy 'ArtixDB' to the user-scoped DB.
  */
-export async function migrateLegacyArtixDB(targetDb: ArtixDB, userId: string): Promise<void> {
-  if (!userId) return;
+export async function migrateLegacyArtixDB(targetDb: ArtixDB, userId: string): Promise<MigrationResult> {
+  if (!userId) {
+    return { success: true, migrated: false, recordsCount: 0 };
+  }
 
   const legacyDb = getArtixDB('ArtixDB');
   try {
@@ -175,10 +193,12 @@ export async function migrateLegacyArtixDB(targetDb: ArtixDB, userId: string): P
       legacyDb.sync_metadata.where('userId').equals(userId).toArray().catch(() => []),
     ]);
 
-    if (docs.length === 0 && designs.length === 0 && folders.length === 0 && outbox.length === 0 && metadata.length === 0) {
-      return;
+    const totalCount = docs.length + designs.length + folders.length + outbox.length + metadata.length;
+    if (totalCount === 0) {
+      return { success: true, migrated: false, recordsCount: 0 };
     }
 
+    let alreadyCompleted = false;
     await targetDb.transaction('rw', [
       targetDb.documents,
       targetDb.system_designs,
@@ -189,6 +209,7 @@ export async function migrateLegacyArtixDB(targetDb: ArtixDB, userId: string): P
     ], async () => {
       const meta = await targetDb.database_meta.get('legacy_migration');
       if (meta && meta.value === 'completed') {
+        alreadyCompleted = true;
         return;
       }
 
@@ -204,8 +225,20 @@ export async function migrateLegacyArtixDB(targetDb: ArtixDB, userId: string): P
         updatedAt: Date.now(),
       });
     });
-  } catch (err) {
-    console.warn('[ArtixDB] Legacy migration skipped or encountered error:', err);
+
+    return {
+      success: true,
+      migrated: !alreadyCompleted,
+      recordsCount: alreadyCompleted ? 0 : totalCount,
+    };
+  } catch (err: any) {
+    console.warn('[ArtixDB] Legacy migration encountered error:', err);
+    return {
+      success: false,
+      migrated: false,
+      recordsCount: 0,
+      error: err instanceof Error ? err : new Error(String(err)),
+    };
   }
 }
 

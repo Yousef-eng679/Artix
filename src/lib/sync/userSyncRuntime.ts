@@ -1,5 +1,5 @@
 import { supabase as defaultSupabaseClient } from '@/integrations/supabase/client';
-import { ArtixDB, getUserArtixDB, migrateLegacyArtixDB } from '../local/db';
+import { ArtixDB, getUserArtixDB, migrateLegacyArtixDB, MigrationResult } from '../local/db';
 import { DocumentRepository } from '../repositories/documentRepository';
 import { WorkspaceFolderRepository } from '../repositories/folderRepository';
 import { SystemDesignRepository } from '../repositories/systemDesignRepository';
@@ -9,8 +9,25 @@ import { ConflictRepository } from '../repositories/conflictRepository';
 import { PullEngine } from './pullEngine';
 import { SyncEngine } from './syncEngine';
 import { TabCoordinator, getTabCoordinator } from './tabCoordinator';
-
 import { RealtimeSyncManager } from './realtimeSync';
+
+export type RuntimeState = 'uninitialized' | 'starting' | 'running' | 'degraded' | 'errored' | 'stopped';
+
+export interface RuntimeError {
+  code: 'STORAGE_UNAVAILABLE' | 'STORAGE_BLOCKED' | 'STORAGE_CORRUPTED' | 'MIGRATION_FAILED' | 'UNKNOWN';
+  message: string;
+  fatal: boolean;
+  originalError?: unknown;
+}
+
+export interface RuntimeStatus {
+  state: RuntimeState;
+  userId: string;
+  isStarted: boolean;
+  isDegraded: boolean;
+  error: RuntimeError | null;
+  migration: MigrationResult | null;
+}
 
 export interface UserSyncRuntimeOptions {
   supabaseClient?: any;
@@ -40,6 +57,10 @@ export class UserSyncRuntime {
   private supabase: any;
   private isStarted = false;
   private unsubCrossTab?: () => void;
+  private state: RuntimeState = 'uninitialized';
+  private runtimeError: RuntimeError | null = null;
+  private migrationResult: MigrationResult | null = null;
+  private statusListeners = new Set<(status: RuntimeStatus) => void>();
 
   constructor(userId: string, options: UserSyncRuntimeOptions = {}) {
     if (!userId) {
@@ -86,44 +107,125 @@ export class UserSyncRuntime {
   }
 
   /**
+   * Returns current lifecycle and persistence health status.
+   */
+  getStatus(): RuntimeStatus {
+    return {
+      state: this.state,
+      userId: this.userId,
+      isStarted: this.isStarted,
+      isDegraded: this.state === 'degraded',
+      error: this.runtimeError,
+      migration: this.migrationResult,
+    };
+  }
+
+  /**
+   * Subscribes to runtime status updates.
+   */
+  subscribeStatus(listener: (status: RuntimeStatus) => void): () => void {
+    this.statusListeners.add(listener);
+    listener(this.getStatus());
+    return () => {
+      this.statusListeners.delete(listener);
+    };
+  }
+
+  private notifyStatus(): void {
+    const status = this.getStatus();
+    for (const listener of this.statusListeners) {
+      try {
+        listener(status);
+      } catch (err) {
+        console.error('[UserSyncRuntime] Status listener error:', err);
+      }
+    }
+  }
+
+  /**
    * Initializes the runtime: opens database, runs legacy migrations,
    * reclaims in-flight crash leases, binds tab communication, starts realtime,
    * and kicks off asynchronous synchronization.
    */
   async start(): Promise<void> {
     if (this.isStarted) return;
+    this.state = 'starting';
+    this.runtimeError = null;
+    this.notifyStatus();
 
+    // 1. Open Database with safe error classification
     if (!this.db.isOpen()) {
-      await this.db.open();
+      try {
+        await this.db.open();
+      } catch (dbErr: any) {
+        const isBlocked = dbErr?.name === 'BlockedError' || dbErr?.name === 'UpgradeBlockedError';
+        const isSecurity = dbErr?.name === 'SecurityError';
+        const code = isBlocked ? 'STORAGE_BLOCKED' : isSecurity ? 'STORAGE_UNAVAILABLE' : 'STORAGE_CORRUPTED';
+        this.runtimeError = {
+          code,
+          message: dbErr?.message || 'Failed to open local persistence database',
+          fatal: true,
+          originalError: dbErr,
+        };
+        this.state = 'errored';
+        this.notifyStatus();
+        return;
+      }
     }
 
-    // Run legacy database migrations if needed
+    // 2. Run legacy database migrations if needed
     try {
-      await migrateLegacyArtixDB(this.db, this.userId);
-    } catch (migErr) {
-      console.warn(`[UserSyncRuntime] Legacy migration warning for user ${this.userId}:`, migErr);
+      const migResult = await migrateLegacyArtixDB(this.db, this.userId);
+      this.migrationResult = migResult;
+      if (!migResult.success && migResult.error) {
+        this.state = 'degraded';
+        this.runtimeError = {
+          code: 'MIGRATION_FAILED',
+          message: migResult.error.message || 'Legacy database migration failed',
+          fatal: false,
+          originalError: migResult.error,
+        };
+      }
+    } catch (migErr: any) {
+      this.state = 'degraded';
+      this.runtimeError = {
+        code: 'MIGRATION_FAILED',
+        message: migErr?.message || 'Legacy migration threw an unexpected error',
+        fatal: false,
+        originalError: migErr,
+      };
     }
 
-    // Reclaim stale in-flight leases from crashed previous sessions
-    await this.outboxRepo.recoverStaleLeases({
-      currentTabId: this.tabCoordinator?.getTabId?.(),
-      forceOrphanedByOtherTabs: this.tabCoordinator?.isLeaderTab?.() ?? false,
-    });
+    // 3. Reclaim stale in-flight leases from crashed previous sessions
+    try {
+      await this.outboxRepo.recoverStaleLeases({
+        currentTabId: this.tabCoordinator?.getTabId?.(),
+        forceOrphanedByOtherTabs: this.tabCoordinator?.isLeaderTab?.() ?? false,
+      });
+    } catch (leaseErr) {
+      console.warn('[UserSyncRuntime] Stale lease recovery warning:', leaseErr);
+    }
 
-    // Listen for entity change announcements from other tabs
+    // 4. Listen for entity change announcements from other tabs
     this.unsubCrossTab = this.tabCoordinator.onCrossTabChange(() => {
       // Standby or leader tabs can react to peer tab changes
     });
 
-    // Start realtime listener for wake-up acceleration
+    // 5. Start realtime listener for wake-up acceleration
     this.realtimeSync.start(this.userId);
 
-    // Start background synchronization
+    // 6. Start background synchronization
     this.syncEngine.triggerSync(this.userId).catch((err) => {
-      console.warn(`[UserSyncRuntime] Initial sync error for user ${this.userId}:`, err);
+      if (err?.name !== 'DatabaseClosedError') {
+        console.warn(`[UserSyncRuntime] Initial sync error for user ${this.userId}:`, err);
+      }
     });
 
     this.isStarted = true;
+    if (this.state !== 'degraded') {
+      this.state = 'running';
+    }
+    this.notifyStatus();
   }
 
   /**
@@ -131,7 +233,7 @@ export class UserSyncRuntime {
    * destroys listeners, and cleanly closes the user's IndexedDB connection.
    */
   async stop(): Promise<void> {
-    if (!this.isStarted) return;
+    if (!this.isStarted && this.state === 'stopped') return;
 
     if (this.unsubCrossTab) {
       this.unsubCrossTab();
@@ -147,6 +249,9 @@ export class UserSyncRuntime {
     }
 
     this.isStarted = false;
+    this.state = 'stopped';
+    this.notifyStatus();
+    this.statusListeners.clear();
   }
 
   isActive(): boolean {

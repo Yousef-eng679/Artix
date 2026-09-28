@@ -5,6 +5,8 @@ import {
   openUserRuntime,
   closeUserRuntime,
   getActiveUserRuntime,
+  RuntimeStatus,
+  RuntimeError,
 } from '@/lib/sync/userSyncRuntime';
 import { DocumentRepository } from '@/lib/repositories/documentRepository';
 import { WorkspaceFolderRepository } from '@/lib/repositories/folderRepository';
@@ -26,6 +28,9 @@ export interface UserSyncRuntimeContextType {
   tabCoordinator: TabCoordinator | null;
   realtimeSync: RealtimeSyncManager | null;
   isReady: boolean;
+  runtimeStatus: RuntimeStatus | null;
+  isDegraded: boolean;
+  runtimeError: RuntimeError | null;
 }
 
 const UserSyncRuntimeContext = createContext<UserSyncRuntimeContextType | null>(null);
@@ -33,6 +38,7 @@ const UserSyncRuntimeContext = createContext<UserSyncRuntimeContextType | null>(
 export function UserSyncRuntimeProvider({ children }: { children: ReactNode }) {
   const { user, loading: authLoading } = useAuth();
   const [runtime, setRuntime] = useState<UserSyncRuntime | null>(() => getActiveUserRuntime() ?? null);
+  const [runtimeStatus, setRuntimeStatus] = useState<RuntimeStatus | null>(() => getActiveUserRuntime()?.getStatus() ?? null);
   const [isReady, setIsReady] = useState<boolean>(false);
 
   useEffect(() => {
@@ -44,6 +50,7 @@ export function UserSyncRuntimeProvider({ children }: { children: ReactNode }) {
       closeUserRuntime().then(() => {
         if (!isCancelled) {
           setRuntime(null);
+          setRuntimeStatus(null);
           setIsReady(true);
         }
       });
@@ -57,6 +64,7 @@ export function UserSyncRuntimeProvider({ children }: { children: ReactNode }) {
       .then((active) => {
         if (!isCancelled) {
           setRuntime(active);
+          setRuntimeStatus(active.getStatus());
           setIsReady(true);
         }
       })
@@ -72,6 +80,22 @@ export function UserSyncRuntimeProvider({ children }: { children: ReactNode }) {
     };
   }, [user?.id, authLoading]);
 
+  // Subscribe to live status changes on the active runtime
+  useEffect(() => {
+    if (!runtime) {
+      setRuntimeStatus(null);
+      return;
+    }
+
+    const unsub = runtime.subscribeStatus((status) => {
+      setRuntimeStatus(status);
+    });
+
+    return () => {
+      unsub();
+    };
+  }, [runtime]);
+
   const value = useMemo<UserSyncRuntimeContextType>(() => {
     if (!runtime) {
       return {
@@ -85,6 +109,9 @@ export function UserSyncRuntimeProvider({ children }: { children: ReactNode }) {
         tabCoordinator: null,
         realtimeSync: null,
         isReady,
+        runtimeStatus: null,
+        isDegraded: false,
+        runtimeError: null,
       };
     }
 
@@ -99,8 +126,11 @@ export function UserSyncRuntimeProvider({ children }: { children: ReactNode }) {
       tabCoordinator: runtime.tabCoordinator,
       realtimeSync: runtime.realtimeSync,
       isReady,
+      runtimeStatus,
+      isDegraded: runtimeStatus?.isDegraded ?? false,
+      runtimeError: runtimeStatus?.error ?? null,
     };
-  }, [runtime, isReady]);
+  }, [runtime, isReady, runtimeStatus]);
 
   return (
     <UserSyncRuntimeContext.Provider value={value}>
