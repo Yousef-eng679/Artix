@@ -7,14 +7,22 @@ import { DocumentRepository } from '@/lib/repositories/documentRepository';
 import { OutboxRepository } from '@/lib/repositories/outboxRepository';
 import { getSyncEngine } from '@/lib/sync/syncEngine';
 import { getTabCoordinator } from '@/lib/sync/tabCoordinator';
+import { getUserArtixDB, migrateLegacyArtixDB } from '@/lib/local/db';
 import { useMemo, useEffect } from 'react';
 
 export function useDocuments(projectId?: string) {
   const { user } = useAuth();
   const queryClient = useQueryClient();
-  const outboxRepo = useMemo(() => new OutboxRepository(), []);
-  const docRepo = useMemo(() => new DocumentRepository(undefined, outboxRepo), [outboxRepo]);
+  const userDb = useMemo(() => getUserArtixDB(user?.id), [user?.id]);
+  const outboxRepo = useMemo(() => new OutboxRepository(userDb), [userDb]);
+  const docRepo = useMemo(() => new DocumentRepository(userDb, outboxRepo), [userDb, outboxRepo]);
   const coordinator = useMemo(() => getTabCoordinator(), []);
+
+  useEffect(() => {
+    if (user?.id) {
+      migrateLegacyArtixDB(userDb, user.id).catch(() => {});
+    }
+  }, [userDb, user?.id]);
 
   useEffect(() => {
     const unsub = coordinator.onCrossTabChange((event) => {
@@ -51,7 +59,7 @@ export function useDocuments(projectId?: string) {
           for (const remote of data) {
             const existing = await docRepo.getByIdIncludeDeleted(remote.id);
             if (!existing) {
-              await docRepo.create({
+              await docRepo.applyRemoteSnapshot({
                 id: remote.id,
                 userId: remote.user_id,
                 projectId: remote.project_id,
@@ -59,15 +67,22 @@ export function useDocuments(projectId?: string) {
                 title: remote.title,
                 content: remote.content,
                 format: remote.format as DocumentFormat,
-              }, { skipOutbox: true });
+                updatedAt: remote.updated_at,
+                createdAt: remote.created_at,
+              });
             } else if (!existing.isDeleted && existing.localRevision <= 1) {
               if (new Date(remote.updated_at).getTime() > new Date(existing.updatedAt).getTime()) {
-                await docRepo.update(remote.id, {
+                await docRepo.applyRemoteSnapshot({
+                  id: remote.id,
+                  userId: remote.user_id,
+                  projectId: remote.project_id,
+                  folderId: remote.folder_id,
                   title: remote.title,
                   content: remote.content,
                   format: remote.format as DocumentFormat,
-                  folderId: remote.folder_id,
-                }, { skipOutbox: true });
+                  updatedAt: remote.updated_at,
+                  createdAt: remote.created_at,
+                });
               }
             }
           }
@@ -108,25 +123,6 @@ export function useDocuments(projectId?: string) {
         format: 'markdown',
         folderId: folderId ?? null,
       });
-
-      // 2. Try remote Supabase insert (background / optimistic)
-      if (typeof navigator === 'undefined' || navigator.onLine) {
-        try {
-          await supabase
-            .from('documents')
-            .insert({
-              id: localDoc.id,
-              user_id: user.id,
-              title: localDoc.title,
-              content: localDoc.content,
-              format: localDoc.format,
-              project_id: localDoc.projectId,
-              folder_id: localDoc.folderId,
-            });
-        } catch {
-          // Safe to ignore network error — document is already saved locally and queued in Outbox!
-        }
-      }
 
       return {
         id: localDoc.id,
@@ -171,26 +167,9 @@ export function useDocuments(projectId?: string) {
         });
       }
 
-      // 2. Sync to Supabase in the background if online
-      let remoteUpdatedAt: string | undefined;
-      if (typeof navigator === 'undefined' || navigator.onLine) {
-        try {
-          let query = supabase.from('documents').update(rest).eq('id', id);
-          if (expectedUpdatedAt) {
-            query = query.eq('updated_at', expectedUpdatedAt);
-          }
-          const { data, error } = await query.select('updated_at').single();
-          if (!error && data) {
-            remoteUpdatedAt = data.updated_at as string;
-          }
-        } catch {
-          // Offline safe
-        }
-      }
-
       return {
         id,
-        updated_at: remoteUpdatedAt || localDoc?.updatedAt || new Date().toISOString(),
+        updated_at: localDoc?.updatedAt || new Date().toISOString(),
         ...rest,
       };
     },
@@ -220,11 +199,6 @@ export function useDocuments(projectId?: string) {
 
   const deleteDocumentMutation = useMutation({
     mutationFn: async (id: string) => {
-      try {
-        await supabase.from('documents').delete().eq('id', id);
-      } catch {
-        // Offline safe
-      }
       await docRepo.delete(id);
     },
     onSuccess: (_, id) => {

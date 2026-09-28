@@ -37,16 +37,63 @@ export class ArtixDB extends Dexie {
 const dbInstances = new Map<string, ArtixDB>();
 
 /**
- * Returns an instance of ArtixDB.
- * Defaults to 'ArtixDB', or can be user-scoped e.g. `ArtixDB_${userId}`.
+ * Computes a deterministic 32-bit FNV-1a hash formatted as an 8-character hex string.
+ * Stable across sessions, browsers, and platforms.
  */
-export function getArtixDB(dbName = 'ArtixDB'): ArtixDB {
-  let instance = dbInstances.get(dbName);
+export function getUserScopeHash(userId: string): string {
+  let hash = 2166136261;
+  for (let i = 0; i < userId.length; i++) {
+    hash ^= userId.charCodeAt(i);
+    // 32-bit FNV prime 16777619
+    hash = Math.imul(hash, 16777619) >>> 0;
+  }
+  return hash.toString(16).padStart(8, '0');
+}
+
+/**
+ * Returns the physical IndexedDB database name for a given user ID.
+ */
+export function getUserDbName(userId?: string | null): string {
+  const trimmed = userId?.trim();
+  if (!trimmed) {
+    return 'ArtixDB_v2_anonymous';
+  }
+  return `ArtixDB_v2_${getUserScopeHash(trimmed)}`;
+}
+
+let activeUserScope: string | null = null;
+
+export function setActiveUserScope(userId?: string | null): void {
+  activeUserScope = userId?.trim() || null;
+}
+
+export function getActiveUserScope(): string | null {
+  return activeUserScope;
+}
+
+/**
+ * Returns an instance of ArtixDB.
+ * Defaults to the active user's scoped database, or 'ArtixDB' if no active user is set.
+ */
+export function getArtixDB(dbName?: string): ArtixDB {
+  const targetDbName = dbName || (activeUserScope ? getUserDbName(activeUserScope) : 'ArtixDB');
+  let instance = dbInstances.get(targetDbName);
   if (!instance) {
-    instance = new ArtixDB(dbName);
-    dbInstances.set(dbName, instance);
+    instance = new ArtixDB(targetDbName);
+    dbInstances.set(targetDbName, instance);
   }
   return instance;
+}
+
+/**
+ * Returns the user-scoped ArtixDB instance, maintaining an in-memory instance cache.
+ */
+export function getUserArtixDB(userId?: string | null): ArtixDB {
+  if (userId) {
+    setActiveUserScope(userId);
+  }
+  const dbName = getUserDbName(userId);
+  return getArtixDB(dbName);
 }
 
 /**
@@ -61,11 +108,105 @@ export async function closeArtixDB(dbName = 'ArtixDB'): Promise<void> {
 }
 
 /**
- * Deletes the database entirely (primarily for testing and cache reset).
+ * Safely closes and evicts a user's database instance from the cache.
  */
-export async function deleteArtixDB(dbName = 'ArtixDB'): Promise<void> {
+export async function closeUserArtixDB(userId?: string | null): Promise<void> {
+  const dbName = getUserDbName(userId);
   await closeArtixDB(dbName);
-  await Dexie.delete(dbName);
+}
+
+/**
+ * Closes and evicts all cached database instances.
+ */
+export async function closeAllArtixDBs(): Promise<void> {
+  const closePromises: Promise<void>[] = [];
+  for (const [, instance] of dbInstances.entries()) {
+    instance.close();
+    closePromises.push(Promise.resolve());
+  }
+  dbInstances.clear();
+  await Promise.all(closePromises);
+}
+
+/**
+ * Deletes the database entirely (primarily for testing and cache reset).
+ * If dbName is omitted, cleanly closes and deletes all cached/known user databases.
+ */
+export async function deleteArtixDB(dbName?: string): Promise<void> {
+  if (dbName) {
+    await closeArtixDB(dbName);
+    await Dexie.delete(dbName);
+  } else {
+    const names = new Set<string>(dbInstances.keys());
+    names.add('ArtixDB');
+    names.add('ArtixDB_v2_anonymous');
+    if (activeUserScope) {
+      names.add(getUserDbName(activeUserScope));
+    }
+    await closeAllArtixDBs();
+    for (const name of names) {
+      await Dexie.delete(name);
+    }
+    activeUserScope = null;
+  }
+}
+
+/**
+ * Deletes a user's database instance entirely.
+ */
+export async function deleteUserArtixDB(userId?: string | null): Promise<void> {
+  const dbName = getUserDbName(userId);
+  await deleteArtixDB(dbName);
+}
+
+/**
+ * Idempotently migrates records belonging to userId from legacy 'ArtixDB' to the user-scoped DB.
+ */
+export async function migrateLegacyArtixDB(targetDb: ArtixDB, userId: string): Promise<void> {
+  if (!userId) return;
+
+  const legacyDb = getArtixDB('ArtixDB');
+  try {
+    const [docs, designs, folders, outbox, metadata] = await Promise.all([
+      legacyDb.documents.where('userId').equals(userId).toArray().catch(() => []),
+      legacyDb.system_designs.where('userId').equals(userId).toArray().catch(() => []),
+      legacyDb.workspace_folders.where('userId').equals(userId).toArray().catch(() => []),
+      legacyDb.outbox.where('userId').equals(userId).toArray().catch(() => []),
+      legacyDb.sync_metadata.where('userId').equals(userId).toArray().catch(() => []),
+    ]);
+
+    if (docs.length === 0 && designs.length === 0 && folders.length === 0 && outbox.length === 0 && metadata.length === 0) {
+      return;
+    }
+
+    await targetDb.transaction('rw', [
+      targetDb.documents,
+      targetDb.system_designs,
+      targetDb.workspace_folders,
+      targetDb.outbox,
+      targetDb.sync_metadata,
+      targetDb.database_meta,
+    ], async () => {
+      const meta = await targetDb.database_meta.get('legacy_migration');
+      if (meta && meta.value === 'completed') {
+        return;
+      }
+
+      if (docs.length > 0) await targetDb.documents.bulkPut(docs);
+      if (designs.length > 0) await targetDb.system_designs.bulkPut(designs);
+      if (folders.length > 0) await targetDb.workspace_folders.bulkPut(folders);
+      if (outbox.length > 0) await targetDb.outbox.bulkPut(outbox);
+      if (metadata.length > 0) await targetDb.sync_metadata.bulkPut(metadata);
+
+      await targetDb.database_meta.put({
+        key: 'legacy_migration',
+        value: 'completed',
+        updatedAt: Date.now(),
+      });
+    });
+  } catch (err) {
+    console.warn('[ArtixDB] Legacy migration skipped or encountered error:', err);
+  }
 }
 
 export interface StorageEstimateResult {

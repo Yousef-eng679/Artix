@@ -4,7 +4,7 @@ import { renderHook, act } from '@testing-library/react';
 import React from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useWorkspaceFolders } from '@/hooks/useWorkspaceFolders';
-import { deleteArtixDB } from '@/lib/local/db';
+import { deleteArtixDB, getUserArtixDB } from '@/lib/local/db';
 import { WorkspaceFolderRepository } from '@/lib/repositories/folderRepository';
 
 const mockUser = { id: 'user-offline-3', email: 'offline3@artix.dev' };
@@ -40,7 +40,7 @@ describe('Offline-First useWorkspaceFolders Hook Integration', () => {
 
   beforeEach(async () => {
     await deleteArtixDB();
-    folderRepo = new WorkspaceFolderRepository();
+    folderRepo = new WorkspaceFolderRepository(getUserArtixDB(mockUser.id));
     queryClient = new QueryClient({
       defaultOptions: {
         queries: { retry: false, gcTime: 0 },

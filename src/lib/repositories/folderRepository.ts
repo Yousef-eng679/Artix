@@ -1,7 +1,8 @@
 import { ArtixDB, getArtixDB } from '../local/db';
-import { LocalWorkspaceFolder } from '../local/types';
+import { LocalWorkspaceFolder, RemoteWorkspaceFolderSnapshot } from '../local/types';
 import { EntityNotFoundError, DuplicateNameError } from '../local/errors';
 import { OutboxRepository } from './outboxRepository';
+import { SyncMetadataRepository } from './syncMetadataRepository';
 
 export interface CreateFolderDTO {
   id?: string;
@@ -17,10 +18,18 @@ export interface UpdateFolderDTO {
 }
 
 export class WorkspaceFolderRepository {
+  private syncMetadataRepo: SyncMetadataRepository;
+
   constructor(
     private db: ArtixDB = getArtixDB(),
-    private outboxRepo?: OutboxRepository
-  ) {}
+    private outboxRepo?: OutboxRepository,
+    syncMetadataRepo?: SyncMetadataRepository
+  ) {
+    this.syncMetadataRepo = syncMetadataRepo || new SyncMetadataRepository(this.db);
+    if (!this.outboxRepo) {
+      this.outboxRepo = new OutboxRepository(this.db);
+    }
+  }
 
   async getById(id: string): Promise<LocalWorkspaceFolder | null> {
     const folder = await this.db.workspace_folders.get(id);
@@ -43,13 +52,63 @@ export class WorkspaceFolderRepository {
     return folders.sort((a, b) => a.name.localeCompare(b.name));
   }
 
+  /**
+   * Applies an authoritative remote snapshot from Supabase into local IndexedDB.
+   * Updates entity store and sync metadata (marking synced) with ZERO outbox entries.
+   */
+  async applyRemoteSnapshot(snapshot: RemoteWorkspaceFolderSnapshot): Promise<LocalWorkspaceFolder> {
+    return await this.db.transaction('rw', [this.db.workspace_folders, this.db.sync_metadata], async () => {
+      const now = new Date().toISOString();
+      const existing = await this.db.workspace_folders.get(snapshot.id);
+
+      const folder: LocalWorkspaceFolder = {
+        id: snapshot.id,
+        userId: snapshot.userId,
+        projectId: snapshot.projectId,
+        name: snapshot.name.trim(),
+        parentFolderId: snapshot.parentFolderId ?? null,
+        createdAt: snapshot.createdAt || existing?.createdAt || now,
+        updatedAt: snapshot.updatedAt || now,
+        localRevision: existing ? existing.localRevision : 1,
+        isDeleted: false,
+        deletedAt: null,
+      };
+
+      await this.db.workspace_folders.put(folder);
+
+      await this.syncMetadataRepo.upsertInTx({
+        entityType: 'workspace_folder',
+        entityId: folder.id,
+        userId: folder.userId,
+        syncState: 'synced',
+        serverVersion: snapshot.serverVersion ?? null,
+        serverUpdatedAt: snapshot.updatedAt ?? null,
+        localRevision: folder.localRevision,
+        lastSyncedAt: Date.now(),
+        baseSnapshot: snapshot,
+      });
+
+      return folder;
+    });
+  }
+
   async create(dto: CreateFolderDTO, options?: { skipOutbox?: boolean }): Promise<LocalWorkspaceFolder> {
+    if (options?.skipOutbox) {
+      return this.applyRemoteSnapshot({
+        id: dto.id || crypto.randomUUID(),
+        userId: dto.userId,
+        projectId: dto.projectId,
+        name: dto.name,
+        parentFolderId: dto.parentFolderId,
+      });
+    }
+
     const trimmed = dto.name.trim();
     if (!trimmed) {
       throw new Error('Folder name cannot be empty');
     }
 
-    const folder = await this.db.transaction('rw', this.db.workspace_folders, async () => {
+    return await this.db.transaction('rw', [this.db.workspace_folders, this.db.outbox, this.db.sync_metadata], async () => {
       // Validate uniqueness within the project
       const existingWithSameName = await this.db.workspace_folders
         .where('userId')
@@ -80,25 +139,32 @@ export class WorkspaceFolderRepository {
       };
 
       await this.db.workspace_folders.add(newFolder);
+
+      if (this.outboxRepo) {
+        await this.outboxRepo.enqueueInTx({
+          userId: newFolder.userId,
+          projectId: newFolder.projectId,
+          entityType: 'workspace_folder',
+          entityId: newFolder.id,
+          operation: 'create',
+          payload: {
+            name: newFolder.name,
+            parentFolderId: newFolder.parentFolderId,
+          },
+          localRevision: newFolder.localRevision,
+        });
+      }
+
+      await this.syncMetadataRepo.upsertInTx({
+        entityType: 'workspace_folder',
+        entityId: newFolder.id,
+        userId: newFolder.userId,
+        syncState: 'pending',
+        localRevision: newFolder.localRevision,
+      });
+
       return newFolder;
     });
-
-    if (this.outboxRepo && !options?.skipOutbox) {
-      await this.outboxRepo.enqueue({
-        userId: folder.userId,
-        projectId: folder.projectId,
-        entityType: 'workspace_folder',
-        entityId: folder.id,
-        operation: 'create',
-        payload: {
-          name: folder.name,
-          parentFolderId: folder.parentFolderId,
-        },
-        localRevision: folder.localRevision,
-      });
-    }
-
-    return folder;
   }
 
   async rename(id: string, newName: string, options?: { skipOutbox?: boolean }): Promise<LocalWorkspaceFolder> {
@@ -107,7 +173,19 @@ export class WorkspaceFolderRepository {
       throw new Error('Folder name cannot be empty');
     }
 
-    const updated = await this.db.transaction('rw', this.db.workspace_folders, async () => {
+    if (options?.skipOutbox) {
+      const existing = await this.getByIdIncludeDeleted(id);
+      if (!existing) throw new EntityNotFoundError('WorkspaceFolder', id);
+      return this.applyRemoteSnapshot({
+        id,
+        userId: existing.userId,
+        projectId: existing.projectId,
+        name: trimmed,
+        parentFolderId: existing.parentFolderId,
+      });
+    }
+
+    return await this.db.transaction('rw', [this.db.workspace_folders, this.db.outbox, this.db.sync_metadata], async () => {
       const existing = await this.db.workspace_folders.get(id);
       if (!existing || existing.isDeleted) {
         throw new EntityNotFoundError('WorkspaceFolder', id);
@@ -139,26 +217,45 @@ export class WorkspaceFolderRepository {
       };
 
       await this.db.workspace_folders.put(folder);
+
+      if (this.outboxRepo) {
+        await this.outboxRepo.enqueueInTx({
+          userId: folder.userId,
+          projectId: folder.projectId,
+          entityType: 'workspace_folder',
+          entityId: folder.id,
+          operation: 'update',
+          payload: { name: folder.name },
+          localRevision: folder.localRevision,
+        });
+      }
+
+      await this.syncMetadataRepo.upsertInTx({
+        entityType: 'workspace_folder',
+        entityId: folder.id,
+        userId: folder.userId,
+        syncState: 'pending',
+        localRevision: folder.localRevision,
+      });
+
       return folder;
     });
-
-    if (this.outboxRepo && !options?.skipOutbox) {
-      await this.outboxRepo.enqueue({
-        userId: updated.userId,
-        projectId: updated.projectId,
-        entityType: 'workspace_folder',
-        entityId: updated.id,
-        operation: 'update',
-        payload: { name: updated.name },
-        localRevision: updated.localRevision,
-      });
-    }
-
-    return updated;
   }
 
   async update(id: string, updates: UpdateFolderDTO, options?: { skipOutbox?: boolean }): Promise<LocalWorkspaceFolder> {
-    const updated = await this.db.transaction('rw', this.db.workspace_folders, async () => {
+    if (options?.skipOutbox) {
+      const existing = await this.getByIdIncludeDeleted(id);
+      if (!existing) throw new EntityNotFoundError('WorkspaceFolder', id);
+      return this.applyRemoteSnapshot({
+        id,
+        userId: existing.userId,
+        projectId: existing.projectId,
+        name: updates.name ? updates.name.trim() : existing.name,
+        parentFolderId: updates.parentFolderId !== undefined ? updates.parentFolderId : existing.parentFolderId,
+      });
+    }
+
+    return await this.db.transaction('rw', [this.db.workspace_folders, this.db.outbox, this.db.sync_metadata], async () => {
       const existing = await this.db.workspace_folders.get(id);
       if (!existing || existing.isDeleted) {
         throw new EntityNotFoundError('WorkspaceFolder', id);
@@ -194,28 +291,33 @@ export class WorkspaceFolderRepository {
       };
 
       await this.db.workspace_folders.put(folder);
+
+      if (this.outboxRepo) {
+        await this.outboxRepo.enqueueInTx({
+          userId: folder.userId,
+          projectId: folder.projectId,
+          entityType: 'workspace_folder',
+          entityId: folder.id,
+          operation: 'update',
+          payload: updates,
+          localRevision: folder.localRevision,
+        });
+      }
+
+      await this.syncMetadataRepo.upsertInTx({
+        entityType: 'workspace_folder',
+        entityId: folder.id,
+        userId: folder.userId,
+        syncState: 'pending',
+        localRevision: folder.localRevision,
+      });
+
       return folder;
     });
-
-    if (this.outboxRepo && !options?.skipOutbox) {
-      await this.outboxRepo.enqueue({
-        userId: updated.userId,
-        projectId: updated.projectId,
-        entityType: 'workspace_folder',
-        entityId: updated.id,
-        operation: 'update',
-        payload: updates,
-        localRevision: updated.localRevision,
-      });
-    }
-
-    return updated;
   }
 
   async delete(id: string, options?: { skipOutbox?: boolean }): Promise<void> {
-    let deletedFolder: LocalWorkspaceFolder | null = null;
-
-    await this.db.transaction('rw', this.db.workspace_folders, async () => {
+    await this.db.transaction('rw', [this.db.workspace_folders, this.db.outbox, this.db.sync_metadata], async () => {
       const existing = await this.db.workspace_folders.get(id);
       if (!existing) return;
 
@@ -228,20 +330,27 @@ export class WorkspaceFolderRepository {
       };
 
       await this.db.workspace_folders.put(softDeleted);
-      deletedFolder = softDeleted;
-    });
 
-    if (this.outboxRepo && deletedFolder && !options?.skipOutbox) {
-      await this.outboxRepo.enqueue({
-        userId: (deletedFolder as LocalWorkspaceFolder).userId,
-        projectId: (deletedFolder as LocalWorkspaceFolder).projectId,
+      if (this.outboxRepo && !options?.skipOutbox) {
+        await this.outboxRepo.enqueueInTx({
+          userId: softDeleted.userId,
+          projectId: softDeleted.projectId,
+          entityType: 'workspace_folder',
+          entityId: softDeleted.id,
+          operation: 'delete',
+          payload: null,
+          localRevision: softDeleted.localRevision,
+        });
+      }
+
+      await this.syncMetadataRepo.upsertInTx({
         entityType: 'workspace_folder',
-        entityId: (deletedFolder as LocalWorkspaceFolder).id,
-        operation: 'delete',
-        payload: null,
-        localRevision: (deletedFolder as LocalWorkspaceFolder).localRevision,
+        entityId: softDeleted.id,
+        userId: softDeleted.userId,
+        syncState: options?.skipOutbox ? 'synced' : 'pending',
+        localRevision: softDeleted.localRevision,
       });
-    }
+    });
   }
 
   async hardDelete(id: string): Promise<void> {
@@ -249,7 +358,7 @@ export class WorkspaceFolderRepository {
   }
 
   async restore(id: string): Promise<LocalWorkspaceFolder> {
-    return await this.db.transaction('rw', this.db.workspace_folders, async () => {
+    return await this.db.transaction('rw', [this.db.workspace_folders, this.db.outbox, this.db.sync_metadata], async () => {
       const existing = await this.db.workspace_folders.get(id);
       if (!existing) {
         throw new EntityNotFoundError('WorkspaceFolder', id);
@@ -264,6 +373,30 @@ export class WorkspaceFolderRepository {
       };
 
       await this.db.workspace_folders.put(restored);
+
+      if (this.outboxRepo) {
+        await this.outboxRepo.enqueueInTx({
+          userId: restored.userId,
+          projectId: restored.projectId,
+          entityType: 'workspace_folder',
+          entityId: restored.id,
+          operation: 'update',
+          payload: {
+            name: restored.name,
+            parentFolderId: restored.parentFolderId,
+          },
+          localRevision: restored.localRevision,
+        });
+      }
+
+      await this.syncMetadataRepo.upsertInTx({
+        entityType: 'workspace_folder',
+        entityId: restored.id,
+        userId: restored.userId,
+        syncState: 'pending',
+        localRevision: restored.localRevision,
+      });
+
       return restored;
     });
   }

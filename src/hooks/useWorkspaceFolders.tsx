@@ -5,14 +5,22 @@ import { WorkspaceFolder } from '@/types/workspace';
 import { WorkspaceFolderRepository } from '@/lib/repositories/folderRepository';
 import { OutboxRepository } from '@/lib/repositories/outboxRepository';
 import { getTabCoordinator } from '@/lib/sync/tabCoordinator';
+import { getUserArtixDB, migrateLegacyArtixDB } from '@/lib/local/db';
 import { useMemo, useEffect } from 'react';
 
 export function useWorkspaceFolders(projectId?: string) {
   const { user } = useAuth();
   const queryClient = useQueryClient();
-  const outboxRepo = useMemo(() => new OutboxRepository(), []);
-  const folderRepo = useMemo(() => new WorkspaceFolderRepository(undefined, outboxRepo), [outboxRepo]);
+  const userDb = useMemo(() => getUserArtixDB(user?.id), [user?.id]);
+  const outboxRepo = useMemo(() => new OutboxRepository(userDb), [userDb]);
+  const folderRepo = useMemo(() => new WorkspaceFolderRepository(userDb, outboxRepo), [userDb, outboxRepo]);
   const coordinator = useMemo(() => getTabCoordinator(), []);
+
+  useEffect(() => {
+    if (user?.id) {
+      migrateLegacyArtixDB(userDb, user.id).catch(() => {});
+    }
+  }, [userDb, user?.id]);
 
   useEffect(() => {
     const unsub = coordinator.onCrossTabChange((event) => {
@@ -28,9 +36,10 @@ export function useWorkspaceFolders(projectId?: string) {
     queryFn: async () => {
       if (!user || !projectId) return [];
 
-      let remoteFolders: any[] | null = null;
+      // 1. Read from local IndexedDB first
+      let localFolders = await folderRepo.listByProject(user.id, projectId);
 
-      // 1. Attempt network fetch if online
+      // 2. Try fetching from Supabase (if online) to reconcile remote updates
       try {
         const { data, error } = await supabase
           .from('workspace_folders')
@@ -40,42 +49,26 @@ export function useWorkspaceFolders(projectId?: string) {
           .order('name', { ascending: true });
 
         if (!error && data) {
-          remoteFolders = data;
-          // Hydrate local repository
           for (const f of data) {
             const existing = await folderRepo.getByIdIncludeDeleted(f.id);
-            if (!existing) {
-              await folderRepo.create({
+            if (!existing || (!existing.isDeleted && existing.name !== f.name)) {
+              await folderRepo.applyRemoteSnapshot({
                 id: f.id,
                 userId: f.user_id,
                 projectId: f.project_id,
                 name: f.name,
                 parentFolderId: f.parent_folder_id,
-              }, { skipOutbox: true });
-            } else if (!existing.isDeleted && existing.name !== f.name) {
-              await folderRepo.update(f.id, {
-                name: f.name,
-                parentFolderId: f.parent_folder_id,
-              }, { skipOutbox: true });
+                updatedAt: f.updated_at,
+                createdAt: f.created_at,
+              });
             }
           }
+          localFolders = await folderRepo.listByProject(user.id, projectId);
         }
       } catch {
-        // Offline / network failure: fall back to local IndexedDB
+        // Offline or network error: gracefully serve localFolders from IndexedDB!
       }
 
-      if (remoteFolders) {
-        return remoteFolders.map((f: any) => ({
-          id: f.id,
-          projectId: f.project_id,
-          name: f.name,
-          createdAt: f.created_at,
-          updatedAt: f.updated_at,
-        })) as WorkspaceFolder[];
-      }
-
-      // 2. Offline fallback from local IndexedDB
-      const localFolders = await folderRepo.listByProject(user.id, projectId);
       return localFolders.map((f) => ({
         id: f.id,
         projectId: f.projectId,
@@ -92,53 +85,16 @@ export function useWorkspaceFolders(projectId?: string) {
       if (!user) throw new Error('Not authenticated');
       const trimmedName = name.trim();
 
-      let remoteFolder: any = null;
-      let remoteError: any = null;
-
-      try {
-        const { data, error } = await supabase
-          .from('workspace_folders')
-          .insert({ user_id: user.id, project_id: projectId, name: trimmedName })
-          .select()
-          .single();
-
-        if (error) {
-          remoteError = error;
-        } else {
-          remoteFolder = data;
-        }
-      } catch (err: any) {
-        remoteError = err;
+      // Check for duplicate folder name locally
+      const existingFolders = await folderRepo.listByProject(user.id, projectId);
+      const isDuplicate = existingFolders.some(
+        (f) => f.name.toLowerCase() === trimmedName.toLowerCase()
+      );
+      if (isDuplicate) {
+        throw new Error(`A folder named "${trimmedName}" already exists in this project`);
       }
 
-      if (remoteError) {
-        if (remoteError.code === '23505' || remoteError.message?.includes('already exists')) {
-          throw new Error(`A folder named "${trimmedName}" already exists in this project`);
-        }
-        // If not a uniqueness error, could be offline; fall back to local persistence
-      }
-
-      if (remoteFolder) {
-        // Save remote record into local repository
-        const existing = await folderRepo.getByIdIncludeDeleted(remoteFolder.id);
-        if (!existing) {
-          await folderRepo.create({
-            id: remoteFolder.id,
-            userId: remoteFolder.user_id,
-            projectId: remoteFolder.project_id,
-            name: remoteFolder.name,
-          }, { skipOutbox: true });
-        }
-        return {
-          id: remoteFolder.id,
-          projectId: remoteFolder.project_id,
-          name: remoteFolder.name,
-          createdAt: remoteFolder.created_at,
-          updatedAt: remoteFolder.updated_at,
-        } as WorkspaceFolder;
-      }
-
-      // Offline path: persist to local IndexedDB
+      // 1. Create immediately in local IndexedDB (Local-First Authority)
       const localFolder = await folderRepo.create({
         userId: user.id,
         projectId,
@@ -153,10 +109,16 @@ export function useWorkspaceFolders(projectId?: string) {
         updatedAt: localFolder.updatedAt,
       } as WorkspaceFolder;
     },
-    onSuccess: (data) => {
+    onSuccess: (newFolder) => {
+      queryClient.setQueryData<WorkspaceFolder[]>(
+        ['workspace_folders', projectId],
+        (old = []) => [...old.filter((f) => f.id !== newFolder.id), newFolder].sort((a, b) =>
+          a.name.localeCompare(b.name)
+        )
+      );
       coordinator.broadcastChange({
         entityType: 'workspace_folder',
-        entityId: data.id,
+        entityId: newFolder.id,
         operation: 'create',
         localRevision: 1,
       });
@@ -168,41 +130,32 @@ export function useWorkspaceFolders(projectId?: string) {
     mutationFn: async ({ id, name }: { id: string; name: string }) => {
       const trimmedName = name.trim();
 
-      let remoteError: any = null;
-      try {
-        const { error } = await supabase
-          .from('workspace_folders')
-          .update({ name: trimmedName })
-          .eq('id', id);
-
-        if (error) remoteError = error;
-      } catch (err: any) {
-        remoteError = err;
-      }
-
-      if (remoteError) {
-        if (remoteError.code === '23505' || remoteError.message?.includes('already exists')) {
+      // Check for duplicate folder name locally
+      if (projectId && user) {
+        const existingFolders = await folderRepo.listByProject(user.id, projectId);
+        const isDuplicate = existingFolders.some(
+          (f) => f.id !== id && f.name.toLowerCase() === trimmedName.toLowerCase()
+        );
+        if (isDuplicate) {
           throw new Error(`A folder named "${trimmedName}" already exists in this project`);
         }
       }
 
       // Update local IndexedDB
-      const existing = await folderRepo.getById(id);
-      if (existing) {
-        await folderRepo.rename(id, trimmedName);
-      } else if (!remoteError) {
-        await folderRepo.create({
-          id,
-          userId: user?.id || '',
-          projectId: projectId || '',
-          name: trimmedName,
-        });
-      }
+      await folderRepo.rename(id, trimmedName);
+      return { id, name: trimmedName };
     },
-    onSuccess: (_, variables) => {
+    onSuccess: (updated) => {
+      queryClient.setQueryData<WorkspaceFolder[]>(
+        ['workspace_folders', projectId],
+        (old = []) =>
+          old.map((f) => (f.id === updated.id ? { ...f, name: updated.name } : f)).sort((a, b) =>
+            a.name.localeCompare(b.name)
+          )
+      );
       coordinator.broadcastChange({
         entityType: 'workspace_folder',
-        entityId: variables.id,
+        entityId: updated.id,
         operation: 'update',
         localRevision: 2,
       });
@@ -212,18 +165,13 @@ export function useWorkspaceFolders(projectId?: string) {
 
   const deleteFolderMutation = useMutation({
     mutationFn: async (id: string) => {
-      try {
-        await supabase
-          .from('workspace_folders')
-          .delete()
-          .eq('id', id);
-      } catch {
-        // Offline safe
-      }
-
       await folderRepo.delete(id);
     },
     onSuccess: (_, id) => {
+      queryClient.setQueryData<WorkspaceFolder[]>(
+        ['workspace_folders', projectId],
+        (old = []) => old.filter((f) => f.id !== id)
+      );
       coordinator.broadcastChange({
         entityType: 'workspace_folder',
         entityId: id,

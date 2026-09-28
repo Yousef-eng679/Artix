@@ -21,6 +21,40 @@ export class SyncMetadataRepository {
   }
 
   /**
+   * Upserts sync metadata directly within an ambient Dexie transaction without wrapping in another transaction block.
+   */
+  async upsertInTx(params: {
+    entityType: EntityType;
+    entityId: string;
+    userId: string;
+    syncState?: SyncState;
+    serverVersion?: string | null;
+    serverUpdatedAt?: string | null;
+    localRevision?: number;
+    lastSyncedAt?: number | null;
+    baseSnapshot?: unknown | null;
+  }): Promise<SyncMetadata> {
+    const id = this.makeId(params.entityType, params.entityId);
+    const existing = await this.db.sync_metadata.get(id);
+
+    const metadata: SyncMetadata = {
+      id,
+      entityType: params.entityType,
+      entityId: params.entityId,
+      userId: params.userId,
+      syncState: params.syncState ?? existing?.syncState ?? 'pending',
+      serverVersion: params.serverVersion !== undefined ? params.serverVersion : (existing?.serverVersion ?? null),
+      serverUpdatedAt: params.serverUpdatedAt !== undefined ? params.serverUpdatedAt : (existing?.serverUpdatedAt ?? null),
+      localRevision: params.localRevision ?? existing?.localRevision ?? 1,
+      lastSyncedAt: params.lastSyncedAt !== undefined ? params.lastSyncedAt : (existing?.lastSyncedAt ?? null),
+      baseSnapshot: params.baseSnapshot !== undefined ? params.baseSnapshot : (existing?.baseSnapshot ?? null),
+    };
+
+    await this.db.sync_metadata.put(metadata);
+    return metadata;
+  }
+
+  /**
    * Upserts sync metadata for an entity.
    */
   async upsert(params: {
@@ -32,26 +66,10 @@ export class SyncMetadataRepository {
     serverUpdatedAt?: string | null;
     localRevision?: number;
     lastSyncedAt?: number | null;
+    baseSnapshot?: unknown | null;
   }): Promise<SyncMetadata> {
-    const id = this.makeId(params.entityType, params.entityId);
-
     return await this.db.transaction('rw', this.db.sync_metadata, async () => {
-      const existing = await this.db.sync_metadata.get(id);
-
-      const metadata: SyncMetadata = {
-        id,
-        entityType: params.entityType,
-        entityId: params.entityId,
-        userId: params.userId,
-        syncState: params.syncState ?? existing?.syncState ?? 'pending',
-        serverVersion: params.serverVersion !== undefined ? params.serverVersion : (existing?.serverVersion ?? null),
-        serverUpdatedAt: params.serverUpdatedAt !== undefined ? params.serverUpdatedAt : (existing?.serverUpdatedAt ?? null),
-        localRevision: params.localRevision ?? existing?.localRevision ?? 1,
-        lastSyncedAt: params.lastSyncedAt !== undefined ? params.lastSyncedAt : (existing?.lastSyncedAt ?? null),
-      };
-
-      await this.db.sync_metadata.put(metadata);
-      return metadata;
+      return await this.upsertInTx(params);
     });
   }
 

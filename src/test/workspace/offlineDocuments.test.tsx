@@ -4,7 +4,7 @@ import { renderHook, act } from '@testing-library/react';
 import React from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useDocuments } from '@/hooks/useDocuments';
-import { deleteArtixDB } from '@/lib/local/db';
+import { deleteArtixDB, getUserArtixDB } from '@/lib/local/db';
 import { DocumentRepository } from '@/lib/repositories/documentRepository';
 
 const mockUser = { id: 'user-offline-1', email: 'offline@artix.dev' };
@@ -41,7 +41,7 @@ describe('Offline-First useDocuments Hook Integration', () => {
 
   beforeEach(async () => {
     await deleteArtixDB();
-    docRepo = new DocumentRepository();
+    docRepo = new DocumentRepository(getUserArtixDB(mockUser.id));
     queryClient = new QueryClient({
       defaultOptions: {
         queries: { retry: false, gcTime: 0 },

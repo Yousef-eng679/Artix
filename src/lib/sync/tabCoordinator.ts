@@ -1,4 +1,5 @@
 import { EntityType, OutboxOperation } from '../local/types';
+import { getUserScopeHash } from '../local/db';
 
 export interface CrossTabChangeEvent {
   type: 'ENTITY_CHANGED';
@@ -27,15 +28,18 @@ export type CrossTabMessage =
 export class TabCoordinator {
   private tabId: string;
   private channelName: string;
+  private userScope: string;
   private channel: BroadcastChannel | null = null;
   private isLeader = false;
   private lockAbortController: AbortController | null = null;
   private changeListeners = new Set<(event: CrossTabChangeEvent) => void>();
   private syncRequestListeners = new Set<() => void>();
+  private recentEvents = new Map<string, number>();
 
-  constructor(channelName = 'artix_cross_tab_sync') {
+  constructor(channelName?: string, userScope = 'default') {
+    this.userScope = userScope;
     this.tabId = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `tab-${Date.now()}-${Math.random()}`;
-    this.channelName = channelName;
+    this.channelName = channelName || (userScope !== 'default' ? `artix_cross_tab_sync_${userScope}` : 'artix_cross_tab_sync');
 
     this.initBroadcastChannel();
     this.acquireLeaderLock();
@@ -47,6 +51,13 @@ export class TabCoordinator {
 
   isLeaderTab(): boolean {
     return this.isLeader;
+  }
+
+  /**
+   * Directly sets leadership state for unit/integration testing.
+   */
+  setLeaderForTesting(leader: boolean): void {
+    this.isLeader = leader;
   }
 
   private initBroadcastChannel(): void {
@@ -68,6 +79,20 @@ export class TabCoordinator {
     }
 
     if (message.type === 'ENTITY_CHANGED') {
+      const signature = `${message.entityType}:${message.entityId}:${message.operation}:${message.localRevision}`;
+      const now = Date.now();
+      const lastSeen = this.recentEvents.get(signature);
+      if (lastSeen && now - lastSeen < 3000) {
+        return; // Suppress duplicate events within 3000ms window
+      }
+      this.recentEvents.set(signature, now);
+
+      if (this.recentEvents.size > 200) {
+        for (const [sig, ts] of this.recentEvents.entries()) {
+          if (now - ts > 10000) this.recentEvents.delete(sig);
+        }
+      }
+
       for (const listener of this.changeListeners) {
         try {
           listener(message);
@@ -89,12 +114,13 @@ export class TabCoordinator {
   }
 
   private acquireLeaderLock(): void {
+    const lockName = this.userScope !== 'default' ? `artix_sync_leader_lock_${this.userScope}` : 'artix_sync_leader_lock';
     if (typeof navigator !== 'undefined' && navigator.locks && navigator.locks.request) {
       this.lockAbortController = new AbortController();
 
       navigator.locks
         .request(
-          'artix_sync_leader_lock',
+          lockName,
           { signal: this.lockAbortController.signal },
           () => {
             this.isLeader = true;
@@ -215,12 +241,22 @@ export class TabCoordinator {
   }
 }
 
-// Global coordinator singleton
-let globalCoordinator: TabCoordinator | null = null;
+// User-scoped coordinator cache
+const userCoordinators = new Map<string, TabCoordinator>();
 
-export function getTabCoordinator(): TabCoordinator {
-  if (!globalCoordinator) {
-    globalCoordinator = new TabCoordinator();
+export function getTabCoordinator(userId?: string | null): TabCoordinator {
+  const scope = userId ? getUserScopeHash(userId) : 'default';
+  let coordinator = userCoordinators.get(scope);
+  if (!coordinator) {
+    coordinator = new TabCoordinator(undefined, scope);
+    userCoordinators.set(scope, coordinator);
   }
-  return globalCoordinator;
+  return coordinator;
+}
+
+export function resetTabCoordinatorsForTesting(): void {
+  for (const coord of userCoordinators.values()) {
+    coord.destroy();
+  }
+  userCoordinators.clear();
 }

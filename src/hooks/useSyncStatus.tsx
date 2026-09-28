@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useMemo } from 'react';
 import { getSyncEngine, SyncStatus } from '@/lib/sync/syncEngine';
 import { useAuth } from './useAuth';
 
@@ -13,7 +13,7 @@ export interface UseSyncStatusReturn {
 
 export function useSyncStatus(): UseSyncStatusReturn {
   const { user } = useAuth();
-  const engine = getSyncEngine();
+  const engine = useMemo(() => getSyncEngine(user?.id), [user?.id]);
 
   const [status, setStatus] = useState<SyncStatus>(() => engine.getStatus());
   const [pendingCount, setPendingCount] = useState<number>(0);

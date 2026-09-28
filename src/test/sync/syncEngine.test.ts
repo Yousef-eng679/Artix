@@ -316,4 +316,51 @@ describe('SyncEngine', () => {
 
     engine.destroy();
   });
+
+  it('handles transport timeout during push and marks entry failed for retry', async () => {
+    await outboxRepo.enqueue({
+      userId: 'user-timeout',
+      projectId: 'proj-1',
+      entityType: 'document',
+      entityId: 'doc-timeout-1',
+      operation: 'create',
+      payload: { title: 'Hanging Document' },
+      localRevision: 1,
+    });
+
+    const timeoutError = new Error('Network transport request timed out');
+    (timeoutError as any).name = 'TimeoutError';
+    (timeoutError as any).code = 'ETIMEDOUT';
+
+    const mockSupabase = {
+      from: vi.fn().mockReturnValue({
+        upsert: vi.fn().mockReturnValue({
+          select: vi.fn().mockReturnValue({
+            single: vi.fn().mockRejectedValue(timeoutError),
+          }),
+        }),
+      }),
+    };
+
+    const engine = new SyncEngine({
+      supabaseClient: mockSupabase,
+      outboxRepo,
+      syncMetadataRepo,
+      maxRetries: 3,
+    });
+
+    await engine.triggerSync('user-timeout');
+
+    // Entry should still exist, attemptCount incremented to 1, classified as network error
+    const pending = await outboxRepo.getPending(undefined, 'user-timeout');
+    expect(pending).toHaveLength(1);
+    expect(pending[0].attemptCount).toBe(1);
+    expect(pending[0].lastError?.code).toBe('ETIMEDOUT');
+    expect(pending[0].lastError?.message).toContain('timed out');
+
+    // Engine state should be error
+    expect(engine.getStatus().state).toBe('error');
+
+    engine.destroy();
+  });
 });

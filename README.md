@@ -36,9 +36,13 @@ Artix is a modern, unified SaaS platform designed for software engineers, produc
 - **Bring-Your-Own-Key (BYOK)**: Supports OpenAI, Anthropic Claude, Google Gemini, Groq, OpenRouter, and local Ollama servers.
 - **Client-Side Encryption**: Optional AES-256-GCM encryption with PBKDF2 passphrase derivation, paired with automated client-side key obfuscation to prevent plaintext exposure in local storage.
 
-### ⚡ PWA & Offline Support
-- **Progressive Web App**: Installable as a native desktop or mobile application.
-- **Offline Workspace**: ServiceWorker precaching for uninterrupted document editing and offline system design.
+### ⚡ Authoritative Local-First Sync & Offline Support
+- **User-Partitioned IndexedDB**: Complete local authority with `ArtixDB_v2_<hash>` storage, enabling 100% offline creation, edits, and deletions without UI blocking.
+- **Atomic 3-Table Mutations**: Every local action executes within a Dexie transaction across `[entity, outbox, sync_metadata]`.
+- **Durable Background Sync**: Outbox queue with CAS version concurrency guards, crash recovery leases, and dependency-ordered topological cloud draining.
+- **Change Feed & 3-Way Merge**: Remote changes stream through durable cursors; conflicts resolve via deterministic 3-way line diff3 merging.
+- **Multi-Tab Leader Coordination**: Single-leader draining across open tabs via `BroadcastChannel` with duplicate broadcast suppression.
+- **Progressive Web App**: ServiceWorker precaching for native installability and zero-network resilience.
 
 ## Documentation
 

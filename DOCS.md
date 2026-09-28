@@ -70,9 +70,14 @@ Artix is a developer workspace platform that combines multi-format technical doc
 
 ### Subsystem Details
 
-1. **Document Forge and Storage Sync**:
-   - Monaco Editor dual-view sync.
-   - 4-Tier Auto-Save strategy: 1000ms Debounce → Optimistic Lock Queue (`saveQueue.ts`) → `sendBeacon` / `keepalive` Unload Guard (`tabCloseGuard.ts`) → `BroadcastChannel` Multi-Tab Sync (`multiTabSync.ts`).
+1. **Authoritative Local-First Synchronization Architecture**:
+   - **User-Partitioned IndexedDB (`ArtixDB_v2_<hash>`)**: Authoritative client-side persistence isolated per user session to guarantee zero data leakage.
+   - **Atomic 3-Table Mutations**: Every local creation, update, or deletion is committed atomically across `[entity, outbox, sync_metadata]` in a single Dexie transaction.
+   - **Compare-and-Swap (CAS) Concurrency**: Monotonic `version BIGINT` columns on PostgreSQL with optimistic concurrency checks preventing silent overwrites.
+   - **Durable Change Feed & Cursor Tracking**: Supabase trigger-populated `sync_changes` change feed paired with local `database_meta` cursor tracking (`PullEngine`).
+   - **Deterministic 3-Way Conflict Engine**: Line-by-line diff3 text merging for documents and safe divergence copies for canvas architectures with full audit trail in `conflicts` repository.
+   - **Multi-Tab Leader Election & Coordination**: `TabCoordinator` manages single-tab push draining, cross-tab reactive invalidation, and 3-second duplicate signature suppression.
+   - **User Sync Runtime Lifecycle**: `UserSyncRuntime` manages dynamic initialization, tear-down, and session switching on auth boundaries.
 
 2. **System Architect and Graph Engine**:
    - React Flow graph with custom node components, connection lines, double-click label editing, and freehand drawing canvas.
@@ -118,6 +123,16 @@ Artix is a developer workspace platform that combines multi-format technical doc
 ---
 
 ## 4. Changelog and Release History
+
+### [v2.0.0] — 2026-09-28
+- **Hardened Local-First Architecture**: Complete transition to authoritative IndexedDB persistence with background outbox synchronization and zero UI blocking on network operations.
+- **User-Partitioned Databases**: Implemented strict per-user database partitioning (`ArtixDB_v2_<hash>`) guaranteeing zero cross-session or multi-user data leakage.
+- **Atomic Mutation Transactions**: Refactored `DocumentRepository`, `SystemDesignRepository`, and `WorkspaceFolderRepository` to execute mutations atomically across `[entity, outbox, sync_metadata]`.
+- **Server Concurrency Protocol (CAS)**: Added monotonic `version BIGINT` column and compare-and-swap update guards on Supabase tables to detect concurrent modification conflicts.
+- **Durable Change Feed & Cursor Pull**: Built `sync_changes` table and `PullEngine` for durable catch-up hydration with server cursor persistence.
+- **Deterministic 3-Way Conflict Engine**: Line-by-line diff3 text resolution, design copy branching, and folder conflict disambiguation via `ConflictRepository`.
+- **Multi-Tab Leadership & Coordination**: Hardened `TabCoordinator` with single-leader drain election, heartbeat lease recovery, and duplicate broadcast suppression.
+- **UserSyncRuntime**: Scoped runtime lifecycle binding local repositories, SyncEngine, and coordinators to the active authentication session.
 
 ### [v1.5.0] — 2026-07-25
 - **Google OAuth**: Integrated 1-click Google OAuth authentication (`signInWithGoogle`) in `useAuth.tsx` and added Google Sign-In button on `Auth.tsx`.

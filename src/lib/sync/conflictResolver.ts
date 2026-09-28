@@ -123,4 +123,31 @@ export class ConflictResolver {
       remotePayload,
     };
   }
+
+  /**
+   * Normalizes a folder name using canonical Unicode normalization (NFKC),
+   * trimming extraneous whitespace, and providing a safe default.
+   */
+  static normalizeFolderName(rawName: string): string {
+    if (!rawName) return 'Untitled Folder';
+    const normalized = rawName.normalize('NFKC').trim();
+    return normalized.length > 0 ? normalized : 'Untitled Folder';
+  }
+
+  /**
+   * Generates a conflict copy name for a folder avoiding collisions.
+   */
+  static resolveFolderConflictName(baseName: string, existingNames: string[] = []): string {
+    const cleanBase = this.normalizeFolderName(baseName);
+    const candidate = `${cleanBase} (Conflict Copy)`;
+    if (!existingNames.includes(candidate)) {
+      return candidate;
+    }
+
+    let counter = 2;
+    while (existingNames.includes(`${cleanBase} (Conflict Copy ${counter})`)) {
+      counter++;
+    }
+    return `${cleanBase} (Conflict Copy ${counter})`;
+  }
 }

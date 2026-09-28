@@ -1,9 +1,13 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import 'fake-indexeddb/auto';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook, waitFor, act } from '@testing-library/react';
 import React from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useWorkspaceFolders } from '@/hooks/useWorkspaceFolders';
 import { supabase } from '@/integrations/supabase/client';
+import { deleteArtixDB, getUserArtixDB } from '@/lib/local/db';
+import { WorkspaceFolderRepository } from '@/lib/repositories/folderRepository';
+import { OutboxRepository } from '@/lib/repositories/outboxRepository';
 
 const mockUser = { id: 'user-alpha', email: 'user@artix.dev' };
 let currentUser: typeof mockUser | null = mockUser;
@@ -12,11 +16,36 @@ vi.mock('@/hooks/useAuth', () => ({
   useAuth: () => ({ user: currentUser, loading: false }),
 }));
 
+vi.mock('@/integrations/supabase/client', () => {
+  const offlineError = { message: 'Network request failed (offline)', code: 'PGRST000' };
+  const mockBuilder: any = {
+    select: vi.fn(() => mockBuilder),
+    eq: vi.fn(() => mockBuilder),
+    order: vi.fn(() => Promise.resolve({ data: null, error: offlineError })),
+    insert: vi.fn(() => Promise.resolve({ data: null, error: offlineError })),
+    update: vi.fn(() => mockBuilder),
+    delete: vi.fn(() => mockBuilder),
+    single: vi.fn(() => Promise.resolve({ data: null, error: offlineError })),
+  };
+
+  return {
+    supabase: {
+      from: vi.fn(() => mockBuilder),
+    },
+  };
+});
+
 describe('useWorkspaceFolders Hook', () => {
   let queryClient: QueryClient;
+  let folderRepo: WorkspaceFolderRepository;
+  let outboxRepo: OutboxRepository;
   const projectId = 'proj-123';
 
-  beforeEach(() => {
+  beforeEach(async () => {
+    await deleteArtixDB();
+    const userDb = getUserArtixDB(mockUser.id);
+    outboxRepo = new OutboxRepository(userDb);
+    folderRepo = new WorkspaceFolderRepository(userDb, outboxRepo);
     queryClient = new QueryClient({
       defaultOptions: {
         queries: {
@@ -27,6 +56,10 @@ describe('useWorkspaceFolders Hook', () => {
     });
     currentUser = mockUser;
     vi.restoreAllMocks();
+  });
+
+  afterEach(async () => {
+    await deleteArtixDB();
   });
 
   const wrapper = ({ children }: { children: React.ReactNode }) => (
@@ -41,39 +74,20 @@ describe('useWorkspaceFolders Hook', () => {
   });
 
   it('queries and returns folders sorted by name', async () => {
-    const mockDbFolders = [
-      {
-        id: 'f1',
-        project_id: projectId,
-        user_id: 'user-alpha',
-        name: 'Authentication',
-        created_at: '2026-09-01T00:00:00Z',
-        updated_at: '2026-09-01T00:00:00Z',
-      },
-      {
-        id: 'f2',
-        project_id: projectId,
-        user_id: 'user-alpha',
-        name: 'Billing',
-        created_at: '2026-09-02T00:00:00Z',
-        updated_at: '2026-09-02T00:00:00Z',
-      },
-    ];
+    // Pre-populate folders in local repository
+    await folderRepo.create({
+      id: 'f1',
+      projectId,
+      userId: 'user-alpha',
+      name: 'Authentication',
+    }, { skipOutbox: true });
 
-    vi.spyOn(supabase, 'from').mockImplementation((table: string) => {
-      if (table === 'workspace_folders') {
-        return {
-          select: () => ({
-            eq: () => ({
-              eq: () => ({
-                order: async () => ({ data: mockDbFolders, error: null }),
-              }),
-            }),
-          }),
-        } as any;
-      }
-      return {} as any;
-    });
+    await folderRepo.create({
+      id: 'f2',
+      projectId,
+      userId: 'user-alpha',
+      name: 'Billing',
+    }, { skipOutbox: true });
 
     const { result } = renderHook(() => useWorkspaceFolders(projectId), { wrapper });
 
@@ -81,186 +95,111 @@ describe('useWorkspaceFolders Hook', () => {
       expect(result.current.folders).toHaveLength(2);
     });
 
-    expect(result.current.folders[0]).toEqual({
-      id: 'f1',
-      projectId,
-      name: 'Authentication',
-      createdAt: '2026-09-01T00:00:00Z',
-      updatedAt: '2026-09-01T00:00:00Z',
-    });
+    expect(result.current.folders[0].id).toBe('f1');
+    expect(result.current.folders[0].name).toBe('Authentication');
+    expect(result.current.folders[1].id).toBe('f2');
     expect(result.current.folders[1].name).toBe('Billing');
   });
 
   it('creates a new folder via createFolder mutation', async () => {
-    const newDbFolder = {
-      id: 'f-new',
-      project_id: projectId,
-      user_id: 'user-alpha',
-      name: 'Deployment',
-      created_at: '2026-09-03T00:00:00Z',
-      updated_at: '2026-09-03T00:00:00Z',
-    };
-
-    const insertMock = vi.fn().mockReturnValue({
-      select: () => ({
-        single: async () => ({ data: newDbFolder, error: null }),
-      }),
-    });
-
-    vi.spyOn(supabase, 'from').mockImplementation((table: string) => {
-      if (table === 'workspace_folders') {
-        return {
-          select: () => ({
-            eq: () => ({
-              eq: () => ({
-                order: async () => ({ data: [], error: null }),
-              }),
-            }),
-          }),
-          insert: insertMock,
-        } as any;
-      }
-      return {} as any;
-    });
-
     const { result } = renderHook(() => useWorkspaceFolders(projectId), { wrapper });
 
-    let created;
+    let created: any;
     await act(async () => {
       created = await result.current.createFolder({ name: 'Deployment', projectId });
     });
 
-    expect(insertMock).toHaveBeenCalledWith({
-      user_id: 'user-alpha',
-      project_id: projectId,
-      name: 'Deployment',
-    });
-    expect(created).toEqual({
-      id: 'f-new',
-      projectId,
-      name: 'Deployment',
-      createdAt: '2026-09-03T00:00:00Z',
-      updatedAt: '2026-09-03T00:00:00Z',
-    });
+    expect(created.name).toBe('Deployment');
+    expect(created.projectId).toBe(projectId);
+
+    // Verify stored in IndexedDB
+    const local = await folderRepo.getById(created.id);
+    expect(local).toBeDefined();
+    expect(local?.name).toBe('Deployment');
+
+    // Verify enqueued in Outbox
+    const pending = await outboxRepo.getPending(10, 'user-alpha');
+    expect(pending.some((e) => e.entityId === created.id && e.operation === 'create')).toBe(true);
   });
 
   it('renames a folder via renameFolder mutation', async () => {
-    const updateMock = vi.fn().mockReturnValue({
-      eq: async () => ({ error: null }),
-    });
-
-    vi.spyOn(supabase, 'from').mockImplementation((table: string) => {
-      if (table === 'workspace_folders') {
-        return {
-          select: () => ({
-            eq: () => ({
-              eq: () => ({
-                order: async () => ({ data: [], error: null }),
-              }),
-            }),
-          }),
-          update: updateMock,
-        } as any;
-      }
-      return {} as any;
-    });
+    const existing = await folderRepo.create({
+      id: 'f-1',
+      projectId,
+      userId: 'user-alpha',
+      name: 'Original Area',
+    }, { skipOutbox: true });
 
     const { result } = renderHook(() => useWorkspaceFolders(projectId), { wrapper });
 
     await act(async () => {
-      await result.current.renameFolder({ id: 'f-1', name: 'Renamed Area' });
+      await result.current.renameFolder({ id: existing.id, name: 'Renamed Area' });
     });
 
-    expect(updateMock).toHaveBeenCalledWith({ name: 'Renamed Area' });
+    const local = await folderRepo.getById(existing.id);
+    expect(local?.name).toBe('Renamed Area');
+
+    const pending = await outboxRepo.getPending(10, 'user-alpha');
+    expect(pending.some((e) => e.entityId === existing.id && e.operation === 'update')).toBe(true);
   });
 
   it('deletes a folder via deleteFolder mutation and invalidates related caches', async () => {
-    const deleteMock = vi.fn().mockReturnValue({
-      eq: async () => ({ error: null }),
-    });
+    const existing = await folderRepo.create({
+      id: 'f-1',
+      projectId,
+      userId: 'user-alpha',
+      name: 'To Delete',
+    }, { skipOutbox: true });
 
     const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries');
-
-    vi.spyOn(supabase, 'from').mockImplementation((table: string) => {
-      if (table === 'workspace_folders') {
-        return {
-          select: () => ({
-            eq: () => ({
-              eq: () => ({
-                order: async () => ({ data: [], error: null }),
-              }),
-            }),
-          }),
-          delete: deleteMock,
-        } as any;
-      }
-      return {} as any;
-    });
-
     const { result } = renderHook(() => useWorkspaceFolders(projectId), { wrapper });
 
     await act(async () => {
-      await result.current.deleteFolder('f-1');
+      await result.current.deleteFolder(existing.id);
     });
 
-    expect(deleteMock).toHaveBeenCalled();
+    // Verified deleted locally
+    const local = await folderRepo.getById(existing.id);
+    expect(local).toBeNull();
+
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['workspace_folders', projectId] });
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['documents'] });
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['system_designs', projectId] });
   });
 
-  it('throws a descriptive error when createFolder encounters a duplicate name (error 23505)', async () => {
-    const insertMock = vi.fn().mockReturnValue({
-      select: () => ({
-        single: async () => ({
-          data: null,
-          error: { code: '23505', message: 'duplicate key value violates unique constraint' },
-        }),
-      }),
-    });
-
-    vi.spyOn(supabase, 'from').mockImplementation((table: string) => {
-      if (table === 'workspace_folders') {
-        return {
-          insert: insertMock,
-        } as any;
-      }
-      return {} as any;
-    });
+  it('throws a descriptive error when createFolder encounters a duplicate name', async () => {
+    await folderRepo.create({
+      projectId,
+      userId: 'user-alpha',
+      name: 'Billing',
+    }, { skipOutbox: true });
 
     const { result } = renderHook(() => useWorkspaceFolders(projectId), { wrapper });
 
     await expect(
       result.current.createFolder({ name: '  Billing  ', projectId })
     ).rejects.toThrow('A folder named "Billing" already exists in this project');
-
-    expect(insertMock).toHaveBeenCalledWith(
-      expect.objectContaining({ name: 'Billing' })
-    );
   });
 
-  it('throws a descriptive error when renameFolder encounters a duplicate name (error 23505)', async () => {
-    const updateMock = vi.fn().mockReturnValue({
-      eq: async () => ({
-        error: { code: '23505', message: 'duplicate key value violates unique constraint' },
-      }),
-    });
+  it('throws a descriptive error when renameFolder encounters a duplicate name', async () => {
+    await folderRepo.create({
+      id: 'f-existing',
+      projectId,
+      userId: 'user-alpha',
+      name: 'ExistingFolder',
+    }, { skipOutbox: true });
 
-    vi.spyOn(supabase, 'from').mockImplementation((table: string) => {
-      if (table === 'workspace_folders') {
-        return {
-          update: updateMock,
-        } as any;
-      }
-      return {} as any;
-    });
+    const folderToRename = await folderRepo.create({
+      id: 'f-1',
+      projectId,
+      userId: 'user-alpha',
+      name: 'OriginalFolder',
+    }, { skipOutbox: true });
 
     const { result } = renderHook(() => useWorkspaceFolders(projectId), { wrapper });
 
     await expect(
-      result.current.renameFolder({ id: 'f-1', name: '  ExistingFolder  ' })
+      result.current.renameFolder({ id: folderToRename.id, name: '  ExistingFolder  ' })
     ).rejects.toThrow('A folder named "ExistingFolder" already exists in this project');
-
-    expect(updateMock).toHaveBeenCalledWith({ name: 'ExistingFolder' });
   });
 });
