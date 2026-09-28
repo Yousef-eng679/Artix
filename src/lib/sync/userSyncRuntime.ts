@@ -10,15 +10,18 @@ import { PullEngine } from './pullEngine';
 import { SyncEngine } from './syncEngine';
 import { TabCoordinator, getTabCoordinator } from './tabCoordinator';
 
+import { RealtimeSyncManager } from './realtimeSync';
+
 export interface UserSyncRuntimeOptions {
   supabaseClient?: any;
   db?: ArtixDB;
   tabCoordinator?: TabCoordinator;
+  realtimeSync?: RealtimeSyncManager;
 }
 
 /**
  * Encapsulates the entire offline-first synchronization runtime scoped to a single authenticated user.
- * Owns the user's IndexedDB connection, repositories, pull feed, sync engine, and multi-tab coordinator.
+ * Owns the user's IndexedDB connection, repositories, pull feed, sync engine, realtime listener, and multi-tab coordinator.
  */
 export class UserSyncRuntime {
   readonly userId: string;
@@ -32,6 +35,7 @@ export class UserSyncRuntime {
   readonly pullEngine: PullEngine;
   readonly syncEngine: SyncEngine;
   readonly tabCoordinator: TabCoordinator;
+  readonly realtimeSync: RealtimeSyncManager;
 
   private supabase: any;
   private isStarted = false;
@@ -73,11 +77,18 @@ export class UserSyncRuntime {
       pullEngine: this.pullEngine,
       tabCoordinator: this.tabCoordinator,
     });
+
+    this.realtimeSync = options.realtimeSync || new RealtimeSyncManager({
+      supabaseClient: this.supabase,
+      syncEngine: this.syncEngine,
+      tabCoordinator: this.tabCoordinator,
+    });
   }
 
   /**
    * Initializes the runtime: opens database, runs legacy migrations,
-   * reclaims in-flight crash leases, binds tab communication, and kicks off asynchronous synchronization.
+   * reclaims in-flight crash leases, binds tab communication, starts realtime,
+   * and kicks off asynchronous synchronization.
    */
   async start(): Promise<void> {
     if (this.isStarted) return;
@@ -101,6 +112,9 @@ export class UserSyncRuntime {
       // Standby or leader tabs can react to peer tab changes
     });
 
+    // Start realtime listener for wake-up acceleration
+    this.realtimeSync.start(this.userId);
+
     // Start background synchronization
     this.syncEngine.triggerSync(this.userId).catch((err) => {
       console.warn(`[UserSyncRuntime] Initial sync error for user ${this.userId}:`, err);
@@ -110,8 +124,8 @@ export class UserSyncRuntime {
   }
 
   /**
-   * Shuts down synchronization, unbinds cross-tab channels, destroys listeners,
-   * and cleanly closes the user's IndexedDB connection.
+   * Shuts down synchronization, realtime listener, unbinds cross-tab channels,
+   * destroys listeners, and cleanly closes the user's IndexedDB connection.
    */
   async stop(): Promise<void> {
     if (!this.isStarted) return;
@@ -121,6 +135,7 @@ export class UserSyncRuntime {
       this.unsubCrossTab = undefined;
     }
 
+    this.realtimeSync.stop();
     this.syncEngine.destroy();
     this.tabCoordinator.destroy();
 

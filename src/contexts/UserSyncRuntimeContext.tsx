@@ -12,6 +12,7 @@ import { SystemDesignRepository } from '@/lib/repositories/systemDesignRepositor
 import { OutboxRepository } from '@/lib/repositories/outboxRepository';
 import { SyncEngine } from '@/lib/sync/syncEngine';
 import { TabCoordinator } from '@/lib/sync/tabCoordinator';
+import { RealtimeSyncManager } from '@/lib/sync/realtimeSync';
 import { ArtixDB } from '@/lib/local/db';
 
 export interface UserSyncRuntimeContextType {
@@ -23,6 +24,7 @@ export interface UserSyncRuntimeContextType {
   outboxRepo: OutboxRepository | null;
   syncEngine: SyncEngine | null;
   tabCoordinator: TabCoordinator | null;
+  realtimeSync: RealtimeSyncManager | null;
   isReady: boolean;
 }
 
@@ -81,6 +83,7 @@ export function UserSyncRuntimeProvider({ children }: { children: ReactNode }) {
         outboxRepo: null,
         syncEngine: null,
         tabCoordinator: null,
+        realtimeSync: null,
         isReady,
       };
     }
@@ -94,6 +97,7 @@ export function UserSyncRuntimeProvider({ children }: { children: ReactNode }) {
       outboxRepo: runtime.outboxRepo,
       syncEngine: runtime.syncEngine,
       tabCoordinator: runtime.tabCoordinator,
+      realtimeSync: runtime.realtimeSync,
       isReady,
     };
   }, [runtime, isReady]);
