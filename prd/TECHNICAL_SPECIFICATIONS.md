@@ -1,62 +1,68 @@
-# Artix — Technical Specifications and Database Schema
+# Artix — Technical Specifications & Architecture Model
 
-Target Release: v1.5.0
+> **Status**: `RECONCILED`  
+> **Target Release**: v2.3.0 (Post-C12 Architecture)
 
 ---
 
-## 1. Database Schema and Row Level Security (RLS)
+## 1. Cloud Database Schema (Supabase PostgreSQL)
 
 All database tables reside in Supabase PostgreSQL (`public` schema) and are protected by Row Level Security policies requiring authenticated JWT sessions (`auth.uid() = user_id`).
 
 ```sql
--- 1. Projects Table (20260203132019 & 20260724060000)
+-- 1. Projects Table
 CREATE TABLE public.projects (
   id UUID NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
   user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
   name TEXT NOT NULL DEFAULT 'Untitled Project',
-  created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
-  updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
+  description TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- Foreign Key Constraint (added via 20260724060000_add_missing_user_fk_constraints.sql):
--- CONSTRAINT projects_user_id_fkey FOREIGN KEY (user_id) REFERENCES auth.users(id) ON DELETE CASCADE;
+-- 2. Workspace Folders Table (Hierarchy & DAG)
+CREATE TABLE public.workspace_folders (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  project_id UUID REFERENCES public.projects(id) ON DELETE CASCADE,
+  parent_folder_id UUID REFERENCES public.workspace_folders(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  version INTEGER NOT NULL DEFAULT 1,
+  deleted_at TIMESTAMPTZ NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 
--- 2. Documents Table (20260202130240 & 20260203132019)
+-- 3. Documents Table (Technical Specifications)
 CREATE TABLE public.documents (
   id UUID NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
   project_id UUID REFERENCES public.projects(id) ON DELETE CASCADE,
   user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  folder_id UUID REFERENCES public.workspace_folders(id) ON DELETE SET NULL,
   title TEXT NOT NULL DEFAULT 'Untitled Document',
   content TEXT NOT NULL DEFAULT '',
-  format TEXT NOT NULL DEFAULT 'markdown' CHECK (format IN ('markdown', 'xml', 'text')),
-  created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
-  updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
+  format TEXT NOT NULL DEFAULT 'markdown' CHECK (format IN ('markdown', 'xml', 'plaintext', 'text')),
+  version INTEGER NOT NULL DEFAULT 1,
+  deleted_at TIMESTAMPTZ NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- 3. System Designs Table (20260203132019 & 20260724060000)
+-- 4. System Designs Table (Visual Node Graph Canvas)
 CREATE TABLE public.system_designs (
   id UUID NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
   project_id UUID NOT NULL REFERENCES public.projects(id) ON DELETE CASCADE,
   user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  folder_id UUID REFERENCES public.workspace_folders(id) ON DELETE SET NULL,
   name TEXT NOT NULL DEFAULT 'System Design',
   board_state JSONB NOT NULL DEFAULT '{"nodes": [], "edges": []}'::jsonb,
-  created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
-  updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
+  version INTEGER NOT NULL DEFAULT 1,
+  deleted_at TIMESTAMPTZ NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- Foreign Key Constraint (added via 20260724060000_add_missing_user_fk_constraints.sql):
--- CONSTRAINT system_designs_user_id_fkey FOREIGN KEY (user_id) REFERENCES auth.users(id) ON DELETE CASCADE;
-
--- 4. Profiles Table (20260205164934)
-CREATE TABLE public.profiles (
-  id UUID NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
-  user_id UUID NOT NULL UNIQUE REFERENCES auth.users(id) ON DELETE CASCADE,
-  display_name TEXT,
-  created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
-  updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
-);
-
--- 5. Subscriptions Table (20260722180000)
+-- 5. Subscriptions Table (Stripe Billing Integration)
 CREATE TABLE public.subscriptions (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE UNIQUE,
@@ -70,98 +76,53 @@ CREATE TABLE public.subscriptions (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- 6. Stripe Events Table (20260722180000 - Idempotency)
-CREATE TABLE public.stripe_events (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  stripe_event_id TEXT NOT NULL UNIQUE,
-  event_type TEXT NOT NULL,
+-- 6. Durable Change Feed Log (Append-Only Replication)
+CREATE TABLE public.sync_changes (
+  sequence BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  entity_type TEXT NOT NULL CHECK (entity_type IN ('document', 'system_design', 'workspace_folder')),
+  entity_id TEXT NOT NULL,
+  operation TEXT NOT NULL CHECK (operation IN ('create', 'update', 'delete')),
+  entity_version BIGINT NOT NULL,
+  payload JSONB,
+  changed_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_sync_changes_user_seq ON public.sync_changes (user_id, sequence ASC);
+
+-- 7. Processed Mutations Table (Idempotency Ledger)
+CREATE TABLE public.processed_mutations (
+  mutation_id UUID PRIMARY KEY,
+  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  entity_type TEXT NOT NULL,
+  entity_id UUID NOT NULL,
+  version BIGINT NULL,
+  updated_at TIMESTAMPTZ NULL,
   processed_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-
--- 7. PRD Generations Table (20260617215902)
-CREATE TABLE public.prd_generations (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
-  project_id UUID NOT NULL REFERENCES public.projects(id) ON DELETE CASCADE,
-  source_document_id UUID REFERENCES public.documents(id) ON DELETE SET NULL,
-  template TEXT NOT NULL,
-  output_markdown TEXT NOT NULL,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
--- 8. Agentic Workflows Table
-CREATE TABLE public.agentic_workflows (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
-  project_id UUID NOT NULL REFERENCES public.projects(id) ON DELETE CASCADE,
-  source_document_id UUID REFERENCES public.documents(id) ON DELETE SET NULL,
-  pattern TEXT NOT NULL,
-  agent_count INTEGER NOT NULL DEFAULT 1,
-  output_markdown TEXT NOT NULL,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
--- 9. Vibe Generations Table
-CREATE TABLE public.vibe_generations (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
-  project_id UUID NOT NULL REFERENCES public.projects(id) ON DELETE CASCADE,
-  source_document_id UUID REFERENCES public.documents(id) ON DELETE SET NULL,
-  target TEXT NOT NULL,
-  scope TEXT NOT NULL,
-  output_markdown TEXT NOT NULL,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
 ```
 
 ---
 
-## 2. Supabase Cloud Edge Functions
+## 2. Client Persistence Tier (Dexie.js IndexedDB)
 
-Edge Functions run on Deno TypeScript runtime at edge locations:
-
-### 1. `create-checkout-session`
-- **Location**: `supabase/functions/create-checkout-session/index.ts`
-- **Purpose**: Creates Stripe Checkout Sessions for Pro tier upgrades.
-- **Security**: Validates user JWT from `Authorization` header. Imports CORS header utility (`../_shared/cors.ts`).
-
-### 2. `create-portal-session`
-- **Location**: `supabase/functions/create-portal-session/index.ts`
-- **Purpose**: Generates Stripe Customer Portal URLs.
-- **Security**: Validates JWT, queries `subscriptions.stripe_customer_id`, passes `return_url`.
-
-### 3. `stripe-webhook`
-- **Location**: `supabase/functions/stripe-webhook/index.ts`
-- **Purpose**: Processes Stripe billing webhooks idempotently.
-- **Security**: Validates `Stripe-Signature` header against raw request body using `constructEventAsync`. Checks idempotency against `public.stripe_events`.
+- **Database Name**: `ArtixDB_v2_<hash>` where `<hash>` is derived from 32-bit FNV-1a hashing of `auth.uid()`.
+- **Primary Authority**: All read queries and write mutations occur against local IndexedDB tables with 0ms latency.
+- **Atomic 3-Table Mutations**: Updates write to `[entities, outbox, sync_metadata]` in a single transaction.
+- **Single-Leader Multi-Tab Worker**: Web Locks API (`navigator.locks`) elects one tab to drain the outbox to PostgreSQL.
 
 ---
 
-## 3. Frontend Architecture and Code Splitting
+## 3. Technology Stack Reference
 
-- **Vercel SPA Rewrites**: `vercel.json` maps all non-static requests to `/index.html` (`"rewrites": [{"source": "/(.*)", "destination": "/index.html"}]`), resolving Vercel edge `404 NOT_FOUND` errors on direct URL refreshes.
-- **Route Code-Splitting**: `App.tsx` imports page routes via `React.lazy()` and wraps them in `<Suspense fallback={<PageFallback />}>`. Monaco Editor and React Flow are isolated in a separate `ProjectWorkspace` bundle (~561 kB), lowering the initial JavaScript entry chunk from 1.47 MB to ~613 kB.
-
----
-
-## 4. AI Streaming and Refinement Pipeline
-
-```
-[ User Input ]
-      │
-      ▼
-[ Prompt Generator (prd.ts / vibe.ts / architecture.ts) ]
-      │
-      ▼
-[ 1st Pass: BYOK Provider Direct Call (registry.ts) ]
-      │
-      ▼
-[ Draft Stream Output ]
-      │
-      ▼
-[ 2nd Pass: Refinement Pass (refine.ts) ]
-      │ Purges vague filler ("ensure scalability", "TBD")
-      │ Expands concrete specs & verification steps
-      ▼
-[ Final Clean Response Render ]
-```
+| Layer | Technology | Version | Purpose |
+|---|---|---|---|
+| **Core UI Runtime** | React | `^18.3.1` | Declarative component UI and context state. |
+| **Language** | TypeScript | `^5.5.3` | Strict type safety across client and server. |
+| **Bundler & PWA** | Vite | `^5.4.21` | Hot module replacement, build packaging, and Service Worker. |
+| **Local Database** | Dexie.js | `^4.0.11` | Reactive IndexedDB wrapper with compound indexing. |
+| **Code Editor** | Monaco Editor | `^4.6.0` | High-performance technical code and markdown editing. |
+| **Visual Canvas** | React Flow | `^12.4.4` | Node graph architecture diagramming engine. |
+| **Styling** | Tailwind CSS | `^3.4.17` | Utility-first responsive styling and dark mode. |
+| **Backend & Auth** | Supabase | `^2.49.1` | PostgreSQL database, Auth PKCE, and Realtime channels. |
+| **Testing** | Vitest | `^3.2.7` | Fast unit, integration, and distributed failure simulation suite. |
