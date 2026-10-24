@@ -15,7 +15,7 @@ export default function Pricing() {
   const navigate = useNavigate();
   const [loadingPriceId, setLoadingPriceId] = useState<string | null>(null);
 
-  const handleUpgrade = async (priceId: string) => {
+  const handleUpgrade = async (priceId: string, billingCycle: 'monthly' | 'annual') => {
     if (!user) {
       navigate('/auth');
       return;
@@ -23,7 +23,7 @@ export default function Pricing() {
     try {
       setLoadingPriceId(priceId);
       const { data, error } = await supabase.functions.invoke('create-checkout-session', {
-        body: { priceId, origin: window.location.origin }
+        body: { priceId, billingCycle, origin: window.location.origin }
       });
       if (error) throw error;
       if (data?.url) {
@@ -135,7 +135,7 @@ export default function Pricing() {
                 <>
                   <Button
                     className="w-full h-12 text-lg relative overflow-hidden"
-                    onClick={() => handleUpgrade(PLAN_PRICES.monthly.priceId)}
+                    onClick={() => handleUpgrade(PLAN_PRICES.monthly.priceId, 'monthly')}
                     disabled={loadingPriceId !== null}
                   >
                     {loadingPriceId === PLAN_PRICES.monthly.priceId ? (
@@ -147,7 +147,7 @@ export default function Pricing() {
                   <Button
                     variant="outline"
                     className="w-full h-12 text-lg border-primary/20 hover:bg-primary/10"
-                    onClick={() => handleUpgrade(PLAN_PRICES.annual.priceId)}
+                    onClick={() => handleUpgrade(PLAN_PRICES.annual.priceId, 'annual')}
                     disabled={loadingPriceId !== null}
                   >
                     {loadingPriceId === PLAN_PRICES.annual.priceId ? (

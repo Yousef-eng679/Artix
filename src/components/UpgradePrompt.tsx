@@ -18,11 +18,11 @@ interface UpgradePromptProps {
 export function UpgradePrompt({ open, onOpenChange, feature, used, limit }: UpgradePromptProps) {
   const [loadingPriceId, setLoadingPriceId] = useState<string | null>(null);
 
-  const handleUpgrade = async (priceId: string) => {
+  const handleUpgrade = async (priceId: string, billingCycle: 'monthly' | 'annual') => {
     try {
       setLoadingPriceId(priceId);
       const { data, error } = await supabase.functions.invoke('create-checkout-session', {
-        body: { priceId, origin: window.location.origin }
+        body: { priceId, billingCycle, origin: window.location.origin }
       });
       if (error) throw error;
       if (data?.url) {
@@ -66,7 +66,7 @@ export function UpgradePrompt({ open, onOpenChange, feature, used, limit }: Upgr
           <div className="space-y-4 mt-6">
             <Button
               className="w-full h-14 text-lg relative overflow-hidden group"
-              onClick={() => handleUpgrade(PLAN_PRICES.monthly.priceId)}
+              onClick={() => handleUpgrade(PLAN_PRICES.monthly.priceId, 'monthly')}
               disabled={loadingPriceId !== null}
             >
               <div className="absolute inset-0 bg-gradient-to-r from-primary/80 to-primary opacity-0 group-hover:opacity-100 transition-opacity" />
@@ -82,7 +82,7 @@ export function UpgradePrompt({ open, onOpenChange, feature, used, limit }: Upgr
             <Button
               variant="outline"
               className="w-full h-14 text-lg border-primary/20 hover:bg-primary/10 transition-colors"
-              onClick={() => handleUpgrade(PLAN_PRICES.annual.priceId)}
+              onClick={() => handleUpgrade(PLAN_PRICES.annual.priceId, 'annual')}
               disabled={loadingPriceId !== null}
             >
               {loadingPriceId === PLAN_PRICES.annual.priceId ? (
