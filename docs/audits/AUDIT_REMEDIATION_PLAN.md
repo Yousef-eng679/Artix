@@ -265,7 +265,8 @@ All 18 atomic tasks were executed sequentially on `fix/audit-remediation-plan` (
 | `TASK-15` | `SS-01` | `d1ff473` | Guarded initial `getSession()` race in `useAuth.tsx` and surfaced `openUserRuntime` / `errored` states in `UserSyncRuntimeContext.tsx`. |
 | `TASK-16` | `SS-08`, `R8` | `abec65f` | Added explicit `sanitizeMarkdownUrl` in `MarkdownPreview.tsx` and reconciled security/Markdown documentation. |
 | `TASK-17` | `F-006` | `8b29b92` | Installed `@playwright/test` and added deterministic CI session/network mocks for E2E specs. |
-| `TASK-18` | `F-006` | *(HEAD)* | Wired `e2e` job into `.github/workflows/ci.yml` and ran full verification gates. |
+| `TASK-18` | `F-006` | `570bdc2` | Wired `e2e` job into `.github/workflows/ci.yml` and ran full verification gates. |
+| Live DB Sync | `F-001`, `F-003`, `F-005` | *(HEAD)* | Applied all migrations to live Supabase (`ldhbjeustealybjffadn`, PostgreSQL 17.6), hardened `record_sync_change` / `handle_new_user` advisor lints, and verified live RLS + transactional replay under `SET LOCAL ROLE authenticated`. |
 
 ### Final Gate Results
 - **TypeScript (`npx tsc --noEmit`):** Exit `0` (0 errors)
@@ -273,4 +274,4 @@ All 18 atomic tasks were executed sequentially on `fix/audit-remediation-plan` (
 - **Unit & Integration Suite (`npx vitest run`):** `83 / 83` test files passed (`593 / 593` tests passed)
 - **Production PWA Build (`npm run build`):** Exit `0` (`dist/sw.js` verified free of `supabase-api-cache` and `supabase.co`)
 - **Playwright E2E (`npx playwright test --project=chromium` with `CI=true` & dummy Supabase env):** Exit `0` (`13 passed`, `2 live-cloud-only checks skipped`, `0 failed`)
-- **Follow-Up Note (`R10`):** When applying `20261020100000_commit_ordered_sync_changes.sql`, `20261020110000_atomic_idempotent_mutation_rpc.sql`, and `20261020120000_serialize_tier_limits_trigger.sql` to staging/production PostgreSQL, run a two-session SQL verification against live Postgres to complement the static migration audits and in-memory concurrency models.
+- **Live PostgreSQL 17.6 Verification (`ldhbjeustealybjffadn`):** Applied `commit_ordered_sync_changes` (`20261024163521`), `atomic_idempotent_mutation_rpc` (`20261024163600`), `serialize_tier_limits_trigger` (`20261024163617`), and `harden_security_definer_advisors` (`20261024163725`) via Supabase MCP and verified `apply_sync_mutation` (`create`, `update`, post-`v2` lost-response `create` replay, CAS `conflict`), `record_sync_change` monotonic sequences, and `check_plan_tier_limit` enforcement in rolled-back transactions under `ROLE authenticated`.
