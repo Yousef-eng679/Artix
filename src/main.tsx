@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter } from "react-router-dom";
 import { AuthProvider } from "@/hooks/useAuth";
 import { UserSyncRuntimeProvider } from "@/contexts/UserSyncRuntimeContext";
+import { clearSensitiveBrowserCaches } from "@/lib/sync/userSyncRuntime";
 import { ThemeProvider } from "@/hooks/useTheme";
 import App from "./App.tsx";
 import "./index.css";
@@ -24,6 +25,9 @@ if (isPreviewHost || isInIframe) {
     registrations.forEach((r) => r.unregister());
   });
 }
+
+// Audit F-004 + R9: Purge any legacy Workbox `supabase-api-cache` entries once at boot
+void clearSensitiveBrowserCaches();
 
 const queryClient = new QueryClient();
 

@@ -1,6 +1,7 @@
 import { useState, useEffect, createContext, useContext, ReactNode, useRef } from 'react';
 import { User, Session } from '@supabase/supabase-js';
 import { supabase } from '@/integrations/supabase/client';
+import { clearSensitiveBrowserCaches } from '@/lib/sync/userSyncRuntime';
 
 interface AuthContextType {
   user: User | null;
@@ -67,6 +68,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         
         if (event === 'SIGNED_OUT') {
           setSessionError(null);
+          void clearSensitiveBrowserCaches();
           if (refreshTimerRef.current) {
             clearTimeout(refreshTimerRef.current);
             refreshTimerRef.current = null;
@@ -148,6 +150,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       clearTimeout(refreshTimerRef.current);
       refreshTimerRef.current = null;
     }
+    await clearSensitiveBrowserCaches();
     await supabase.auth.signOut();
   };
 

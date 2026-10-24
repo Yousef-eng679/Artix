@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { isWithinLimit, PLAN_LIMITS } from '../lib/plans';
 import { obfuscateApiKey, deobfuscateApiKey } from '../lib/ai/storage';
 import { sanitizeRedirectUrl } from '../lib/utils';
+import { clearSensitiveBrowserCaches } from '../lib/sync/userSyncRuntime';
 import { isOriginAllowed, getCorsHeaders } from '../../supabase/functions/_shared/cors';
 
 describe('Security Remediation Suite', () => {
@@ -204,6 +205,30 @@ describe('Security Remediation Suite', () => {
       expect(freeRejected).toHaveLength(1);
       expect(outcomes[2].status).toBe('fulfilled');
       expect(locked.committedProjects.filter((p) => p.userId === 'u-free')).toHaveLength(3);
+    });
+  });
+
+  describe('PWA Service-Worker Cache Isolation (Audit F-004)', () => {
+    it('prohibits broad supabase.co runtime caching in vite.config.ts', async () => {
+      const fs = await import('fs');
+      const path = await import('path');
+      const viteConfig = fs.readFileSync(path.join(process.cwd(), 'vite.config.ts'), 'utf-8');
+      expect(viteConfig).not.toContain('supabase-api-cache');
+      expect(viteConfig).not.toMatch(/supabase\\\.co/i);
+    });
+
+    it('purges legacy supabase-api-cache entries while preserving static font caches', async () => {
+      const store = new Set(['google-fonts-cache', 'gstatic-fonts-cache', 'supabase-api-cache']);
+      const mockCacheStorage = {
+        keys: async () => Array.from(store),
+        delete: async (name: string) => store.delete(name),
+      };
+
+      const deleted = await clearSensitiveBrowserCaches(mockCacheStorage);
+      expect(deleted).toEqual(['supabase-api-cache']);
+      expect(store.has('supabase-api-cache')).toBe(false);
+      expect(store.has('google-fonts-cache')).toBe(true);
+      expect(store.has('gstatic-fonts-cache')).toBe(true);
     });
   });
 
