@@ -55,11 +55,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     isMountedRef.current = true;
+    let authStateTransitioned = false;
 
     // Listener for ONGOING auth changes (does NOT control loading state)
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       (event, newSession) => {
         if (!isMountedRef.current) return;
+
+        if (event !== 'INITIAL_SESSION') {
+          authStateTransitioned = true;
+        }
         
         console.log('Auth state change:', event);
         
@@ -84,14 +89,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       try {
         const { data: { session: initialSession }, error } = await supabase.auth.getSession();
         
+        if (!isMountedRef.current || authStateTransitioned) return;
+
         if (error) {
           console.error('Error getting initial session:', error);
-          if (isMountedRef.current) {
-            setSessionError(error);
-          }
+          setSessionError(error);
         }
-        
-        if (!isMountedRef.current) return;
 
         setSession(initialSession);
         setUser(initialSession?.user ?? null);
