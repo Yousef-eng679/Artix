@@ -138,6 +138,18 @@ export class PullEngine {
       ],
       async () => {
         for (const change of data) {
+          // Record this row's sequence before any branch can `continue`.
+          // Every row in the batch is either applied, converged, recorded as a
+          // conflict, or intentionally ignored (stale / non-resurrection), so all
+          // of them are "handled" and the cursor may move past them. This is safe
+          // because the cursor write below lives in the same Dexie transaction:
+          // if any row throws, the whole batch, cursor included, rolls back.
+          // (Audit F-007. Commit-order safety of `sequence` itself is guaranteed
+          // server-side by the per-user lock in record_sync_change(), F-001.)
+          if (change.sequence > maxAppliedSequence) {
+            maxAppliedSequence = change.sequence;
+          }
+
           const entityType = change.entity_type;
           const entityId = change.entity_id;
           const operation = change.operation;
@@ -306,10 +318,6 @@ export class PullEngine {
                 await this.systemDesignRepo.applyRemoteSnapshot(snapshot);
               }
             }
-          }
-
-          if (change.sequence > maxAppliedSequence) {
-            maxAppliedSequence = change.sequence;
           }
         }
 
