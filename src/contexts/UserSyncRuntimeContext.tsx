@@ -39,6 +39,7 @@ export function UserSyncRuntimeProvider({ children }: { children: ReactNode }) {
   const { user, loading: authLoading } = useAuth();
   const [runtime, setRuntime] = useState<UserSyncRuntime | null>(() => getActiveUserRuntime() ?? null);
   const [runtimeStatus, setRuntimeStatus] = useState<RuntimeStatus | null>(() => getActiveUserRuntime()?.getStatus() ?? null);
+  const [openError, setOpenError] = useState<RuntimeError | null>(null);
   const [isReady, setIsReady] = useState<boolean>(false);
 
   useEffect(() => {
@@ -51,6 +52,7 @@ export function UserSyncRuntimeProvider({ children }: { children: ReactNode }) {
         if (!isCancelled) {
           setRuntime(null);
           setRuntimeStatus(null);
+          setOpenError(null);
           setIsReady(true);
         }
       });
@@ -60,9 +62,11 @@ export function UserSyncRuntimeProvider({ children }: { children: ReactNode }) {
     }
 
     setIsReady(false);
+    setOpenError(null);
     openUserRuntime(user.id)
       .then((active) => {
         if (!isCancelled) {
+          setOpenError(null);
           setRuntime(active);
           setRuntimeStatus(active.getStatus());
           setIsReady(true);
@@ -71,6 +75,21 @@ export function UserSyncRuntimeProvider({ children }: { children: ReactNode }) {
       .catch((err) => {
         console.error('[UserSyncRuntimeProvider] Failed to open runtime:', err);
         if (!isCancelled) {
+          const structuredError: RuntimeError =
+            err && typeof err === 'object' && 'code' in err && 'fatal' in err
+              ? (err as RuntimeError)
+              : {
+                  code: 'UNKNOWN',
+                  message:
+                    err instanceof Error
+                      ? err.message
+                      : 'Failed to initialize user sync runtime',
+                  fatal: true,
+                  originalError: err,
+                };
+          setRuntime(null);
+          setRuntimeStatus(null);
+          setOpenError(structuredError);
           setIsReady(true);
         }
       });
@@ -110,8 +129,8 @@ export function UserSyncRuntimeProvider({ children }: { children: ReactNode }) {
         realtimeSync: null,
         isReady,
         runtimeStatus: null,
-        isDegraded: false,
-        runtimeError: null,
+        isDegraded: openError !== null,
+        runtimeError: openError,
       };
     }
 
@@ -127,10 +146,10 @@ export function UserSyncRuntimeProvider({ children }: { children: ReactNode }) {
       realtimeSync: runtime.realtimeSync,
       isReady,
       runtimeStatus,
-      isDegraded: runtimeStatus?.isDegraded ?? false,
-      runtimeError: runtimeStatus?.error ?? null,
+      isDegraded: Boolean(runtimeStatus?.isDegraded || runtimeStatus?.state === 'errored'),
+      runtimeError: runtimeStatus?.error ?? openError,
     };
-  }, [runtime, isReady, runtimeStatus]);
+  }, [runtime, isReady, runtimeStatus, openError]);
 
   return (
     <UserSyncRuntimeContext.Provider value={value}>

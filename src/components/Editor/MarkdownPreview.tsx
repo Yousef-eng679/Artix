@@ -6,12 +6,69 @@ interface MarkdownPreviewProps {
   content: string;
 }
 
+const ALLOWED_PROTOCOLS = new Set(['http:', 'https:', 'mailto:']);
+
+/**
+ * Explicit URI protocol sanitizer for rendered Markdown links/images (Audit SS-08).
+ *
+ * Allows relative/fragment references (`#`, `/`, `./`, `../`, `?`) and explicit
+ * `http:`, `https:`, and `mailto:` URLs. Strips `javascript:`, `vbscript:`,
+ * `data:`, control-character-obfuscated schemes, and protocol-relative `//` URLs.
+ */
+export function sanitizeMarkdownUrl(rawUrl: string): string {
+  if (!rawUrl || typeof rawUrl !== 'string') return '';
+
+  const trimmed = rawUrl.trim();
+  if (!trimmed) return '';
+
+  // Strip ASCII/Unicode control characters and embedded whitespace when inspecting scheme
+  // eslint-disable-next-line no-control-regex
+  const normalized = trimmed.replace(/[\u0000-\u001F\u007F-\u009F\s]+/g, '');
+  if (!normalized) return '';
+
+  // Reject protocol-relative network-path references (e.g. //evil.example)
+  if (normalized.startsWith('//')) {
+    return '';
+  }
+
+  // Relative anchors, root-relative paths, dot-relative paths, or query strings
+  if (
+    normalized.startsWith('#') ||
+    normalized.startsWith('/') ||
+    normalized.startsWith('./') ||
+    normalized.startsWith('../') ||
+    normalized.startsWith('?')
+  ) {
+    return trimmed;
+  }
+
+  // Check whether a scheme prefix appears before the first '/', '?', or '#'
+  const schemeMatch = normalized.match(/^([a-zA-Z][a-zA-Z0-9+.-]*:)/);
+  if (!schemeMatch) {
+    // Plain relative path (e.g. "docs/architecture.md") — ensure no stray colon before path delimiters
+    const firstColon = normalized.indexOf(':');
+    const firstDelimiter = normalized.search(/[/?#]/);
+    if (firstColon !== -1 && (firstDelimiter === -1 || firstColon < firstDelimiter)) {
+      return '';
+    }
+    return trimmed;
+  }
+
+  const protocol = schemeMatch[1].toLowerCase();
+  if (!ALLOWED_PROTOCOLS.has(protocol)) {
+    return '';
+  }
+
+  return trimmed;
+}
+
 export function MarkdownPreview({ content }: MarkdownPreviewProps) {
   return (
     <ScrollArea className="h-full bg-slate-950/80 border-l border-border/40">
       <div className="p-6 md:p-8 max-w-none text-slate-200 selection:bg-amber-500/30 selection:text-amber-200">
         <ReactMarkdown
           remarkPlugins={[remarkGfm]}
+          urlTransform={sanitizeMarkdownUrl}
           components={{
             h1: ({ children }) => (
               <h1 className="text-2xl md:text-3xl font-bold text-slate-100 border-b border-slate-800 pb-2 mt-6 mb-4 font-sans tracking-tight">
@@ -83,11 +140,19 @@ export function MarkdownPreview({ content }: MarkdownPreviewProps) {
                 {children}
               </td>
             ),
-            a: ({ href, children }) => (
-              <a href={href} target="_blank" rel="noopener noreferrer" className="text-amber-400 hover:text-amber-300 underline underline-offset-4 font-medium transition-colors">
-                {children}
-              </a>
-            ),
+            a: ({ href, children }) => {
+              const safeHref = sanitizeMarkdownUrl(href ?? '');
+              return (
+                <a
+                  href={safeHref}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-amber-400 hover:text-amber-300 underline underline-offset-4 font-medium transition-colors"
+                >
+                  {children}
+                </a>
+              );
+            },
           }}
         >
           {content || '*Start typing to see markdown preview...*'}

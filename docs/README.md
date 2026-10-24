@@ -67,6 +67,7 @@ The technical architecture of Artix is structured into focused, authoritative sp
 - **[Project Status & Implementation Matrix](./reference/PROJECT_STATUS.md)**: Detailed status matrix classifying features as `IMPLEMENTED`, `PARTIALLY IMPLEMENTED`, or `PLANNED`.
 - **[Local Artifact Corpus Registry](./reference/ARTIFACT_REGISTRY.md)**: Complete catalog and disposition map for all 35+ historical local artifacts.
 - **[Truth Reconciliation Report](./reference/TRUTH_RECONCILIATION.md)**: Formal audit reconciling legacy documentation contradictions against verified code truth.
+- **[Repository Audit (2026-10-12)](./audits/2026-10-12_REPOSITORY_AUDIT.md)** and **[Audit Remediation Plan](./audits/AUDIT_REMEDIATION_PLAN.md)**: External engineering audit findings (F-001–F-007) and the atomic task plan that addresses them.
 
 ---
 

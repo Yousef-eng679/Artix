@@ -262,6 +262,42 @@ export class UserSyncRuntime {
 // Global active user runtime reference
 let activeRuntime: UserSyncRuntime | null = null;
 
+const SENSITIVE_CACHE_NAME_PATTERN = /^(supabase-api-cache|.*supabase.*api.*)$/i;
+
+/**
+ * Purges legacy or sensitive authenticated API caches from browser CacheStorage
+ * (Audit F-004 + R9). Safe to call in environments without CacheStorage or
+ * restricted iframe contexts.
+ */
+export async function clearSensitiveBrowserCaches(
+  cacheStorage?: Pick<CacheStorage, 'keys' | 'delete'> | null
+): Promise<string[]> {
+  const storage =
+    cacheStorage !== undefined
+      ? cacheStorage
+      : typeof window !== 'undefined' && 'caches' in window
+        ? window.caches
+        : null;
+
+  if (!storage || typeof storage.keys !== 'function' || typeof storage.delete !== 'function') {
+    return [];
+  }
+
+  try {
+    const cacheNames = await storage.keys();
+    const targets = cacheNames.filter((name) => SENSITIVE_CACHE_NAME_PATTERN.test(name));
+    const deleted: string[] = [];
+    for (const name of targets) {
+      const removed = await storage.delete(name);
+      if (removed) deleted.push(name);
+    }
+    return deleted;
+  } catch (err) {
+    console.warn('[UserSyncRuntime] Unable to purge sensitive browser caches:', err);
+    return [];
+  }
+}
+
 /**
  * Opens or transitions to a user-scoped synchronization runtime upon user login.
  * If another user's runtime was active, it is stopped cleanly first.
@@ -276,6 +312,7 @@ export async function openUserRuntime(
     }
     await activeRuntime.stop();
     activeRuntime = null;
+    await clearSensitiveBrowserCaches();
   }
 
   const runtime = new UserSyncRuntime(userId, options);
@@ -294,6 +331,7 @@ export async function closeUserRuntime(userId?: string): Promise<void> {
       activeRuntime = null;
     }
   }
+  await clearSensitiveBrowserCaches();
 }
 
 /**

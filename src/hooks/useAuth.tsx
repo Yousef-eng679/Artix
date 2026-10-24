@@ -1,6 +1,7 @@
 import { useState, useEffect, createContext, useContext, ReactNode, useRef } from 'react';
 import { User, Session } from '@supabase/supabase-js';
 import { supabase } from '@/integrations/supabase/client';
+import { clearSensitiveBrowserCaches } from '@/lib/sync/userSyncRuntime';
 
 interface AuthContextType {
   user: User | null;
@@ -54,11 +55,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     isMountedRef.current = true;
+    let authStateTransitioned = false;
 
     // Listener for ONGOING auth changes (does NOT control loading state)
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       (event, newSession) => {
         if (!isMountedRef.current) return;
+
+        if (event !== 'INITIAL_SESSION') {
+          authStateTransitioned = true;
+        }
         
         console.log('Auth state change:', event);
         
@@ -67,6 +73,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         
         if (event === 'SIGNED_OUT') {
           setSessionError(null);
+          void clearSensitiveBrowserCaches();
           if (refreshTimerRef.current) {
             clearTimeout(refreshTimerRef.current);
             refreshTimerRef.current = null;
@@ -82,14 +89,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       try {
         const { data: { session: initialSession }, error } = await supabase.auth.getSession();
         
+        if (!isMountedRef.current || authStateTransitioned) return;
+
         if (error) {
           console.error('Error getting initial session:', error);
-          if (isMountedRef.current) {
-            setSessionError(error);
-          }
+          setSessionError(error);
         }
-        
-        if (!isMountedRef.current) return;
 
         setSession(initialSession);
         setUser(initialSession?.user ?? null);
@@ -148,6 +153,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       clearTimeout(refreshTimerRef.current);
       refreshTimerRef.current = null;
     }
+    await clearSensitiveBrowserCaches();
     await supabase.auth.signOut();
   };
 
