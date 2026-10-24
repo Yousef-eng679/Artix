@@ -1,10 +1,16 @@
 import { OutboxEntry } from '@/lib/local/types';
 import { EntityPushAdapter, PushResult } from './types';
 import { withTimeout } from '../transportTimeout';
-import { checkIdempotency, recordIdempotency } from './idempotency';
+import { checkIdempotency, executeAtomicMutation, recordIdempotency } from './idempotency';
 
 export class WorkspaceFolderPushAdapter implements EntityPushAdapter {
   async push(entry: OutboxEntry, supabase: any): Promise<PushResult | null> {
+    // Primary atomic server path (Audit F-003): single PostgreSQL transaction
+    // covering idempotency check, CAS entity write, and ledger insert.
+    const atomic = await executeAtomicMutation(entry, supabase);
+    if (atomic.handled) return atomic.result;
+
+    // Degraded fallback path (used only by .from()-only test mocks or pre-migration rollout)
     const cached = await checkIdempotency(entry, supabase);
     if (cached) return cached;
 

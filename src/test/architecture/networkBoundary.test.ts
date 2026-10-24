@@ -73,6 +73,18 @@ describe('Architectural Boundary: Direct Network Write Enforcement (Phase 0)', (
     expect(docAdapter).toContain('withTimeout');
     expect(designAdapter).toContain('withTimeout');
     expect(folderAdapter).toContain('withTimeout');
+
+    // Audit F-003: verify all entity push adapters dispatch through atomic server RPC first
+    expect(docAdapter).toContain('executeAtomicMutation');
+    expect(designAdapter).toContain('executeAtomicMutation');
+    expect(folderAdapter).toContain('executeAtomicMutation');
+
+    const idempotencyHelper = fs.readFileSync(
+      path.resolve(process.cwd(), 'src/lib/sync/adapters/idempotency.ts'),
+      'utf-8'
+    );
+    expect(idempotencyHelper).toContain("rpc('apply_sync_mutation'");
+    expect(idempotencyHelper).toContain('withTimeout');
   });
 
   it('prohibits direct Supabase reads in core workspace entity hooks (Phase C4 Cutover Enforced)', () => {
