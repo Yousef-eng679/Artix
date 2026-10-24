@@ -115,6 +115,96 @@ describe('Security Remediation Suite', () => {
       expect(allSql).toContain('system_designs_user_id_fkey');
       expect(allSql).toContain('ON DELETE CASCADE');
     });
+
+    it('audits 20261020120000_serialize_tier_limits_trigger.sql for per-user advisory lock before count (F-005)', async () => {
+      const fs = await import('fs');
+      const path = await import('path');
+      const sql = fs.readFileSync(
+        path.join(process.cwd(), 'supabase', 'migrations', '20261020120000_serialize_tier_limits_trigger.sql'),
+        'utf-8'
+      );
+
+      const fnBodyIdx = sql.indexOf('CREATE OR REPLACE FUNCTION public.check_plan_tier_limit()');
+      expect(fnBodyIdx).toBeGreaterThan(-1);
+      const fnBody = sql.slice(fnBodyIdx);
+      const lockIdx = fnBody.indexOf('PERFORM pg_advisory_xact_lock(');
+      const firstCountIdx = fnBody.indexOf('SELECT COUNT(*)');
+      expect(lockIdx).toBeGreaterThan(-1);
+      expect(firstCountIdx).toBeGreaterThan(lockIdx);
+      expect(sql).toContain('SET search_path = public');
+      expect(sql).toContain('d.deleted_at IS NULL');
+      expect(sql).toContain('sd.deleted_at IS NULL');
+      expect(sql).toContain('REVOKE ALL ON FUNCTION public.check_plan_tier_limit() FROM PUBLIC');
+    });
+
+    it('prevents concurrent inserts at limit - 1 from exceeding quota when serialized per user (F-005)', async () => {
+      // In-memory concurrency model of PostgreSQL READ COMMITTED + per-user xact advisory lock
+      const createQuotaStore = (useAdvisoryLock: boolean) => {
+        const committedProjects: Array<{ id: string; userId: string }> = [];
+        const userLocks = new Map<string, Promise<void>>();
+
+        const withUserXactLock = async <T>(userId: string, fn: () => Promise<T>): Promise<T> => {
+          if (!useAdvisoryLock) return fn();
+          const prev = userLocks.get(userId) ?? Promise.resolve();
+          let release!: () => void;
+          const gate = new Promise<void>((res) => {
+            release = res;
+          });
+          const chain = prev.then(() => gate);
+          userLocks.set(userId, chain);
+          await prev;
+          try {
+            return await fn();
+          } finally {
+            release();
+            if (userLocks.get(userId) === chain) {
+              userLocks.delete(userId);
+            }
+          }
+        };
+
+        const insertProject = (userId: string, projectId: string, limit = 3) =>
+          withUserXactLock(userId, async () => {
+            // Snapshot count inside transaction before insert commits
+            const currentCount = committedProjects.filter((p) => p.userId === userId).length;
+            await Promise.resolve(); // Yield so overlapping unlocked transactions race
+            if (currentCount >= limit) {
+              throw new Error(`Free tier project limit (${limit}) reached.`);
+            }
+            committedProjects.push({ id: projectId, userId });
+          });
+
+        return { committedProjects, insertProject };
+      };
+
+      // 1. Unlocked model reproduces F-005: two concurrent inserts at 2/3 both pass -> 4/3
+      const unlocked = createQuotaStore(false);
+      await unlocked.insertProject('u-free', 'p1');
+      await unlocked.insertProject('u-free', 'p2');
+      await Promise.all([
+        unlocked.insertProject('u-free', 'p3'),
+        unlocked.insertProject('u-free', 'p4'),
+      ]);
+      expect(unlocked.committedProjects.filter((p) => p.userId === 'u-free')).toHaveLength(4);
+
+      // 2. Per-user xact advisory lock enforces exact cap (3/3) while allowing other users concurrently
+      const locked = createQuotaStore(true);
+      await locked.insertProject('u-free', 'p1');
+      await locked.insertProject('u-free', 'p2');
+
+      const outcomes = await Promise.allSettled([
+        locked.insertProject('u-free', 'p3'),
+        locked.insertProject('u-free', 'p4'),
+        locked.insertProject('u-other', 'other-p1'),
+      ]);
+
+      const freeSucceeded = outcomes.slice(0, 2).filter((o) => o.status === 'fulfilled');
+      const freeRejected = outcomes.slice(0, 2).filter((o) => o.status === 'rejected');
+      expect(freeSucceeded).toHaveLength(1);
+      expect(freeRejected).toHaveLength(1);
+      expect(outcomes[2].status).toBe('fulfilled');
+      expect(locked.committedProjects.filter((p) => p.userId === 'u-free')).toHaveLength(3);
+    });
   });
 
   describe('Real-Time Email Validation & Deliverability (Option B)', () => {
