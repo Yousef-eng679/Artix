@@ -237,3 +237,40 @@ The first draft of this plan was reviewed against the code before any file was e
   - Add E2E verification job in `.github/workflows/ci.yml`.
   - Record per-task execution results and verify all gates (`tsc --noEmit`, `npm run lint`, `npx vitest run`, `npm run build`, `npx playwright test --list`).
 - **Commit:** `ci(e2e/f-006): add playwright e2e job to github actions workflow`
+
+
+---
+
+## 3. Execution & Verification Log
+
+All 18 atomic tasks were executed sequentially on `fix/audit-remediation-plan` (branched from `origin/main` at `0e5ab3549ef26ef34b1ffdff4b937378d2b1afdb`; `main` untouched).
+
+| Task | Finding(s) | Commit | Summary of Verified Changes |
+| :--- | :--- | :--- | :--- |
+| Plan Setup | Governance (`R1`–`R10`) | `ce5626a` | Added repository audit and reviewed atomic remediation plan under `docs/audits/`. |
+| `TASK-01` | `F-001` | `14ae47b` | Serialized per-user `sync_changes.sequence` allocation with `pg_advisory_xact_lock` in `record_sync_change()`. |
+| `TASK-02` | `F-007`, `F-001` | `9cf5c1d` | Advanced `maxAppliedSequence` unconditionally at loop entry in `PullEngine.pullBatch`. |
+| `TASK-03` | `F-001`, `F-007` | `eb08cfe` | Added cursor branch-advancement and commit-order serialization tests (`pullCursorCommitOrder.test.ts`). |
+| `TASK-04` | `F-003` | `3abca73` | Added `public.apply_sync_mutation` (`SECURITY INVOKER`) transactional RPC + `workspace_folders.parent_folder_id`. |
+| `TASK-05` | `F-003` | `467d4cc` | Added `executeAtomicMutation` RPC dispatcher and inspected `{ error }` in `recordIdempotency`. |
+| `TASK-06` | `F-003` | `c7d3f1b` | Wired `executeAtomicMutation` across `DocumentPushAdapter`, `SystemDesignPushAdapter`, and `WorkspaceFolderPushAdapter`. |
+| `TASK-07` | `F-003` | `c4092ce` | Added lost-response, post-create `v2` edit replay, `409` collision, and `PGRST202` fallback tests (`idempotentMutation.test.ts`). |
+| `TASK-08` | `F-002` | `5b380c7` | Created shared server-side Stripe price allowlist, status mapper, and entitlement policy (`_shared/billingPolicy.ts`). |
+| `TASK-09` | `F-002` | `3ea562b` | Enforced server price allowlist in `create-checkout-session` and passed `billingCycle` from checkout callers. |
+| `TASK-10` | `F-002`, `R7` | `d3bc973` | Verified purchased price/interval/status in `stripe-webhook`, mapped DB statuses, checked write errors (`500` retry), and hardened `stripe_events` deduplication. |
+| `TASK-11` | `F-005` | `39dcf3c` | Serialized `check_plan_tier_limit()` per user with `pg_advisory_xact_lock` and `deleted_at IS NULL` filtering. |
+| `TASK-12` | `F-002`, `F-005` | `aa784c6` | Added billing allowlist, status mapping, webhook entitlement, and concurrent quota tests (`billing.test.ts`, `security.test.ts`). |
+| `TASK-13` | `F-004` | `206cfb1` | Removed broad `*.supabase.co` Workbox `runtimeCaching` entry from `vite.config.ts`. |
+| `TASK-14` | `F-004`, `R9` | `22ce246` | Added `clearSensitiveBrowserCaches` at boot (`main.tsx`), account switch, `closeUserRuntime`, and `SIGNED_OUT`. |
+| `TASK-15` | `SS-01` | `d1ff473` | Guarded initial `getSession()` race in `useAuth.tsx` and surfaced `openUserRuntime` / `errored` states in `UserSyncRuntimeContext.tsx`. |
+| `TASK-16` | `SS-08`, `R8` | `abec65f` | Added explicit `sanitizeMarkdownUrl` in `MarkdownPreview.tsx` and reconciled security/Markdown documentation. |
+| `TASK-17` | `F-006` | `8b29b92` | Installed `@playwright/test` and added deterministic CI session/network mocks for E2E specs. |
+| `TASK-18` | `F-006` | *(HEAD)* | Wired `e2e` job into `.github/workflows/ci.yml` and ran full verification gates. |
+
+### Final Gate Results
+- **TypeScript (`npx tsc --noEmit`):** Exit `0` (0 errors)
+- **ESLint (`npm run lint`):** Exit `0` (0 errors)
+- **Unit & Integration Suite (`npx vitest run`):** `83 / 83` test files passed (`593 / 593` tests passed)
+- **Production PWA Build (`npm run build`):** Exit `0` (`dist/sw.js` verified free of `supabase-api-cache` and `supabase.co`)
+- **Playwright E2E (`npx playwright test --project=chromium` with `CI=true` & dummy Supabase env):** Exit `0` (`13 passed`, `2 live-cloud-only checks skipped`, `0 failed`)
+- **Follow-Up Note (`R10`):** When applying `20261020100000_commit_ordered_sync_changes.sql`, `20261020110000_atomic_idempotent_mutation_rpc.sql`, and `20261020120000_serialize_tier_limits_trigger.sql` to staging/production PostgreSQL, run a two-session SQL verification against live Postgres to complement the static migration audits and in-memory concurrency models.
