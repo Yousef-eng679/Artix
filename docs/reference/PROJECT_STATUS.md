@@ -22,10 +22,10 @@
 | **User Runtime Lifecycle** | `IMPLEMENTED` | `userSyncRuntimeLifecycle.test.tsx`| Scoped runtime binding, session teardown, and zero cross-user cache leak. |
 | **Tombstone Manager** | `IMPLEMENTED` | `tombstonesCorrectness.test.ts` | Soft-delete state machine, non-resurrection guard, 30-day TTL GC. |
 | **Multi-Tab Workspace Shell**| `IMPLEMENTED` | `workspaceTabs.test.ts` | URL synchronization, dirty tracking per tab, close confirmation dialogs. |
-| **Monaco Document Forge** | `IMPLEMENTED` | `MarkdownPreviewXSS.test.tsx` | Syntax highlighting, split preview, DOMPurify XSS sanitization. |
+| **Monaco Document Forge** | `IMPLEMENTED` | `security.test.ts` | Syntax highlighting, split preview, AST-escaped Markdown + safe-URI guard. |
 | **System Architect Canvas** | `IMPLEMENTED` | `offlineSystemDesigns.test.tsx` | Drag-and-drop React Flow node graph with high-res PNG/SVG export. |
 | **AI Prompt Compiler** | `IMPLEMENTED` | `ai-architecture.test.ts` | Multi-mode PRD generator and Vibe prompt compiler with 2-pass refinement. |
-| **BYOK Client Encryption** | `IMPLEMENTED` | `security.test.ts` | AES-GCM 256-bit + PBKDF2 100k rounds client-side encryption. |
+| **BYOK Client Key Vault** | `IMPLEMENTED` | `security.test.ts`, `api-saving.test.ts` | Default `obf:` obfuscation + opt-in AES-GCM 256-bit / PBKDF2 250k vault. |
 | **Stripe Billing Integration**| `IMPLEMENTED` | `billing.test.ts` | Edge functions, webhook signature validation, tier limits trigger. |
 | **PWA Offline Support** | `IMPLEMENTED` | `ux.test.ts` | Workbox precache service worker; zero-network installable app. |
 | **GitHub Bi-Directional Sync**| `PLANNED` | — | Direct PR creation and bidirectional git repository syncing. |

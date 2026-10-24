@@ -1,8 +1,11 @@
+import React from 'react';
 import { describe, it, expect } from 'vitest';
+import { render } from '@testing-library/react';
 import { isWithinLimit, PLAN_LIMITS } from '../lib/plans';
 import { obfuscateApiKey, deobfuscateApiKey } from '../lib/ai/storage';
 import { sanitizeRedirectUrl } from '../lib/utils';
 import { clearSensitiveBrowserCaches } from '../lib/sync/userSyncRuntime';
+import { MarkdownPreview, sanitizeMarkdownUrl } from '../components/Editor/MarkdownPreview';
 import { isOriginAllowed, getCorsHeaders } from '../../supabase/functions/_shared/cors';
 
 describe('Security Remediation Suite', () => {
@@ -205,6 +208,53 @@ describe('Security Remediation Suite', () => {
       expect(freeRejected).toHaveLength(1);
       expect(outcomes[2].status).toBe('fulfilled');
       expect(locked.committedProjects.filter((p) => p.userId === 'u-free')).toHaveLength(3);
+    });
+  });
+
+  describe('Markdown Preview URI Sanitization & Raw HTML Escaping (Audit SS-08)', () => {
+    it('allows only http:, https:, mailto:, and relative references in sanitizeMarkdownUrl', () => {
+      expect(sanitizeMarkdownUrl('https://artix-mocha.vercel.app/docs')).toBe(
+        'https://artix-mocha.vercel.app/docs'
+      );
+      expect(sanitizeMarkdownUrl('http://localhost:8080/guide')).toBe('http://localhost:8080/guide');
+      expect(sanitizeMarkdownUrl('mailto:security@artix.dev')).toBe('mailto:security@artix.dev');
+      expect(sanitizeMarkdownUrl('#section-1')).toBe('#section-1');
+      expect(sanitizeMarkdownUrl('/dashboard')).toBe('/dashboard');
+      expect(sanitizeMarkdownUrl('./architecture.md')).toBe('./architecture.md');
+
+      expect(sanitizeMarkdownUrl('javascript:alert(1)')).toBe('');
+      expect(sanitizeMarkdownUrl('JAVASCRIPT:alert(document.cookie)')).toBe('');
+      expect(sanitizeMarkdownUrl('java\n\tscript:alert(1)')).toBe('');
+      expect(sanitizeMarkdownUrl('vbscript:msgbox(1)')).toBe('');
+      expect(sanitizeMarkdownUrl('data:text/html,<script>alert(1)</script>')).toBe('');
+      expect(sanitizeMarkdownUrl('//evil.example/phish')).toBe('');
+    });
+
+    it('renders MarkdownPreview without executing raw HTML or leaving javascript: hrefs', () => {
+      const maliciousMarkdown = [
+        '# Spec',
+        '[Bad JS](javascript:alert(1))',
+        '[Bad Data](data:text/html,<script>alert(1)</script>)',
+        '[Good Link](https://artix-mocha.vercel.app)',
+        '<script>window.__artix_xss = true;</script>',
+        '<img src="x" onerror="alert(1)" />',
+      ].join('\n\n');
+
+      const { container } = render(
+        React.createElement(MarkdownPreview, { content: maliciousMarkdown })
+      );
+
+      expect(container.querySelector('script')).toBeNull();
+      expect(container.querySelector('img')).toBeNull();
+
+      const anchors = Array.from(container.querySelectorAll('a'));
+      const badJsAnchor = anchors.find((a) => a.textContent === 'Bad JS');
+      const badDataAnchor = anchors.find((a) => a.textContent === 'Bad Data');
+      const goodAnchor = anchors.find((a) => a.textContent === 'Good Link');
+
+      expect(badJsAnchor?.getAttribute('href')).toBe('');
+      expect(badDataAnchor?.getAttribute('href')).toBe('');
+      expect(goodAnchor?.getAttribute('href')).toBe('https://artix-mocha.vercel.app');
     });
   });
 

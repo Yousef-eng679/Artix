@@ -23,9 +23,10 @@ All application tables (`projects`, `documents`, `system_designs`, `subscription
 - Users can never query or modify records belonging to other tenants.
 - Database foreign keys enforce `ON DELETE CASCADE` referencing `auth.users(id)`.
 
-### B. Payment & Webhook Cryptographic Verification
-- Stripe billing webhooks (`/functions/v1/stripe-webhook`) require and verify the cryptographic `Stripe-Signature` header via Stripe's `constructEventAsync`.
-- Webhook idempotency is enforced via `public.stripe_events` to prevent replay attacks and duplicate credit processing.
+### B. Payment, Price Allowlist & Webhook Cryptographic Verification
+- Checkout session creation (`/functions/v1/create-checkout-session`) validates requested plans against an authoritative server-owned Stripe Price ID allowlist (`supabase/functions/_shared/billingPolicy.ts`) before calling Stripe.
+- Stripe billing webhooks (`/functions/v1/stripe-webhook`) verify the cryptographic `Stripe-Signature` header via `constructEventAsync` AND validate the purchased subscription's price ID, interval, and status before granting `pro` entitlement.
+- Webhook idempotency is enforced via conflict-safe `public.stripe_events` upserts after state writes succeed.
 
 ### C. Origin Whitelist & Open Redirect Defense (Task §1.5)
 - Edge Functions (`create-checkout-session`, `create-portal-session`) validate `origin` and `return_url` against an allowed origin whitelist via `isOriginAllowed()`.
@@ -34,6 +35,10 @@ All application tables (`projects`, `documents`, `system_designs`, `subscription
 ### D. Content Security Policy (CSP)
 - Production headers restrict script execution, framing (`frame-ancestors 'none'`), object injection (`object-src 'none'`), and base URI manipulation (`base-uri 'self'`).
 - AI provider network calls are constrained to verified endpoints (`api.openai.com`, `api.anthropic.com`, `generativelanguage.googleapis.com`, `api.groq.com`, `openrouter.ai`, and localhost Ollama).
+
+### E. Markdown Rendering & Link Protocol Sanitization
+- `MarkdownPreview.tsx` renders user Markdown via `react-markdown` AST nodes without `rehype-raw`, escaping raw inline HTML (`<script>`, event-handler attributes, `<iframe/>`) as inert text.
+- Link and media URLs pass through `sanitizeMarkdownUrl`, which strips `javascript:`, `vbscript:`, `data:`, control-character-obfuscated schemes, and protocol-relative `//` URLs, permitting only `http:`, `https:`, `mailto:`, and relative references.
 
 ---
 

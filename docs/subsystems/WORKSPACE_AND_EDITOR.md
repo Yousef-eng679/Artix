@@ -25,9 +25,9 @@ The Workspace is the primary user-facing workstation in Artix. It unifies projec
 │ 📁 Specifications │                                                         │
 │   ├── 📄 Arch Spec│ ┌───────────────────────────┬─────────────────────────┐ │
 │   └── 📄 DB Schema│ │ Monaco Editor             │ Split-Pane Live Preview │ │
-│ 📁 Diagrams       │ │ (Syntax Highlighting,     │ (DOMPurify Sanitized    │ │
-│   └── 📐 Core Flow│ │  Auto-Indentation,        │  Markdown & Mermaid     │ │
-│                   │ │  Key Bindings)            │  Rendering)             │ │
+│ 📁 Diagrams       │ │ (Syntax Highlighting,     │ (AST-Escaped Markdown   │ │
+│   └── 📐 Core Flow│ │  Auto-Indentation,        │  & Safe-URI Protocol    │ │
+│                   │ │  Key Bindings)            │  Preview Rendering)     │ │
 │                   │ └───────────────────────────┴─────────────────────────┘ │
 └───────────────────┴─────────────────────────────────────────────────────────┘
 ```
@@ -80,10 +80,10 @@ Configured via `src/components/Editor/languageMap.ts`:
 
 ### 4.3 XSS Sanitization Invariant
 To prevent malicious script injection in user-rendered Markdown:
-- All Markdown is rendered through `MarkdownPreview.tsx` using `DOMPurify.sanitize()`.
-- Protocol whitelist strictly allows: `http:`, `https:`, `mailto:`.
-- `javascript:`, `data:`, and raw inline `<script>` tags are stripped.
-- Verified by `src/test/components/MarkdownPreviewXSS.test.tsx`.
+- `MarkdownPreview.tsx` renders Markdown through `react-markdown` without `rehype-raw`, so raw inline HTML (`<script>`, event attributes, `<iframe>`) is escaped as inert text rather than parsed into DOM elements.
+- Link and media URLs are filtered through `sanitizeMarkdownUrl` (`urlTransform`), allowing only `http:`, `https:`, `mailto:`, and relative references.
+- `javascript:`, `vbscript:`, `data:`, and protocol-relative `//` URLs are stripped.
+- Verified by `src/test/security.test.ts`.
 
 ---
 
