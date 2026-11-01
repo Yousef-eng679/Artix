@@ -125,13 +125,19 @@ export class SystemDesignRepository {
 
       await this.db.system_designs.put(design);
 
+      const existingMeta = await this.db.sync_metadata.get(`system_design:${design.id}`);
+      const resolvedServerVersion =
+        snapshot.serverVersion !== undefined && snapshot.serverVersion !== null
+          ? String(snapshot.serverVersion)
+          : (existingMeta?.serverVersion ?? null);
+
       await this.syncMetadataRepo.upsertInTx({
         entityType: 'system_design',
         entityId: design.id,
         userId: design.userId,
         syncState: 'synced',
-        serverVersion: snapshot.serverVersion ? String(snapshot.serverVersion) : null,
-        serverUpdatedAt: snapshot.updatedAt ?? null,
+        serverVersion: resolvedServerVersion,
+        serverUpdatedAt: snapshot.updatedAt ?? existingMeta?.serverUpdatedAt ?? null,
         localRevision: design.localRevision,
         lastSyncedAt: Date.now(),
         baseSnapshot: snapshot,
@@ -349,13 +355,32 @@ export class SystemDesignRepository {
 
       await this.db.system_designs.put(restored);
 
+      const existingMeta = await this.db.sync_metadata.get(`system_design:${id}`);
+      const existingOutbox = await this.db.outbox
+        .where('[userId+entityType+entityId]')
+        .equals([restored.userId, 'system_design', restored.id])
+        .toArray();
+      const hasPendingDelete = existingOutbox.some(
+        (e) => e.state === 'pending' && e.operation === 'delete'
+      );
+
+      const validServerVersion =
+        existingMeta?.serverVersion && /^[1-9]\d*$/.test(existingMeta.serverVersion)
+          ? existingMeta.serverVersion
+          : null;
+
+      const mustReCreate =
+        !validServerVersion ||
+        (existingMeta?.syncState === 'deleted_synced' && !hasPendingDelete);
+
       if (this.outboxRepo) {
         await this.outboxRepo.enqueueInTx({
           userId: restored.userId,
           projectId: restored.projectId,
           entityType: 'system_design',
           entityId: restored.id,
-          operation: 'update',
+          operation: mustReCreate ? 'create' : 'update',
+          baseServerVersion: mustReCreate ? null : validServerVersion,
           payload: {
             name: restored.name,
             boardState: restored.boardState,
@@ -370,6 +395,7 @@ export class SystemDesignRepository {
         entityId: restored.id,
         userId: restored.userId,
         syncState: 'pending',
+        serverVersion: mustReCreate ? null : validServerVersion,
         localRevision: restored.localRevision,
       });
 

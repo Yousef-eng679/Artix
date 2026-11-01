@@ -1,14 +1,15 @@
 import { supabase as defaultSupabaseClient } from '@/integrations/supabase/client';
-import { OutboxRepository } from '../repositories/outboxRepository';
+import { OutboxRepository, isValidPositiveBaseVersion } from '../repositories/outboxRepository';
 import { SyncMetadataRepository } from '../repositories/syncMetadataRepository';
 import { ConflictRepository } from '../repositories/conflictRepository';
 import { PullEngine } from './pullEngine';
-import { OutboxEntry } from '../local/types';
+import { EntityType, OutboxEntry } from '../local/types';
 import { getTabCoordinator, TabCoordinator } from './tabCoordinator';
 import { getUserArtixDB, getUserScopeHash } from '../local/db';
 import { orderOutboxByDependency } from './dependencyOrder';
 import { classifySyncError } from './errorTaxonomy';
 import { getPushAdapter } from './adapters';
+import { TRANSPORT_TIMEOUT_MS, withTimeout } from './transportTimeout';
 
 export type SyncStatusState = 'idle' | 'syncing' | 'offline' | 'error';
 
@@ -31,7 +32,20 @@ export interface SyncEngineOptions {
   batchSize?: number;
 }
 
-export { TRANSPORT_TIMEOUT_MS, withTimeout } from './transportTimeout';
+export { TRANSPORT_TIMEOUT_MS, withTimeout };
+
+function getEntityTableName(entityType: EntityType): string {
+  switch (entityType) {
+    case 'document':
+      return 'documents';
+    case 'system_design':
+      return 'system_designs';
+    case 'workspace_folder':
+      return 'workspace_folders';
+    default:
+      return `${entityType}s`;
+  }
+}
 
 export class SyncEngine {
   private supabase: any;
@@ -239,6 +253,152 @@ export class SyncEngine {
   }
 
   /**
+   * Universal pre-push reconciler for legacy or interrupted outbox entries
+   * missing a valid CAS `baseServerVersion` (Audit Gap C-03).
+   */
+  private async reconcileMissingCasBaseline(
+    entry: OutboxEntry
+  ): Promise<{ action: 'proceed'; entry: OutboxEntry } | { action: 'defer' } | { action: 'handled' }> {
+    if (entry.operation === 'create' || isValidPositiveBaseVersion(entry.baseServerVersion)) {
+      return { action: 'proceed', entry };
+    }
+
+    // 1. Heal from local sync_metadata if a valid serverVersion is already recorded
+    const meta = await this.syncMetadataRepo.get(entry.entityType, entry.entityId);
+    if (meta && meta.syncState !== 'deleted_synced' && isValidPositiveBaseVersion(meta.serverVersion)) {
+      await this.outboxRepo.updateBaseServerVersion(entry.id, meta.serverVersion);
+      return {
+        action: 'proceed',
+        entry: { ...entry, baseServerVersion: meta.serverVersion },
+      };
+    }
+
+    // 2. If an earlier create for this entity is still pending or in-flight, defer until create completes
+    const siblingEntries = await this.outboxRepo.listByEntity(
+      entry.userId,
+      entry.entityType,
+      entry.entityId
+    );
+    const hasUnpushedCreate = siblingEntries.some(
+      (s) =>
+        s.id !== entry.id &&
+        s.operation === 'create' &&
+        (s.state === 'pending' || s.state === 'in_flight')
+    );
+    if (hasUnpushedCreate) {
+      return { action: 'defer' };
+    }
+
+    // 3. Query authoritative remote row (if table query API is available)
+    if (typeof this.supabase?.from === 'function') {
+      const tableName = getEntityTableName(entry.entityType);
+      const tableBuilder = this.supabase.from(tableName);
+      if (typeof tableBuilder?.select === 'function') {
+        const sel = tableBuilder.select('*').eq('id', entry.entityId);
+        const queryPromise =
+          typeof sel?.maybeSingle === 'function'
+            ? sel.maybeSingle()
+            : typeof sel?.single === 'function'
+            ? sel.single()
+            : null;
+
+        if (queryPromise) {
+          const { data: remoteRow, error } = await withTimeout<any>(queryPromise);
+          if (error) {
+            throw error;
+          }
+
+          if (!remoteRow) {
+            if (entry.operation === 'delete') {
+              await this.outboxRepo.markCompleted(entry.id);
+              await this.syncMetadataRepo.upsert({
+                entityType: entry.entityType,
+                entityId: entry.entityId,
+                userId: entry.userId,
+                syncState: 'deleted_synced',
+              });
+              return { action: 'handled' };
+            }
+
+            const neverSyncedBefore =
+              !meta?.lastSyncedAt && !meta?.serverUpdatedAt && !meta?.baseSnapshot;
+            if (neverSyncedBefore) {
+              await this.outboxRepo.convertToCreate(entry.id, entry.payload);
+              return {
+                action: 'proceed',
+                entry: { ...entry, operation: 'create', baseServerVersion: null },
+              };
+            }
+
+            // Previously synced entity was deleted remotely on another device -> fail closed into conflict
+            const conflictMeta = {
+              code: 'CONFLICT',
+              message: `Remote ${entry.entityType} '${entry.entityId}' was deleted while missing local CAS baseline`,
+              retryable: false,
+            };
+            await this.outboxRepo.markFailed(entry.id, conflictMeta, this.maxRetries);
+            await this.conflictRepo.recordConflict({
+              entityType: entry.entityType,
+              entityId: entry.entityId,
+              userId: entry.userId,
+              basePayload: meta?.baseSnapshot ?? null,
+              localPayload: entry.payload,
+              remotePayload: null,
+            });
+            await this.syncMetadataRepo.markConflict(entry.entityType, entry.entityId, entry.userId);
+            return { action: 'handled' };
+          }
+
+          const remoteVersionStr =
+            remoteRow.version !== undefined && remoteRow.version !== null
+              ? String(remoteRow.version)
+              : null;
+
+          // Only adopt remote version automatically when serverUpdatedAt proves zero remote divergence
+          if (
+            isValidPositiveBaseVersion(remoteVersionStr) &&
+            Boolean(meta?.serverUpdatedAt) &&
+            remoteRow.updated_at === meta?.serverUpdatedAt
+          ) {
+            await this.outboxRepo.updateBaseServerVersion(entry.id, remoteVersionStr);
+            await this.syncMetadataRepo.upsert({
+              entityType: entry.entityType,
+              entityId: entry.entityId,
+              userId: entry.userId,
+              serverVersion: remoteVersionStr,
+            });
+            return {
+              action: 'proceed',
+              entry: { ...entry, baseServerVersion: remoteVersionStr },
+            };
+          }
+
+          // Fail closed: remote row diverged or baseline provenance is unknown -> record 3-way conflict
+          const conflictMeta = {
+            code: 'CONFLICT',
+            message: `Cannot safely infer CAS baseline for ${entry.entityType} '${entry.entityId}'; remote state diverged`,
+            retryable: false,
+          };
+          await this.outboxRepo.markFailed(entry.id, conflictMeta, this.maxRetries);
+          await this.conflictRepo.recordConflict({
+            entityType: entry.entityType,
+            entityId: entry.entityId,
+            userId: entry.userId,
+            basePayload: meta?.baseSnapshot ?? null,
+            localPayload: entry.payload,
+            remotePayload: remoteRow,
+          });
+          await this.syncMetadataRepo.markConflict(entry.entityType, entry.entityId, entry.userId);
+          return { action: 'handled' };
+        }
+      }
+    }
+
+    // No local or remote baseline available -> let adapter fail closed with INVALID_CAS_BASELINE
+    return { action: 'proceed', entry };
+  }
+
+  /**
    * Sequentially drains outbox entries to Supabase.
    */
   private async drainOutbox(userId?: string): Promise<void> {
@@ -263,7 +423,6 @@ export class SyncEngine {
       if (this.isDestroyed) return;
 
       // Reclaim any stalled or crashed leases prior to processing the drain batch.
-      // Since this tab is the elected leader, immediately recover leases orphaned by dead tabs.
       await this.outboxRepo.recoverStaleLeases({
         currentTabId: this.tabCoordinator?.getTabId?.(),
         forceOrphanedByOtherTabs: true,
@@ -286,15 +445,38 @@ export class SyncEngine {
         // Topologically order the batch so prerequisites (e.g. folders) precede dependents
         const orderedEntries = orderOutboxByDependency(pendingEntries);
         let stopDrainBatch = false;
+        let madeProgressInPass = false;
 
         for (const queuedEntry of orderedEntries) {
-          // Re-read entry from Dexie so any baseServerVersion refreshed by an earlier
-          // pipelined mutation in this batch is observed rather than pushing a stale null baseline.
           const latestEntry = await this.outboxRepo.getById(queuedEntry.id);
           if (!latestEntry || latestEntry.state === 'blocked') {
             continue;
           }
-          const entry = latestEntry;
+
+          let entry = latestEntry;
+
+          try {
+            const reconciliation = await this.reconcileMissingCasBaseline(entry);
+            if (reconciliation.action === 'defer') {
+              continue;
+            }
+            if (reconciliation.action === 'handled') {
+              madeProgressInPass = true;
+              continue;
+            }
+            entry = reconciliation.entry;
+          } catch (reconcileErr: any) {
+            const classified = classifySyncError(reconcileErr);
+            this.lastError = { code: classified.code, message: classified.message };
+            await this.outboxRepo.markFailed(entry.id, classified, this.maxRetries);
+            await this.syncMetadataRepo.markError(entry.entityType, entry.entityId, entry.userId);
+            if (classified.code === 'AUTH_EXPIRED' || classified.retryable) {
+              stopDrainBatch = true;
+              break;
+            }
+            madeProgressInPass = true;
+            continue;
+          }
 
           // Mark in-flight with tab lease owner and 30s timeout
           const leaseOwner = this.tabCoordinator?.getTabId?.() || 'sync_engine';
@@ -328,6 +510,7 @@ export class SyncEngine {
             }
 
             this.lastSyncedAt = new Date();
+            madeProgressInPass = true;
           } catch (err: any) {
             console.warn(`[SyncEngine] Push failed for entry ${entry.id}:`, err);
 
@@ -338,17 +521,13 @@ export class SyncEngine {
             };
 
             await this.outboxRepo.markFailed(entry.id, classified, this.maxRetries);
+            madeProgressInPass = true;
 
             if (classified.code === 'CONFLICT') {
               let remotePayload: any = err?.remoteSnapshot !== undefined ? err.remoteSnapshot : null;
               if (err?.remoteSnapshot === undefined) {
                 try {
-                  const tableName =
-                    entry.entityType === 'document'
-                      ? 'documents'
-                      : entry.entityType === 'system_design'
-                      ? 'system_designs'
-                      : 'workspace_folders';
+                  const tableName = getEntityTableName(entry.entityType);
                   const sel = this.supabase
                     .from(tableName)
                     .select('*')
@@ -394,8 +573,12 @@ export class SyncEngine {
           }
         }
 
-        if (stopDrainBatch) {
-          this.state = 'error';
+        if (stopDrainBatch || !madeProgressInPass) {
+          if (stopDrainBatch) {
+            this.state = 'error';
+          } else {
+            this.state = 'idle';
+          }
           break;
         }
       }

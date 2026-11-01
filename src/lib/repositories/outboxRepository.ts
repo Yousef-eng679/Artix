@@ -13,6 +13,16 @@ export interface EnqueueOutboxParams {
   mutationId?: string;
 }
 
+export function isValidPositiveBaseVersion(val: unknown): val is string {
+  return typeof val === 'string' && /^[1-9]\d*$/.test(val);
+}
+
+function pickValidBaseVersion(primary?: string | null, fallback?: string | null): string | null {
+  if (isValidPositiveBaseVersion(primary)) return primary;
+  if (isValidPositiveBaseVersion(fallback)) return fallback;
+  return null;
+}
+
 export class OutboxRepository {
   private db: ArtixDB;
 
@@ -65,7 +75,7 @@ export class OutboxRepository {
         const updated: OutboxEntry = {
           ...existing,
           mutationId: stableMutationId,
-          baseServerVersion: existing.baseServerVersion ?? params.baseServerVersion ?? null,
+          baseServerVersion: pickValidBaseVersion(existing.baseServerVersion, params.baseServerVersion),
           payload: mergedPayload,
           localRevision: Math.max(existing.localRevision, params.localRevision),
           updatedAt: now,
@@ -80,7 +90,7 @@ export class OutboxRepository {
           ...existing,
           mutationId: stableMutationId,
           operation: 'delete',
-          baseServerVersion: existing.baseServerVersion ?? params.baseServerVersion ?? null,
+          baseServerVersion: pickValidBaseVersion(existing.baseServerVersion, params.baseServerVersion),
           payload: params.payload ?? null,
           localRevision: Math.max(existing.localRevision, params.localRevision),
           updatedAt: now,
@@ -91,6 +101,15 @@ export class OutboxRepository {
 
       // Case 5: existing is delete and incoming is delete -> redundant no-op
       if (existing.operation === 'delete' && params.operation === 'delete') {
+        if (!isValidPositiveBaseVersion(existing.baseServerVersion) && isValidPositiveBaseVersion(params.baseServerVersion)) {
+          const healed: OutboxEntry = {
+            ...existing,
+            baseServerVersion: params.baseServerVersion,
+            updatedAt: now,
+          };
+          await this.db.outbox.put(healed);
+          return healed;
+        }
         return existing;
       }
 
@@ -100,8 +119,23 @@ export class OutboxRepository {
           ...existing,
           mutationId: stableMutationId,
           operation: 'update',
-          baseServerVersion: existing.baseServerVersion ?? params.baseServerVersion ?? null,
+          baseServerVersion: pickValidBaseVersion(existing.baseServerVersion, params.baseServerVersion),
           payload: params.payload ?? null,
+          localRevision: Math.max(existing.localRevision, params.localRevision),
+          updatedAt: now,
+        };
+        await this.db.outbox.put(updated);
+        return updated;
+      }
+
+      // Case 7: existing is delete and incoming is create -> replace with create
+      if (existing.operation === 'delete' && params.operation === 'create') {
+        const updated: OutboxEntry = {
+          ...existing,
+          mutationId: crypto.randomUUID(),
+          operation: 'create',
+          baseServerVersion: null,
+          payload: params.payload,
           localRevision: Math.max(existing.localRevision, params.localRevision),
           updatedAt: now,
         };
@@ -111,6 +145,11 @@ export class OutboxRepository {
     }
 
     // No compactable pending entry found; append new entry
+    const normalizedBase =
+      params.operation === 'create'
+        ? null
+        : pickValidBaseVersion(params.baseServerVersion, null);
+
     const newEntry: OutboxEntry = {
       id: crypto.randomUUID(),
       mutationId: params.mutationId || crypto.randomUUID(),
@@ -119,7 +158,7 @@ export class OutboxRepository {
       entityType: params.entityType,
       entityId: params.entityId,
       operation: params.operation,
-      baseServerVersion: params.baseServerVersion ?? null,
+      baseServerVersion: normalizedBase,
       localRevision: params.localRevision,
       payload: params.payload,
       state: 'pending',
@@ -189,6 +228,16 @@ export class OutboxRepository {
   }
 
   /**
+   * Retrieves all non-completed outbox entries for a specific entity.
+   */
+  async listByEntity(userId: string, entityType: EntityType, entityId: string): Promise<OutboxEntry[]> {
+    return await this.db.outbox
+      .where('[userId+entityType+entityId]')
+      .equals([userId, entityType, entityId])
+      .toArray();
+  }
+
+  /**
    * Retrieves in-flight entries.
    */
   async getInFlight(userId?: string): Promise<OutboxEntry[]> {
@@ -225,7 +274,6 @@ export class OutboxRepository {
    * Reclaims stale 'in_flight' entries whose lease has expired,
    * or entries orphaned by other crashed tabs when promoted to leader,
    * restoring them back to 'pending' state so they can be re-synchronized.
-   * Useful on SyncEngine startup, leadership election, or before draining outbox.
    */
   async recoverStaleLeases(
     optionsOrNow?:
@@ -300,7 +348,6 @@ export class OutboxRepository {
       const now = Date.now();
       let nextRetryAt: number | null = null;
       if (!isBlocked && isRetryable) {
-        // Full jitter exponential backoff: min(1000 * 2^(attempts-1) + jitter, 30000)
         const exponent = Math.max(0, attemptCount - 1);
         const baseDelay = Math.min(1000 * Math.pow(2, exponent), 30000);
         const jitter = Math.floor(Math.random() * Math.min(500, baseDelay));
@@ -341,6 +388,18 @@ export class OutboxRepository {
   async updateBaseServerVersion(id: string, baseServerVersion: string): Promise<void> {
     await this.db.outbox.update(id, {
       baseServerVersion,
+      updatedAt: Date.now(),
+    });
+  }
+
+  /**
+   * Converts an orphan local update entry (that has never existed on the server) into a create operation.
+   */
+  async convertToCreate(id: string, payload: unknown): Promise<void> {
+    await this.db.outbox.update(id, {
+      operation: 'create',
+      baseServerVersion: null,
+      payload,
       updatedAt: Date.now(),
     });
   }

@@ -130,13 +130,19 @@ export class DocumentRepository {
 
       await this.db.documents.put(doc);
 
+      const existingMeta = await this.db.sync_metadata.get(`document:${doc.id}`);
+      const resolvedServerVersion =
+        snapshot.serverVersion !== undefined && snapshot.serverVersion !== null
+          ? String(snapshot.serverVersion)
+          : (existingMeta?.serverVersion ?? null);
+
       await this.syncMetadataRepo.upsertInTx({
         entityType: 'document',
         entityId: doc.id,
         userId: doc.userId,
         syncState: 'synced',
-        serverVersion: snapshot.serverVersion ? String(snapshot.serverVersion) : null,
-        serverUpdatedAt: snapshot.updatedAt ?? null,
+        serverVersion: resolvedServerVersion,
+        serverUpdatedAt: snapshot.updatedAt ?? existingMeta?.serverUpdatedAt ?? null,
         localRevision: doc.localRevision,
         lastSyncedAt: Date.now(),
         baseSnapshot: snapshot,
@@ -358,13 +364,32 @@ export class DocumentRepository {
 
       await this.db.documents.put(restored);
 
+      const existingMeta = await this.db.sync_metadata.get(`document:${id}`);
+      const existingOutbox = await this.db.outbox
+        .where('[userId+entityType+entityId]')
+        .equals([restored.userId, 'document', restored.id])
+        .toArray();
+      const hasPendingDelete = existingOutbox.some(
+        (e) => e.state === 'pending' && e.operation === 'delete'
+      );
+
+      const validServerVersion =
+        existingMeta?.serverVersion && /^[1-9]\d*$/.test(existingMeta.serverVersion)
+          ? existingMeta.serverVersion
+          : null;
+
+      const mustReCreate =
+        !validServerVersion ||
+        (existingMeta?.syncState === 'deleted_synced' && !hasPendingDelete);
+
       if (this.outboxRepo) {
         await this.outboxRepo.enqueueInTx({
           userId: restored.userId,
           projectId: restored.projectId,
           entityType: 'document',
           entityId: restored.id,
-          operation: 'update',
+          operation: mustReCreate ? 'create' : 'update',
+          baseServerVersion: mustReCreate ? null : validServerVersion,
           payload: {
             title: restored.title,
             content: restored.content,
@@ -380,6 +405,7 @@ export class DocumentRepository {
         entityId: restored.id,
         userId: restored.userId,
         syncState: 'pending',
+        serverVersion: mustReCreate ? null : validServerVersion,
         localRevision: restored.localRevision,
       });
 

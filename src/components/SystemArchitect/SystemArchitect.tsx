@@ -172,7 +172,7 @@ export function SystemArchitect({
   // --- Shared auto-save with debounce + serial queue + tab-close protection (lazy-initialized once) ---
   const guardRef = useRef<TabCloseGuard | null>(null);
   if (!guardRef.current) {
-    guardRef.current = createTabCloseGuard('/api/save');
+    guardRef.current = createTabCloseGuard();
   }
 
   const queueRef = useRef<SaveQueue | null>(null);

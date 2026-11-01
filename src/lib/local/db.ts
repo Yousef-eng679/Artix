@@ -226,10 +226,30 @@ export async function migrateLegacyArtixDB(targetDb: ArtixDB, userId: string): P
         return;
       }
 
+      const metadataVersions = new Map<string, string>();
+      for (const m of metadata) {
+        if (typeof m.serverVersion === 'string' && /^[1-9]\d*$/.test(m.serverVersion)) {
+          metadataVersions.set(`${m.entityType}:${m.entityId}`, m.serverVersion);
+        }
+      }
+
+      const healedOutbox = outbox.map((entry) => {
+        if (
+          (entry.operation === 'update' || entry.operation === 'delete') &&
+          !(typeof entry.baseServerVersion === 'string' && /^[1-9]\d*$/.test(entry.baseServerVersion))
+        ) {
+          const recoveredVersion = metadataVersions.get(`${entry.entityType}:${entry.entityId}`);
+          if (recoveredVersion) {
+            return { ...entry, baseServerVersion: recoveredVersion };
+          }
+        }
+        return entry;
+      });
+
       if (docs.length > 0) await targetDb.documents.bulkPut(docs);
       if (designs.length > 0) await targetDb.system_designs.bulkPut(designs);
       if (folders.length > 0) await targetDb.workspace_folders.bulkPut(folders);
-      if (outbox.length > 0) await targetDb.outbox.bulkPut(outbox);
+      if (healedOutbox.length > 0) await targetDb.outbox.bulkPut(healedOutbox);
       if (metadata.length > 0) await targetDb.sync_metadata.bulkPut(metadata);
 
       await targetDb.database_meta.put({

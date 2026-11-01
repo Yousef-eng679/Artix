@@ -113,72 +113,66 @@ describe('TabCloseProtection', () => {
   });
   afterEach(() => vi.useRealTimers());
 
-  it('should flush pending content using sendBeacon on beforeunload', async () => {
+  it('should flush pending content locally to localStorage on beforeunload without network calls (OF-14)', async () => {
     const { createTabCloseGuard } = await import('@/lib/cache/tabCloseGuard');
     const beaconSpy = vi.fn().mockReturnValue(true);
+    const fetchSpy = vi.fn().mockResolvedValue(new Response());
     vi.stubGlobal('navigator', { ...navigator, sendBeacon: beaconSpy });
+    vi.stubGlobal('fetch', fetchSpy);
 
-    const guard = createTabCloseGuard('/api/save');
+    const guard = createTabCloseGuard();
 
     // Simulate pending content
     guard.markDirty('doc-1', 'Unsaved paragraph');
     guard.handleBeforeUnload();
 
-    expect(beaconSpy).toHaveBeenCalledTimes(1);
-    const [url, body] = beaconSpy.mock.calls[0];
-    expect(url).toBe('/api/save');
-    const payload = JSON.parse(body);
-    expect(payload.documentId).toBe('doc-1');
-    expect(payload.content).toBe('Unsaved paragraph');
+    expect(beaconSpy).not.toHaveBeenCalled();
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(localStorage.getItem('artix.draft.doc-1')).toBe('Unsaved paragraph');
 
     vi.unstubAllGlobals();
   });
 
-  it('should NOT fire sendBeacon when there is no pending content', async () => {
+  it('should NOT write localStorage draft when there is no pending content', async () => {
     const { createTabCloseGuard } = await import('@/lib/cache/tabCloseGuard');
-    const beaconSpy = vi.fn().mockReturnValue(true);
-    vi.stubGlobal('navigator', { ...navigator, sendBeacon: beaconSpy });
+    const guard = createTabCloseGuard();
 
-    const guard = createTabCloseGuard('/api/save');
-
-    // Nothing dirty — close the tab
     guard.handleBeforeUnload();
 
-    expect(beaconSpy).not.toHaveBeenCalled();
-    vi.unstubAllGlobals();
+    expect(localStorage.length).toBe(0);
   });
 
-  it('should fall back to keepalive fetch when sendBeacon is unavailable', async () => {
+  it('should invoke optional local flush callback on beforeunload without sendBeacon or fetch', async () => {
     const { createTabCloseGuard } = await import('@/lib/cache/tabCloseGuard');
     vi.stubGlobal('navigator', { ...navigator, sendBeacon: undefined });
     const fetchSpy = vi.fn().mockResolvedValue(new Response());
     vi.stubGlobal('fetch', fetchSpy);
+    const onFlushLocal = vi.fn();
 
-    const guard = createTabCloseGuard('/api/save');
+    const guard = createTabCloseGuard(onFlushLocal);
     guard.markDirty('doc-2', 'Fallback content');
     guard.handleBeforeUnload();
 
-    expect(fetchSpy).toHaveBeenCalledTimes(1);
-    const [url, opts] = fetchSpy.mock.calls[0];
-    expect(url).toBe('/api/save');
-    expect(opts.keepalive).toBe(true);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(onFlushLocal).toHaveBeenCalledWith('doc-2', 'Fallback content');
+    expect(localStorage.getItem('artix.draft.doc-2')).toBe('Fallback content');
 
     vi.unstubAllGlobals();
   });
 
-  it('should clear dirty state after a successful DB save', async () => {
+  it('should clear dirty state and local draft after a successful DB save', async () => {
     const { createTabCloseGuard } = await import('@/lib/cache/tabCloseGuard');
-    const beaconSpy = vi.fn().mockReturnValue(true);
-    vi.stubGlobal('navigator', { ...navigator, sendBeacon: beaconSpy });
-
-    const guard = createTabCloseGuard('/api/save');
+    const guard = createTabCloseGuard();
 
     guard.markDirty('doc-3', 'Draft');
-    guard.markClean('doc-3'); // DB save succeeded → mark clean
-
     guard.handleBeforeUnload();
-    expect(beaconSpy).not.toHaveBeenCalled(); // Nothing to flush
-    vi.unstubAllGlobals();
+    expect(localStorage.getItem('artix.draft.doc-3')).toBe('Draft');
+
+    guard.markClean('doc-3'); // DB save succeeded -> mark clean
+
+    expect(localStorage.getItem('artix.draft.doc-3')).toBeNull();
+    guard.handleBeforeUnload();
+    expect(localStorage.getItem('artix.draft.doc-3')).toBeNull();
   });
 });
 
