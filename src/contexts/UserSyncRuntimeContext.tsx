@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState, useMemo, ReactNode } from 'react';
+import React, { createContext, useContext, useEffect, useState, useMemo, useRef, ReactNode } from 'react';
 import { useAuth } from '@/hooks/useAuth';
 import {
   UserSyncRuntime,
@@ -36,7 +36,12 @@ export interface UserSyncRuntimeContextType {
 const UserSyncRuntimeContext = createContext<UserSyncRuntimeContextType | null>(null);
 
 export function UserSyncRuntimeProvider({ children }: { children: ReactNode }) {
-  const { user, loading: authLoading } = useAuth();
+  const auth = useAuth();
+  const { user, loading: authLoading } = auth;
+  const shouldPauseCloudSync = Boolean(auth.isOfflineSession || auth.reauthRequired);
+  const shouldPauseCloudSyncRef = useRef(shouldPauseCloudSync);
+  shouldPauseCloudSyncRef.current = shouldPauseCloudSync;
+
   const [runtime, setRuntime] = useState<UserSyncRuntime | null>(() => getActiveUserRuntime() ?? null);
   const [runtimeStatus, setRuntimeStatus] = useState<RuntimeStatus | null>(() => getActiveUserRuntime()?.getStatus() ?? null);
   const [openError, setOpenError] = useState<RuntimeError | null>(null);
@@ -63,9 +68,16 @@ export function UserSyncRuntimeProvider({ children }: { children: ReactNode }) {
 
     setIsReady(false);
     setOpenError(null);
-    openUserRuntime(user.id)
+    const openPromise = shouldPauseCloudSyncRef.current
+      ? openUserRuntime(user.id, { cloudSyncPaused: true })
+      : openUserRuntime(user.id);
+
+    openPromise
       .then((active) => {
         if (!isCancelled) {
+          if (typeof active?.setCloudSyncPaused === 'function') {
+            active.setCloudSyncPaused(shouldPauseCloudSyncRef.current);
+          }
           setOpenError(null);
           setRuntime(active);
           setRuntimeStatus(active.getStatus());
@@ -98,6 +110,13 @@ export function UserSyncRuntimeProvider({ children }: { children: ReactNode }) {
       isCancelled = true;
     };
   }, [user?.id, authLoading]);
+
+  // Dynamically pause/resume cloud sync when offline session refreshes online
+  useEffect(() => {
+    if (runtime && typeof runtime.setCloudSyncPaused === 'function') {
+      runtime.setCloudSyncPaused(shouldPauseCloudSync);
+    }
+  }, [runtime, shouldPauseCloudSync]);
 
   // Subscribe to live status changes on the active runtime
   useEffect(() => {

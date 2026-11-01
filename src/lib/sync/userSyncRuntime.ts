@@ -25,6 +25,7 @@ export interface RuntimeStatus {
   userId: string;
   isStarted: boolean;
   isDegraded: boolean;
+  isCloudSyncPaused?: boolean;
   error: RuntimeError | null;
   migration: MigrationResult | null;
 }
@@ -34,6 +35,42 @@ export interface UserSyncRuntimeOptions {
   db?: ArtixDB;
   tabCoordinator?: TabCoordinator;
   realtimeSync?: RealtimeSyncManager;
+  cloudSyncPaused?: boolean;
+}
+
+function createPausedPostgrestBuilder(): any {
+  const pausedResult = Promise.resolve({
+    data: null,
+    error: {
+      message: 'Failed to fetch: cloud sync paused until offline session refreshes',
+      code: 'OFFLINE_SESSION_PAUSED',
+    },
+  });
+  const builder: any = new Proxy(
+    {},
+    {
+      get(_target, prop) {
+        if (prop === 'then') return pausedResult.then.bind(pausedResult);
+        if (prop === 'catch') return pausedResult.catch.bind(pausedResult);
+        if (prop === 'finally') return pausedResult.finally.bind(pausedResult);
+        return () => builder;
+      },
+    },
+  );
+  return builder;
+}
+
+function wrapSupabaseWithCloudPauseGate(rawClient: any, isPaused: () => boolean): any {
+  if (!rawClient || typeof rawClient !== 'object') return rawClient;
+  return new Proxy(rawClient, {
+    get(target, prop, receiver) {
+      if (isPaused() && (prop === 'from' || prop === 'rpc')) {
+        return () => createPausedPostgrestBuilder();
+      }
+      const value = Reflect.get(target, prop, receiver);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
 }
 
 /**
@@ -56,6 +93,7 @@ export class UserSyncRuntime {
 
   private supabase: any;
   private isStarted = false;
+  private cloudSyncPaused: boolean;
   private unsubCrossTab?: () => void;
   private state: RuntimeState = 'uninitialized';
   private runtimeError: RuntimeError | null = null;
@@ -68,8 +106,12 @@ export class UserSyncRuntime {
     }
 
     this.userId = userId;
-    this.supabase = options.supabaseClient || defaultSupabaseClient;
     this.db = options.db || getUserArtixDB(userId);
+    this.cloudSyncPaused = Boolean(options.cloudSyncPaused);
+    this.supabase = wrapSupabaseWithCloudPauseGate(
+      options.supabaseClient || defaultSupabaseClient,
+      () => this.cloudSyncPaused,
+    );
 
     this.documentRepo = new DocumentRepository(this.db);
     this.folderRepo = new WorkspaceFolderRepository(this.db);
@@ -115,9 +157,41 @@ export class UserSyncRuntime {
       userId: this.userId,
       isStarted: this.isStarted,
       isDegraded: this.state === 'degraded',
+      isCloudSyncPaused: this.cloudSyncPaused,
       error: this.runtimeError,
       migration: this.migrationResult,
     };
+  }
+
+  /**
+   * Pauses or resumes cloud network activity (Realtime + SyncEngine) while keeping
+   * local Dexie repositories and cross-tab coordination active (e.g. during an
+   * offline expired-JWT session until online refresh succeeds).
+   */
+  setCloudSyncPaused(paused: boolean): void {
+    if (this.cloudSyncPaused === paused) return;
+    this.cloudSyncPaused = paused;
+
+    if (this.isStarted) {
+      if (paused) {
+        this.realtimeSync.stop();
+      } else {
+        this.realtimeSync.start(this.userId);
+        const hadInFlightSync = Boolean(
+          (this.syncEngine as unknown as { activeSyncPromise?: unknown }).activeSyncPromise,
+        );
+        this.syncEngine
+          .triggerSync(this.userId)
+          .then(() => (hadInFlightSync ? this.syncEngine.triggerSync(this.userId) : undefined))
+          .catch((err) => {
+            if (err?.name !== 'DatabaseClosedError') {
+              console.warn(`[UserSyncRuntime] Resumed sync error for user ${this.userId}:`, err);
+            }
+          });
+      }
+    }
+
+    this.notifyStatus();
   }
 
   /**
@@ -211,15 +285,17 @@ export class UserSyncRuntime {
       // Standby or leader tabs can react to peer tab changes
     });
 
-    // 5. Start realtime listener for wake-up acceleration
-    this.realtimeSync.start(this.userId);
+    if (!this.cloudSyncPaused) {
+      // 5. Start realtime listener for wake-up acceleration
+      this.realtimeSync.start(this.userId);
 
-    // 6. Start background synchronization
-    this.syncEngine.triggerSync(this.userId).catch((err) => {
-      if (err?.name !== 'DatabaseClosedError') {
-        console.warn(`[UserSyncRuntime] Initial sync error for user ${this.userId}:`, err);
-      }
-    });
+      // 6. Start background synchronization
+      this.syncEngine.triggerSync(this.userId).catch((err) => {
+        if (err?.name !== 'DatabaseClosedError') {
+          console.warn(`[UserSyncRuntime] Initial sync error for user ${this.userId}:`, err);
+        }
+      });
+    }
 
     this.isStarted = true;
     if (this.state !== 'degraded') {
@@ -308,6 +384,9 @@ export async function openUserRuntime(
 ): Promise<UserSyncRuntime> {
   if (activeRuntime) {
     if (activeRuntime.userId === userId && activeRuntime.isActive()) {
+      if (options.cloudSyncPaused !== undefined) {
+        activeRuntime.setCloudSyncPaused(options.cloudSyncPaused);
+      }
       return activeRuntime;
     }
     await activeRuntime.stop();
