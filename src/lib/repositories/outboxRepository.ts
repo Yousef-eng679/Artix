@@ -5,6 +5,9 @@ import { EntityType, OutboxEntry, OutboxOperation, OutboxState } from '../local/
 const enqueueListenersByDb = new WeakMap<ArtixDB, Set<(userId: string) => void>>();
 const scheduledTxWakeups = new WeakMap<object, Set<string>>();
 
+/** Hard ceiling for any scheduled retry delay (5 minutes); mirrors MAX_SYNC_BACKOFF_MS. */
+const MAX_RETRY_DELAY_MS = 300_000;
+
 export interface EnqueueOutboxParams {
   userId: string;
   projectId: string | null;
@@ -460,15 +463,17 @@ export class OutboxRepository {
    */
   async markFailedInTx(
     id: string,
-    error: { code: string; message: string; retryable?: boolean },
+    error: { code: string; message: string; retryable?: boolean; retryAfterMs?: number },
     maxRetries = 5
   ): Promise<OutboxEntry | undefined> {
     const entry = await this.db.outbox.get(id);
     if (!entry) return undefined;
 
     const isRetryable = error.retryable !== false;
+    const isRateLimited = error.code === 'RATE_LIMITED';
     const attemptCount = entry.attemptCount + 1;
-    const isBlocked = !isRetryable || attemptCount >= maxRetries;
+    // Rate limiting is server back-pressure, not a defect in this mutation: never exhaust retries on it.
+    const isBlocked = !isRetryable || (!isRateLimited && attemptCount >= maxRetries);
     const state: OutboxState = isBlocked ? 'blocked' : 'pending';
 
     const now = Date.now();
@@ -477,7 +482,12 @@ export class OutboxRepository {
       const exponent = Math.max(0, attemptCount - 1);
       const baseDelay = Math.min(1000 * Math.pow(2, exponent), 30000);
       const jitter = Math.floor(Math.random() * Math.min(500, baseDelay));
-      nextRetryAt = now + baseDelay + jitter;
+      const serverDelay =
+        typeof error.retryAfterMs === 'number' && Number.isFinite(error.retryAfterMs)
+          ? Math.max(0, error.retryAfterMs)
+          : 0;
+      const delay = Math.min(MAX_RETRY_DELAY_MS, Math.max(baseDelay + jitter, serverDelay));
+      nextRetryAt = now + delay;
     }
 
     const updated: OutboxEntry = {
@@ -507,11 +517,69 @@ export class OutboxRepository {
    */
   async markFailed(
     id: string,
-    error: { code: string; message: string; retryable?: boolean },
+    error: { code: string; message: string; retryable?: boolean; retryAfterMs?: number },
     maxRetries = 5
   ): Promise<OutboxEntry | undefined> {
     return await this.db.transaction('rw', this.db.outbox, async () => {
       return await this.markFailedInTx(id, error, maxRetries);
+    });
+  }
+
+  /**
+   * Lists entries parked in 'blocked' state (non-retryable failure or retries exhausted).
+   */
+  async getBlocked(userId?: string): Promise<OutboxEntry[]> {
+    const entries = await this.db.outbox.where('state').equals('blocked').toArray();
+    const filtered = userId ? entries.filter((e) => e.userId === userId) : entries;
+    return filtered.sort((a, b) => a.createdAt - b.createdAt);
+  }
+
+  /**
+   * Returns a single blocked entry to the ready queue with a fresh retry budget.
+   * Preserves `mutationId`, `payload` and `dispatched` so server-side idempotency still holds.
+   * Returns false if the entry is missing or not blocked.
+   */
+  async retryBlockedEntry(id: string): Promise<boolean> {
+    return await this.db.transaction('rw', this.db.outbox, async () => {
+      const entry = await this.db.outbox.get(id);
+      if (!entry || entry.state !== 'blocked') return false;
+      await this.db.outbox.put({
+        ...entry,
+        state: 'pending',
+        attemptCount: 0,
+        nextRetryAt: null,
+        leaseOwner: null,
+        leaseToken: null,
+        leaseExpiresAt: null,
+        updatedAt: Date.now(),
+      });
+      return true;
+    });
+  }
+
+  /**
+   * Unblocks every blocked entry for a user (excluding CONFLICT entries, which must be
+   * resolved through the conflict workflow). Returns the number of entries unblocked.
+   */
+  async retryAllBlocked(userId: string): Promise<number> {
+    return await this.db.transaction('rw', this.db.outbox, async () => {
+      const blocked = (await this.db.outbox.where('state').equals('blocked').toArray()).filter(
+        (e) => e.userId === userId && e.lastError?.code !== 'CONFLICT'
+      );
+      const now = Date.now();
+      for (const entry of blocked) {
+        await this.db.outbox.put({
+          ...entry,
+          state: 'pending',
+          attemptCount: 0,
+          nextRetryAt: null,
+          leaseOwner: null,
+          leaseToken: null,
+          leaseExpiresAt: null,
+          updatedAt: now,
+        });
+      }
+      return blocked.length;
     });
   }
 

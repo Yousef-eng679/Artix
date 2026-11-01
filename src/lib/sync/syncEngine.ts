@@ -17,6 +17,7 @@ export interface SyncStatus {
   state: SyncStatusState;
   isOnline: boolean;
   pendingCount: number;
+  blockedCount?: number;
   lastSyncedAt: Date | null;
   error?: { code: string; message: string } | null;
 }
@@ -272,13 +273,34 @@ export class SyncEngine {
    */
   async getStatusWithPending(userId?: string): Promise<SyncStatus> {
     const pendingCount = await this.outboxRepo.countPending(userId);
+    const blockedCount =
+      typeof this.outboxRepo?.getBlocked === 'function'
+        ? (await this.outboxRepo.getBlocked(userId || this.userId)).length
+        : 0;
     return {
       state: this.state,
       isOnline: this.isOnline,
       pendingCount,
+      blockedCount,
       lastSyncedAt: this.lastSyncedAt,
       error: this.lastError,
     };
+  }
+
+  /**
+   * User-initiated recovery (e.g. after upgrading plan or freeing quota): returns blocked,
+   * non-conflict outbox entries to the queue with a fresh retry budget and syncs immediately.
+   */
+  async retryBlocked(userId?: string): Promise<number> {
+    const targetUserId = userId || this.userId;
+    if (!targetUserId || typeof this.outboxRepo?.retryAllBlocked !== 'function') return 0;
+    const count = await this.outboxRepo.retryAllBlocked(targetUserId);
+    if (count > 0) {
+      this.lastError = null;
+      this.notifySubscribers();
+      await this.triggerSync(targetUserId);
+    }
+    return count;
   }
 
   private notifySubscribers(): void {

@@ -35,7 +35,7 @@ export interface UserSyncRuntimeContextType {
   runtimeError: RuntimeError | null;
 }
 
-const UserSyncRuntimeContext = createContext<UserSyncRuntimeContextType | null>(null);
+export const UserSyncRuntimeContext = createContext<UserSyncRuntimeContextType | null>(null);
 
 export function UserSyncRuntimeProvider({ children }: { children: ReactNode }) {
   const auth = useAuth();

@@ -8,9 +8,11 @@ export interface UseSyncStatusReturn {
   isOnline: boolean;
   isSyncing: boolean;
   pendingCount: number;
+  blockedCount: number;
   lastSyncedAt: Date | null;
   error: { code: string; message: string } | null;
   triggerSync: () => Promise<void>;
+  retryBlocked: () => Promise<number>;
 }
 
 export function useSyncStatus(): UseSyncStatusReturn {
@@ -27,11 +29,13 @@ export function useSyncStatus(): UseSyncStatusReturn {
 
   const [status, setStatus] = useState<SyncStatus>(() => engine.getStatus());
   const [pendingCount, setPendingCount] = useState<number>(0);
+  const [blockedCount, setBlockedCount] = useState<number>(0);
 
   const refreshPendingCount = useCallback(async () => {
     try {
       const fullStatus = await engine.getStatusWithPending(user?.id);
       setPendingCount(fullStatus.pendingCount);
+      setBlockedCount(fullStatus.blockedCount ?? 0);
     } catch {
       // Ignore background count errors
     }
@@ -61,12 +65,20 @@ export function useSyncStatus(): UseSyncStatusReturn {
     await refreshPendingCount();
   }, [engine, user?.id, refreshPendingCount]);
 
+  const retryBlocked = useCallback(async () => {
+    const count = await engine.retryBlocked(user?.id);
+    await refreshPendingCount();
+    return count;
+  }, [engine, user?.id, refreshPendingCount]);
+
   return {
     isOnline: status.isOnline,
     isSyncing: status.state === 'syncing',
     pendingCount,
+    blockedCount,
     lastSyncedAt: status.lastSyncedAt,
     error: status.error ?? null,
     triggerSync,
+    retryBlocked,
   };
 }
