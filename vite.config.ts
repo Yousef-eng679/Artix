@@ -12,6 +12,17 @@ export default defineConfig(() => ({
       overlay: false,
     },
   },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (id.includes("node_modules/monaco-editor")) {
+            return "monaco";
+          }
+        },
+      },
+    },
+  },
   plugins: [
     react(),
     VitePWA({
