@@ -42,6 +42,7 @@ export function useSystemDesigns(projectId: string | undefined) {
   const { user } = useAuth();
   const queryClient = useQueryClient();
   const runtimeContext = useUserSyncRuntime();
+  const isRuntimeReady = !runtimeContext || runtimeContext.isReady;
 
   const userDb = useMemo(() => runtimeContext?.db || getUserArtixDB(user?.id), [runtimeContext?.db, user?.id]);
   const outboxRepo = useMemo(() => runtimeContext?.outboxRepo || new OutboxRepository(userDb), [runtimeContext?.outboxRepo, userDb]);
@@ -64,7 +65,7 @@ export function useSystemDesigns(projectId: string | undefined) {
     return unsub;
   }, [coordinator, queryClient, projectId]);
 
-  const { data: designs = [], isLoading } = useQuery({
+  const designsQuery = useQuery({
     queryKey: ['system_designs', projectId],
     queryFn: async () => {
       if (!user || !projectId) return [];
@@ -82,10 +83,12 @@ export function useSystemDesigns(projectId: string | undefined) {
         folder_id: d.folderId,
       })) as SystemDesign[];
     },
-    enabled: !!user && !!projectId,
+    enabled: !!user && !!projectId && isRuntimeReady,
+    networkMode: 'always',
   });
 
   const createDesignMutation = useMutation({
+    networkMode: 'always',
     mutationFn: async ({ name, projectId, folderId }: { name: string; projectId: string; folderId?: string | null }) => {
       if (!user) throw new Error('Not authenticated');
 
@@ -126,6 +129,7 @@ export function useSystemDesigns(projectId: string | undefined) {
   });
 
   const updateDesignMutation = useMutation({
+    networkMode: 'always',
     mutationFn: async ({ id, board_state, expectedUpdatedAt, ...updates }: Partial<SystemDesign> & { id: string; expectedUpdatedAt?: string }) => {
       // 1. Update immediately in local IndexedDB + Outbox (Local-First Authority)
       const localDesign = await designRepo.getById(id);
@@ -173,6 +177,7 @@ export function useSystemDesigns(projectId: string | undefined) {
   });
 
   const deleteDesignMutation = useMutation({
+    networkMode: 'always',
     mutationFn: async (id: string) => {
       // 1. Soft-delete immediately in local IndexedDB + Outbox (Local-First Authority)
       await designRepo.delete(id);
@@ -194,8 +199,8 @@ export function useSystemDesigns(projectId: string | undefined) {
   });
 
   return {
-    designs,
-    isLoading,
+    designs: designsQuery.data ?? [],
+    isLoading: designsQuery.isLoading || (Boolean(user) && Boolean(projectId) && (!isRuntimeReady || designsQuery.isPending)),
     createDesign: createDesignMutation.mutateAsync,
     updateDesign: updateDesignMutation.mutateAsync,
     deleteDesign: deleteDesignMutation.mutateAsync,

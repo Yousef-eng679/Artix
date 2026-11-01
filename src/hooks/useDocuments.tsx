@@ -13,6 +13,7 @@ export function useDocuments(projectId?: string) {
   const { user } = useAuth();
   const queryClient = useQueryClient();
   const runtimeContext = useUserSyncRuntime();
+  const isRuntimeReady = !runtimeContext || runtimeContext.isReady;
 
   const userDb = useMemo(() => runtimeContext?.db || getUserArtixDB(user?.id), [runtimeContext?.db, user?.id]);
   const outboxRepo = useMemo(() => runtimeContext?.outboxRepo || new OutboxRepository(userDb), [runtimeContext?.outboxRepo, userDb]);
@@ -52,10 +53,12 @@ export function useDocuments(projectId?: string) {
         folder_id: doc.folderId,
       })) as Document[];
     },
-    enabled: !!user,
+    enabled: !!user && isRuntimeReady,
+    networkMode: 'always',
   });
 
   const createDocumentMutation = useMutation({
+    networkMode: 'always',
     mutationFn: async (args?: string | { projectId?: string; title?: string; folderId?: string | null }) => {
       if (!user) throw new Error('Not authenticated');
 
@@ -100,6 +103,7 @@ export function useDocuments(projectId?: string) {
   });
 
   const updateDocumentMutation = useMutation({
+    networkMode: 'always',
     mutationFn: async (updates: Partial<Document> & { id: string; expectedUpdatedAt?: string }) => {
       const { id, expectedUpdatedAt, ...rest } = updates;
 
@@ -147,6 +151,7 @@ export function useDocuments(projectId?: string) {
   });
 
   const deleteDocumentMutation = useMutation({
+    networkMode: 'always',
     mutationFn: async (id: string) => {
       await docRepo.delete(id);
     },
@@ -168,7 +173,7 @@ export function useDocuments(projectId?: string) {
 
   return {
     documents: documentsQuery.data ?? [],
-    isLoading: documentsQuery.isLoading,
+    isLoading: documentsQuery.isLoading || (Boolean(user) && (!isRuntimeReady || documentsQuery.isPending)),
     error: documentsQuery.error,
     createDocument: createDocumentMutation.mutateAsync,
     updateDocument: updateDocumentMutation.mutateAsync,

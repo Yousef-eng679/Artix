@@ -12,6 +12,7 @@ export function useWorkspaceFolders(projectId?: string) {
   const { user } = useAuth();
   const queryClient = useQueryClient();
   const runtimeContext = useUserSyncRuntime();
+  const isRuntimeReady = !runtimeContext || runtimeContext.isReady;
 
   const userDb = useMemo(() => runtimeContext?.db || getUserArtixDB(user?.id), [runtimeContext?.db, user?.id]);
   const outboxRepo = useMemo(() => runtimeContext?.outboxRepo || new OutboxRepository(userDb), [runtimeContext?.outboxRepo, userDb]);
@@ -49,10 +50,12 @@ export function useWorkspaceFolders(projectId?: string) {
         updatedAt: f.updatedAt,
       })) as WorkspaceFolder[];
     },
-    enabled: !!user && !!projectId,
+    enabled: !!user && !!projectId && isRuntimeReady,
+    networkMode: 'always',
   });
 
   const createFolderMutation = useMutation({
+    networkMode: 'always',
     mutationFn: async ({ name, projectId }: { name: string; projectId: string }) => {
       if (!user) throw new Error('Not authenticated');
       const trimmedName = name.trim();
@@ -99,6 +102,7 @@ export function useWorkspaceFolders(projectId?: string) {
   });
 
   const renameFolderMutation = useMutation({
+    networkMode: 'always',
     mutationFn: async ({ id, name }: { id: string; name: string }) => {
       const trimmedName = name.trim();
 
@@ -136,6 +140,7 @@ export function useWorkspaceFolders(projectId?: string) {
   });
 
   const deleteFolderMutation = useMutation({
+    networkMode: 'always',
     mutationFn: async (id: string) => {
       await folderRepo.delete(id);
     },
@@ -158,7 +163,7 @@ export function useWorkspaceFolders(projectId?: string) {
 
   return {
     folders: foldersQuery.data ?? [],
-    isLoading: foldersQuery.isLoading,
+    isLoading: foldersQuery.isLoading || (Boolean(user) && Boolean(projectId) && (!isRuntimeReady || foldersQuery.isPending)),
     createFolder: createFolderMutation.mutateAsync,
     renameFolder: renameFolderMutation.mutateAsync,
     deleteFolder: deleteFolderMutation.mutateAsync,

@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { Loader2 } from 'lucide-react';
 import { useAuth } from '@/hooks/useAuth';
+import { useUserSyncRuntime } from '@/contexts/UserSyncRuntimeContext';
 import { useProjects } from '@/hooks/useProjects';
 import { useDocuments } from '@/hooks/useDocuments';
 import { useSystemDesigns, BoardState } from '@/hooks/useSystemDesigns';
@@ -31,6 +32,8 @@ const ProjectWorkspace = () => {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const { user, loading: authLoading } = useAuth();
+  const runtimeContext = useUserSyncRuntime();
+  const isRuntimeReady = !runtimeContext || runtimeContext.isReady;
   const { projects, isLoading: projectsLoading } = useProjects();
   const {
     documents,
@@ -80,7 +83,7 @@ const ProjectWorkspace = () => {
     return toWorkspaceResources(documents, designs, id || '');
   }, [documents, designs, id]);
 
-  const isResourcesLoaded = !docsLoading && !designsLoading;
+  const isResourcesLoaded = !authLoading && Boolean(user) && isRuntimeReady && !docsLoading && !designsLoading;
   const {
     tabs,
     activeTabId,
@@ -154,7 +157,7 @@ const ProjectWorkspace = () => {
 
   // Canonicalization on missing resource or project boundary violation
   useEffect(() => {
-    if (docsLoading || designsLoading) return;
+    if (!isResourcesLoaded) return;
 
     if (rawDocId) {
       if (recentlyCreatedRef.current.has(rawDocId)) {
@@ -187,7 +190,7 @@ const ProjectWorkspace = () => {
         setSearchParams(nextParams, { replace: true });
       }
     }
-  }, [rawDocId, rawDesignId, docsLoading, designsLoading, documents, designs, searchParams, setSearchParams]);
+  }, [rawDocId, rawDesignId, isResourcesLoaded, documents, designs, searchParams, setSearchParams]);
 
   // Purely derived selection state (zero duplicate useState)
   const selection: WorkspaceSelection = useMemo(() => {
@@ -236,7 +239,7 @@ const ProjectWorkspace = () => {
   const executedActionRef = useRef<string | null>(null);
 
   useEffect(() => {
-    if (projectsLoading || docsLoading || designsLoading || !id) return;
+    if (projectsLoading || !isResourcesLoaded || !id) return;
 
     const action = searchParams.get('action');
     if (!action || executedActionRef.current === action) return;
@@ -267,7 +270,7 @@ const ProjectWorkspace = () => {
           toast.error('Failed to start vibe coding');
         });
     }
-  }, [projectsLoading, docsLoading, designsLoading, id, searchParams, setSearchParams, createDocument]);
+  }, [projectsLoading, isResourcesLoaded, id, searchParams, setSearchParams, createDocument]);
 
   const handleSaveDesign = useCallback(async (boardState: BoardState) => {
     if (!activeDesign?.id) return;
