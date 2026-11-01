@@ -26,6 +26,9 @@ export interface RuntimeStatus {
   isStarted: boolean;
   isDegraded: boolean;
   isCloudSyncPaused?: boolean;
+  storagePersisted?: boolean | null;
+  usageBytes?: number | null;
+  quotaBytes?: number | null;
   error: RuntimeError | null;
   migration: MigrationResult | null;
 }
@@ -94,6 +97,9 @@ export class UserSyncRuntime {
   private supabase: any;
   private isStarted = false;
   private cloudSyncPaused: boolean;
+  private storagePersisted: boolean | null = null;
+  private usageBytes: number | null = null;
+  private quotaBytes: number | null = null;
   private unsubCrossTab?: () => void;
   private state: RuntimeState = 'uninitialized';
   private runtimeError: RuntimeError | null = null;
@@ -158,6 +164,9 @@ export class UserSyncRuntime {
       isStarted: this.isStarted,
       isDegraded: this.state === 'degraded',
       isCloudSyncPaused: this.cloudSyncPaused,
+      storagePersisted: this.storagePersisted,
+      usageBytes: this.usageBytes,
+      quotaBytes: this.quotaBytes,
       error: this.runtimeError,
       migration: this.migrationResult,
     };
@@ -217,9 +226,9 @@ export class UserSyncRuntime {
   }
 
   /**
-   * Initializes the runtime: opens database, runs legacy migrations,
-   * reclaims in-flight crash leases, binds tab communication, starts realtime,
-   * and kicks off asynchronous synchronization.
+   * Initializes the runtime: opens database, requests persistent storage durability,
+   * runs legacy migrations, reclaims in-flight crash leases, binds tab communication,
+   * starts realtime, and kicks off asynchronous synchronization.
    */
   async start(): Promise<void> {
     if (this.isStarted) return;
@@ -244,6 +253,27 @@ export class UserSyncRuntime {
         this.state = 'errored';
         this.notifyStatus();
         return;
+      }
+    }
+
+    // 1b. Request persistent storage durability & inspect quota (best-effort, non-fatal)
+    if (typeof navigator !== 'undefined' && navigator.storage) {
+      try {
+        if (typeof navigator.storage.persist === 'function') {
+          this.storagePersisted = await navigator.storage.persist();
+        }
+      } catch (persistErr) {
+        console.warn('[UserSyncRuntime] navigator.storage.persist() failed:', persistErr);
+      }
+
+      try {
+        if (typeof navigator.storage.estimate === 'function') {
+          const estimate = await navigator.storage.estimate();
+          this.usageBytes = typeof estimate?.usage === 'number' ? estimate.usage : null;
+          this.quotaBytes = typeof estimate?.quota === 'number' ? estimate.quota : null;
+        }
+      } catch (estimateErr) {
+        console.warn('[UserSyncRuntime] navigator.storage.estimate() failed:', estimateErr);
       }
     }
 
