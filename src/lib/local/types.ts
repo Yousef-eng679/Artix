@@ -79,6 +79,8 @@ export interface OutboxEntry {
   attemptCount: number;
   createdAt: number;
   updatedAt: number;
+  dispatched?: boolean;
+  dispatchedAt?: number | null;
   leaseOwner?: string | null;
   leaseExpiresAt?: number | null;
   nextRetryAt?: number | null;
@@ -99,6 +101,7 @@ export interface SyncMetadata {
   localRevision: number;
   syncState: SyncState;
   lastSyncedAt: number | null;
+  lastAckedMutationId?: string | null;
   baseSnapshot?: unknown | null;
 }
 
@@ -174,6 +177,7 @@ export interface ServerSyncChange {
   entityId: string;
   operation: 'create' | 'update' | 'delete';
   entityVersion: number;
+  mutationId?: string | null;
   payload: unknown;
   changedAt: string;
 }

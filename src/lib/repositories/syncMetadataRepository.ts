@@ -32,6 +32,7 @@ export class SyncMetadataRepository {
     serverUpdatedAt?: string | null;
     localRevision?: number;
     lastSyncedAt?: number | null;
+    lastAckedMutationId?: string | null;
     baseSnapshot?: unknown | null;
   }): Promise<SyncMetadata> {
     const id = this.makeId(params.entityType, params.entityId);
@@ -43,11 +44,21 @@ export class SyncMetadataRepository {
       entityId: params.entityId,
       userId: params.userId,
       syncState: params.syncState ?? existing?.syncState ?? 'pending',
-      serverVersion: params.serverVersion !== undefined ? params.serverVersion : (existing?.serverVersion ?? null),
-      serverUpdatedAt: params.serverUpdatedAt !== undefined ? params.serverUpdatedAt : (existing?.serverUpdatedAt ?? null),
+      serverVersion:
+        params.serverVersion !== undefined ? params.serverVersion : (existing?.serverVersion ?? null),
+      serverUpdatedAt:
+        params.serverUpdatedAt !== undefined
+          ? params.serverUpdatedAt
+          : (existing?.serverUpdatedAt ?? null),
       localRevision: params.localRevision ?? existing?.localRevision ?? 1,
-      lastSyncedAt: params.lastSyncedAt !== undefined ? params.lastSyncedAt : (existing?.lastSyncedAt ?? null),
-      baseSnapshot: params.baseSnapshot !== undefined ? params.baseSnapshot : (existing?.baseSnapshot ?? null),
+      lastSyncedAt:
+        params.lastSyncedAt !== undefined ? params.lastSyncedAt : (existing?.lastSyncedAt ?? null),
+      lastAckedMutationId:
+        params.lastAckedMutationId !== undefined
+          ? params.lastAckedMutationId
+          : (existing?.lastAckedMutationId ?? null),
+      baseSnapshot:
+        params.baseSnapshot !== undefined ? params.baseSnapshot : (existing?.baseSnapshot ?? null),
     };
 
     await this.db.sync_metadata.put(metadata);
@@ -66,6 +77,7 @@ export class SyncMetadataRepository {
     serverUpdatedAt?: string | null;
     localRevision?: number;
     lastSyncedAt?: number | null;
+    lastAckedMutationId?: string | null;
     baseSnapshot?: unknown | null;
   }): Promise<SyncMetadata> {
     return await this.db.transaction('rw', this.db.sync_metadata, async () => {
@@ -83,6 +95,7 @@ export class SyncMetadataRepository {
     entityId: string;
     userId: string;
     ackLocalRevision: number;
+    ackMutationId?: string | null;
     serverVersion?: string | null;
     serverUpdatedAt?: string | null;
     baseSnapshot?: unknown | null;
@@ -100,11 +113,22 @@ export class SyncMetadataRepository {
         entityId: params.entityId,
         userId: params.userId,
         syncState: isNewerLocalWorkPresent ? 'pending' : 'synced',
-        serverVersion: params.serverVersion !== undefined ? params.serverVersion : (existing?.serverVersion ?? null),
-        serverUpdatedAt: params.serverUpdatedAt !== undefined ? params.serverUpdatedAt : (existing?.serverUpdatedAt ?? null),
+        serverVersion:
+          params.serverVersion !== undefined
+            ? params.serverVersion
+            : (existing?.serverVersion ?? null),
+        serverUpdatedAt:
+          params.serverUpdatedAt !== undefined
+            ? params.serverUpdatedAt
+            : (existing?.serverUpdatedAt ?? null),
         localRevision: currentLocalRevision,
         lastSyncedAt: Date.now(),
-        baseSnapshot: params.baseSnapshot !== undefined ? params.baseSnapshot : (existing?.baseSnapshot ?? null),
+        lastAckedMutationId:
+          params.ackMutationId !== undefined
+            ? params.ackMutationId
+            : (existing?.lastAckedMutationId ?? null),
+        baseSnapshot:
+          params.baseSnapshot !== undefined ? params.baseSnapshot : (existing?.baseSnapshot ?? null),
       };
 
       await this.db.sync_metadata.put(metadata);

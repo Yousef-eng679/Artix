@@ -444,14 +444,24 @@ export class SyncEngine {
           break;
         }
 
-        // Topologically order the batch so prerequisites (e.g. folders) precede dependents
+        // Topologically order the batch so prerequisites (e.g. projects & folders) precede dependents
         const orderedEntries = orderOutboxByDependency(pendingEntries);
         let stopDrainBatch = false;
         let madeProgressInPass = false;
+        const haltedEntityKeys = new Set<string>();
 
         for (const queuedEntry of orderedEntries) {
+          const entityKey = `${queuedEntry.userId}:${queuedEntry.entityType}:${queuedEntry.entityId}`;
+          if (haltedEntityKeys.has(entityKey)) {
+            continue;
+          }
+
           const latestEntry = await this.outboxRepo.getById(queuedEntry.id);
-          if (!latestEntry || latestEntry.state === 'blocked') {
+          if (!latestEntry) {
+            continue;
+          }
+          if (latestEntry.state === 'blocked') {
+            haltedEntityKeys.add(entityKey);
             continue;
           }
 
@@ -460,14 +470,20 @@ export class SyncEngine {
           try {
             const reconciliation = await this.reconcileMissingCasBaseline(entry);
             if (reconciliation.action === 'defer') {
+              haltedEntityKeys.add(entityKey);
               continue;
             }
             if (reconciliation.action === 'handled') {
+              const afterReconcile = await this.outboxRepo.getById(entry.id);
+              if (afterReconcile && afterReconcile.state === 'blocked') {
+                haltedEntityKeys.add(entityKey);
+              }
               madeProgressInPass = true;
               continue;
             }
             entry = reconciliation.entry;
           } catch (reconcileErr: any) {
+            haltedEntityKeys.add(entityKey);
             const classified = classifySyncError(reconcileErr);
             this.lastError = { code: classified.code, message: classified.message };
             await this.outboxRepo.markFailed(entry.id, classified, this.maxRetries);
@@ -495,6 +511,7 @@ export class SyncEngine {
               entityId: entry.entityId,
               userId: entry.userId,
               ackLocalRevision: entry.localRevision,
+              ackMutationId: entry.mutationId,
               serverVersion: serverResult?.version ? String(serverResult.version) : null,
               serverUpdatedAt: serverResult?.updated_at || new Date().toISOString(),
               baseSnapshot: entry.payload || null,
@@ -503,9 +520,9 @@ export class SyncEngine {
             // If there is newer local work pending for this entity, refresh its CAS baseline to the newly acknowledged server version
             if (!isFullySynced && serverResult?.version) {
               const remainingPending = await this.outboxRepo.getPending(undefined, entry.userId);
-              const nextEntry = remainingPending.find(
-                (e) => e.entityType === entry.entityType && e.entityId === entry.entityId
-              );
+              const nextEntry = remainingPending
+                .filter((e) => e.entityType === entry.entityType && e.entityId === entry.entityId)
+                .sort((a, b) => a.createdAt - b.createdAt)[0];
               if (nextEntry) {
                 await this.outboxRepo.updateBaseServerVersion(nextEntry.id, String(serverResult.version));
               }
@@ -514,6 +531,7 @@ export class SyncEngine {
             this.lastSyncedAt = new Date();
             madeProgressInPass = true;
           } catch (err: any) {
+            haltedEntityKeys.add(entityKey);
             console.warn(`[SyncEngine] Push failed for entry ${entry.id}:`, err);
 
             const classified = classifySyncError(err);

@@ -33,16 +33,25 @@ export class OutboxRepository {
   /**
    * Direct in-transaction enqueue logic without wrapping in an extra transaction block.
    * Can be safely called inside multi-table parent transactions (e.g. [table, outbox, sync_metadata]).
+   *
+   * Audit Gap S-01 / Amendment C:
+   * Once an entry has been dispatched over the network (`entry.dispatched === true`),
+   * its `mutationId`, `operation`, and `payload` are IMMUTABLE — even if a timeout or
+   * stale-lease recovery returned it to `state: 'pending'`. Subsequent local edits
+   * append a new causal entry (and may coalesce into that new undispatched tail entry).
    */
   async enqueueInTx(params: EnqueueOutboxParams): Promise<OutboxEntry | null> {
-    // Find any existing pending or in_flight entry for this exact entity
-    const existingEntries = await this.db.outbox
-      .where('[userId+entityType+entityId]')
-      .equals([params.userId, params.entityType, params.entityId])
-      .toArray();
+    const existingEntries = (
+      await this.db.outbox
+        .where('[userId+entityType+entityId]')
+        .equals([params.userId, params.entityType, params.entityId])
+        .toArray()
+    ).sort((a, b) => a.createdAt - b.createdAt);
 
-    // We only compact against entries that are currently 'pending'
-    const existing = existingEntries.find((e) => e.state === 'pending');
+    // Only compact against an UNDISPATCHED 'pending' tail entry
+    const tailEntry = existingEntries.length > 0 ? existingEntries[existingEntries.length - 1] : undefined;
+    const existing =
+      tailEntry && tailEntry.state === 'pending' && !tailEntry.dispatched ? tailEntry : undefined;
 
     const now = Date.now();
 
@@ -63,7 +72,7 @@ export class OutboxRepository {
         return updated;
       }
 
-      // Case 2: create + delete -> cancel out completely! (Entity was born and died offline)
+      // Case 2: create + delete -> cancel out completely! (Undispatched entity born and died offline)
       if (existing.operation === 'create' && params.operation === 'delete') {
         await this.db.outbox.delete(existing.id);
         return null;
@@ -144,7 +153,12 @@ export class OutboxRepository {
       }
     }
 
-    // No compactable pending entry found; append new entry
+    // No compactable undispatched entry found; append a new causal entry with strictly monotonic createdAt
+    const monotonicCreatedAt = existingEntries.reduce(
+      (maxTs, entry) => Math.max(maxTs, entry.createdAt + 1),
+      now,
+    );
+
     const normalizedBase =
       params.operation === 'create'
         ? null
@@ -162,9 +176,10 @@ export class OutboxRepository {
       localRevision: params.localRevision,
       payload: params.payload,
       state: 'pending',
+      dispatched: false,
       attemptCount: 0,
-      createdAt: now,
-      updatedAt: now,
+      createdAt: monotonicCreatedAt,
+      updatedAt: monotonicCreatedAt,
     };
 
     await this.db.outbox.add(newEntry);
@@ -173,11 +188,6 @@ export class OutboxRepository {
 
   /**
    * Enqueues a mutation into the outbox with automatic compaction/coalescing.
-   * Compaction rules:
-   * 1. create + update -> create with updated/merged payload
-   * 2. create + delete -> cancelled completely (removes entry, returns null)
-   * 3. update + update -> update with merged payload and latest localRevision
-   * 4. update + delete -> converts operation to delete
    */
   async enqueue(params: EnqueueOutboxParams): Promise<OutboxEntry | null> {
     return await this.db.transaction('rw', this.db.outbox, async () => {
@@ -200,22 +210,59 @@ export class OutboxRepository {
 
   /**
    * Retrieves pending outbox entries ordered chronologically (FIFO).
-   * If options.readyOnly is true, filters out entries currently waiting in backoff (nextRetryAt > now).
+   * If options.readyOnly is true:
+   * - Filters out entries currently waiting in backoff (nextRetryAt > now).
+   * - Enforces the Per-Entity Causal Barrier (TASK-07 / Amendment C): a subsequent
+   *   pending entry `E2` for `(userId, entityType, entityId)` is NEVER returned while
+   *   an earlier entry `E1` for that same entity is `in_flight`, `blocked`, `failed`,
+   *   or `pending` in backoff.
    */
   async getPending(
     limit?: number,
     userId?: string,
     options?: { readyOnly?: boolean; now?: number }
   ): Promise<OutboxEntry[]> {
-    const collection = this.db.outbox.where('state').equals('pending');
-
-    const entries = await collection.sortBy('createdAt');
-    let filtered = entries;
-
     if (options?.readyOnly) {
       const now = options.now ?? Date.now();
-      filtered = filtered.filter((e) => !e.nextRetryAt || e.nextRetryAt <= now);
+      const allEntries = userId
+        ? await this.db.outbox.where('userId').equals(userId).toArray()
+        : await this.db.outbox.toArray();
+
+      const byEntity = new Map<string, OutboxEntry[]>();
+      for (const entry of allEntries) {
+        const key = `${entry.userId}:${entry.entityType}:${entry.entityId}`;
+        const list = byEntity.get(key);
+        if (list) {
+          list.push(entry);
+        } else {
+          byEntity.set(key, [entry]);
+        }
+      }
+
+      const eligible: OutboxEntry[] = [];
+      for (const chain of byEntity.values()) {
+        chain.sort((a, b) => a.createdAt - b.createdAt);
+        for (const entry of chain) {
+          const isReady =
+            entry.state === 'pending' && (!entry.nextRetryAt || entry.nextRetryAt <= now);
+          if (!isReady) {
+            // Causal barrier: stop evaluating later entries for this same entity
+            break;
+          }
+          eligible.push(entry);
+        }
+      }
+
+      eligible.sort((a, b) => a.createdAt - b.createdAt);
+      if (limit && limit > 0) {
+        return eligible.slice(0, limit);
+      }
+      return eligible;
     }
+
+    const collection = this.db.outbox.where('state').equals('pending');
+    const entries = await collection.sortBy('createdAt');
+    let filtered = entries;
 
     if (userId) {
       filtered = filtered.filter((e) => e.userId === userId);
@@ -231,10 +278,11 @@ export class OutboxRepository {
    * Retrieves all non-completed outbox entries for a specific entity.
    */
   async listByEntity(userId: string, entityType: EntityType, entityId: string): Promise<OutboxEntry[]> {
-    return await this.db.outbox
+    const entries = await this.db.outbox
       .where('[userId+entityType+entityId]')
       .equals([userId, entityType, entityId])
       .toArray();
+    return entries.sort((a, b) => a.createdAt - b.createdAt);
   }
 
   /**
@@ -254,7 +302,7 @@ export class OutboxRepository {
 
   /**
    * Marks an outbox entry as 'in_flight' while it is being synchronized,
-   * stamping the lease owner and expiration timestamp.
+   * stamping the immutable `dispatched = true` flag, lease owner, and expiration timestamp.
    */
   async markInFlight(
     id: string,
@@ -262,18 +310,25 @@ export class OutboxRepository {
     leaseDurationMs = 30000
   ): Promise<void> {
     const now = Date.now();
-    await this.db.outbox.update(id, {
-      state: 'in_flight',
-      leaseOwner,
-      leaseExpiresAt: now + leaseDurationMs,
-      updatedAt: now,
+    await this.db.transaction('rw', this.db.outbox, async () => {
+      const existing = await this.db.outbox.get(id);
+      if (!existing) return;
+      await this.db.outbox.put({
+        ...existing,
+        state: 'in_flight',
+        dispatched: true,
+        dispatchedAt: existing.dispatchedAt ?? now,
+        leaseOwner,
+        leaseExpiresAt: now + leaseDurationMs,
+        updatedAt: now,
+      });
     });
   }
 
   /**
    * Reclaims stale 'in_flight' entries whose lease has expired,
    * or entries orphaned by other crashed tabs when promoted to leader,
-   * restoring them back to 'pending' state so they can be re-synchronized.
+   * restoring them back to 'pending' state while preserving `dispatched: true`.
    */
   async recoverStaleLeases(
     optionsOrNow?:
@@ -309,6 +364,7 @@ export class OutboxRepository {
         if (isStaleByTime || isOrphanedByOtherTab) {
           await this.db.outbox.update(entry.id, {
             state: 'pending',
+            dispatched: true,
             leaseOwner: null,
             leaseExpiresAt: null,
             updatedAt: now,
@@ -329,7 +385,7 @@ export class OutboxRepository {
 
   /**
    * Handles a sync failure: increments attempt count and marks as 'blocked' or schedules jittered backoff.
-   * If error.retryable is explicitly false, transitions to 'blocked' immediately.
+   * Preserves `entry.dispatched` immutably.
    */
   async markFailed(
     id: string,
@@ -358,6 +414,7 @@ export class OutboxRepository {
         ...entry,
         attemptCount,
         state,
+        dispatched: entry.dispatched ? true : false,
         leaseOwner: null,
         leaseExpiresAt: null,
         nextRetryAt,
