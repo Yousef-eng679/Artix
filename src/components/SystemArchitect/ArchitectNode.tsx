@@ -1,5 +1,5 @@
-import { memo, useState } from 'react';
-import { Handle, Position, NodeProps } from '@xyflow/react';
+import { memo, useEffect, useState } from 'react';
+import { Handle, Position, NodeProps, useReactFlow } from '@xyflow/react';
 import {
   Database, Server, Monitor, Cloud, Cpu, HardDrive,
   LayoutList, ArrowUpDown, Repeat, Split,
@@ -35,9 +35,24 @@ const handleStyle = {
   transition: 'all 0.2s ease',
 };
 
-function ArchitectNodeComponent({ data, selected }: NodeProps) {
+function ArchitectNodeComponent({ id, data, selected }: NodeProps) {
+  const { updateNodeData } = useReactFlow();
   const [isEditing, setIsEditing] = useState(false);
-  const [label, setLabel] = useState(data.label as string);
+  const [label, setLabel] = useState((data.label as string) ?? '');
+
+  useEffect(() => {
+    if (!isEditing) {
+      setLabel((data.label as string) ?? '');
+    }
+  }, [data.label, isEditing]);
+
+  const commitLabel = () => {
+    setIsEditing(false);
+    const currentDataLabel = (data.label as string) ?? '';
+    if (label !== currentDataLabel) {
+      updateNodeData(id, { label });
+    }
+  };
 
   const Icon = iconMap[data.icon as string] || Database;
   const colorClass = colorMap[data.color as string] || colorMap.blue;
@@ -64,8 +79,15 @@ function ArchitectNodeComponent({ data, selected }: NodeProps) {
           <Input
             value={label}
             onChange={(e) => setLabel(e.target.value)}
-            onBlur={() => setIsEditing(false)}
-            onKeyDown={(e) => { if (e.key === 'Enter') setIsEditing(false); }}
+            onBlur={commitLabel}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                commitLabel();
+              } else if (e.key === 'Escape') {
+                setLabel((data.label as string) ?? '');
+                setIsEditing(false);
+              }
+            }}
             className="h-6 text-sm p-1"
             autoFocus
           />
