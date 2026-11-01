@@ -139,6 +139,7 @@ export function useSystemDesigns(projectId: string | undefined) {
       });
       queryClient.invalidateQueries({ queryKey: ['system_designs', projectId] });
       queryClient.invalidateQueries({ queryKey: ['projects'] });
+      queryClient.invalidateQueries({ queryKey: ['usage-counts'] });
     },
   });
 
@@ -224,6 +225,7 @@ export function useSystemDesigns(projectId: string | undefined) {
       });
       queryClient.invalidateQueries({ queryKey: ['system_designs', projectId] });
       queryClient.invalidateQueries({ queryKey: ['projects'] });
+      queryClient.invalidateQueries({ queryKey: ['usage-counts'] });
     },
   });
 

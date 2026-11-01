@@ -114,6 +114,7 @@ export function useDocuments(projectId?: string) {
       });
       queryClient.invalidateQueries({ queryKey: ['documents', user?.id] });
       queryClient.invalidateQueries({ queryKey: ['projects'] });
+      queryClient.invalidateQueries({ queryKey: ['usage-counts'] });
     },
   });
 
@@ -198,6 +199,7 @@ export function useDocuments(projectId?: string) {
       });
       queryClient.invalidateQueries({ queryKey: ['documents', user?.id] });
       queryClient.invalidateQueries({ queryKey: ['projects'] });
+      queryClient.invalidateQueries({ queryKey: ['usage-counts'] });
     },
   });
 
