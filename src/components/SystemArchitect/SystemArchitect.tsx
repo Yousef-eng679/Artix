@@ -22,7 +22,7 @@ import {
   LayoutList, ArrowUpDown, Repeat, Split,
   GitBranch, Circle, CheckCircle, ListOrdered, Layers,
   Link, Hash, Triangle, Variable, MousePointer,
-  HelpCircle, Terminal, Check, Loader2, AlertCircle,
+  HelpCircle, Terminal, Check, Loader2, AlertCircle, AlertTriangle,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ArchitectureGeneratorDialog } from '@/components/AI/ArchitectureGeneratorDialog';
@@ -32,6 +32,7 @@ import { createTabCloseGuard } from '@/lib/cache/tabCloseGuard';
 import { createSaveQueue } from '@/lib/cache/saveQueue';
 import { getRecoverableBoardDraft } from '@/lib/cache/draftRecovery';
 import { dirtyTracker } from '@/lib/workspace/dirtyTracker';
+import { StaleBufferError } from '@/lib/local/errors';
 import { Button } from '@/components/ui/button';
 import { SystemDesign, BoardState } from '@/hooks/useSystemDesigns';
 import { ArchitectNode } from './ArchitectNode';
@@ -77,25 +78,8 @@ const allIcons: Record<string, React.ComponentType<{ className?: string }>> = {
   HelpCircle, Terminal, Palette,
 };
 
-interface SystemArchitectProps {
-  design: SystemDesign;
-  onSave: (boardState: BoardState) => Promise<unknown>;
-  onUpdateName?: (name: string) => Promise<unknown>;
-  onBack: () => void;
-  documents?: Array<{ id: string; title: string; content: string }>;
-}
-
-export function SystemArchitect({ design, onSave, onUpdateName, onBack, documents = [] }: SystemArchitectProps) {
-  const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
-
-  // Check for recovered draft (Task §2.3)
-  const recoveredDraftState = useMemo(() => {
-    return getRecoverableBoardDraft<BoardState>(`design-${design.id}`, design.board_state);
-  }, [design.id, design.board_state]);
-
-  const activeBoardState = recoveredDraftState ?? design.board_state;
-
-  const initialNodes: ArchitectFlowNode[] = (activeBoardState.nodes || []).map((n) => ({
+function buildFlowNodesFromBoard(board: BoardState): ArchitectFlowNode[] {
+  return (board.nodes || []).map((n) => ({
     id: n.id,
     type: 'architect',
     position: n.position,
@@ -104,23 +88,90 @@ export function SystemArchitect({ design, onSave, onUpdateName, onBack, document
       description: n.data?.description,
       nodeType: n.type,
       icon: getIconFromType(n.type),
-      color: getColorFromType(n.type),
+      color: n.data?.color || getColorFromType(n.type),
     },
   }));
+}
 
-  const [nodes, setNodes, onNodesChange] = useNodesState<ArchitectFlowNode>(initialNodes);
+function buildFlowEdgesFromBoard(board: BoardState): Edge[] {
+  return (board.edges || []).map((e) => ({
+    ...e,
+    type: 'smoothstep',
+    label: e.label || '',
+    markerEnd: { type: MarkerType.ArrowClosed, color: '#F59E0B', width: 20, height: 20 },
+    style: { stroke: '#F59E0B', strokeWidth: 2 },
+    labelStyle: { fill: 'hsl(var(--foreground))', fontWeight: 500 },
+    labelBgStyle: { fill: 'hsl(var(--card))', fillOpacity: 0.9 },
+    labelBgPadding: [8, 4] as [number, number],
+    labelBgBorderRadius: 4,
+  }));
+}
+
+function canonicalBoardStateFromFlow(
+  nodes: ArchitectFlowNode[],
+  edges: Edge[],
+  strokes: Stroke[],
+): BoardState {
+  return {
+    nodes: nodes.map((n) => ({
+      id: n.id,
+      type: n.data.nodeType,
+      position: n.position,
+      data: {
+        label: n.data.label,
+        description: n.data.description,
+      },
+    })),
+    edges: edges.map((e) => ({
+      id: e.id,
+      source: e.source,
+      target: e.target,
+      label: (e.label as string | undefined) || undefined,
+    })),
+    strokes,
+  };
+}
+
+function serializeBoardCanonical(board: BoardState): string {
+  const flowNodes = buildFlowNodesFromBoard(board);
+  const flowEdges = buildFlowEdgesFromBoard(board);
+  const flowStrokes: Stroke[] = ((board as any).strokes || []) as Stroke[];
+  return JSON.stringify(canonicalBoardStateFromFlow(flowNodes, flowEdges, flowStrokes));
+}
+
+interface SystemArchitectProps {
+  design: SystemDesign;
+  onSave: (boardState: BoardState, options?: { expectedLocalRevision?: number }) => Promise<unknown>;
+  onUpdateName?: (name: string) => Promise<unknown>;
+  onSaveAsCopy?: (copy: { name: string; boardState: BoardState }) => Promise<unknown>;
+  onBack: () => void;
+  documents?: Array<{ id: string; title: string; content: string }>;
+}
+
+export function SystemArchitect({
+  design,
+  onSave,
+  onUpdateName,
+  onSaveAsCopy,
+  onBack,
+  documents = [],
+}: SystemArchitectProps) {
+  const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  const [staleRemoteDesign, setStaleRemoteDesign] = useState<SystemDesign | null>(null);
+
+  // Check for recovered draft (Task §2.3) across mount only
+  const initialRecoveredDraft = useMemo(() => {
+    return getRecoverableBoardDraft<BoardState>(`design-${design.id}`, design.board_state);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [design.id]);
+
+  const activeBoardState = initialRecoveredDraft ?? design.board_state;
+
+  const [nodes, setNodes, onNodesChange] = useNodesState<ArchitectFlowNode>(
+    buildFlowNodesFromBoard(activeBoardState),
+  );
   const [edges, setEdges, onEdgesChange] = useEdgesState(
-    (activeBoardState.edges || []).map((e) => ({
-      ...e,
-      type: 'smoothstep',
-      label: e.label || '',
-      markerEnd: { type: MarkerType.ArrowClosed, color: '#F59E0B', width: 20, height: 20 },
-      style: { stroke: '#F59E0B', strokeWidth: 2 },
-      labelStyle: { fill: 'hsl(var(--foreground))', fontWeight: 500 },
-      labelBgStyle: { fill: 'hsl(var(--card))', fillOpacity: 0.9 },
-      labelBgPadding: [8, 4] as [number, number],
-      labelBgBorderRadius: 4,
-    }))
+    buildFlowEdgesFromBoard(activeBoardState),
   );
 
   // Edge label editing state
@@ -137,6 +188,31 @@ export function SystemArchitect({ design, onSave, onUpdateName, onBack, document
   const [customNodeColor, setCustomNodeColor] = useState('blue');
   const [customNodeLabel, setCustomNodeLabel] = useState('Custom Node');
   const [generateDialogOpen, setGenerateDialogOpen] = useState(false);
+
+  // Track base revision & canonical board snapshot from which local buffer was derived
+  const baseRef = useRef({
+    localRevision: design.local_revision,
+    updatedAt: design.updated_at,
+    name: design.name,
+    serializedBoard: serializeBoardCanonical(design.board_state),
+  });
+  const staleRef = useRef<SystemDesign | null>(null);
+  const applyingRemoteRef = useRef(false);
+  const latestPropDesignRef = useRef(design);
+  latestPropDesignRef.current = design;
+
+  const currentBoardState = useMemo(
+    () => canonicalBoardStateFromFlow(nodes, edges, strokes),
+    [nodes, edges, strokes],
+  );
+  const currentSerializedBoard = useMemo(
+    () => JSON.stringify(currentBoardState),
+    [currentBoardState],
+  );
+  const currentSerializedRef = useRef(currentSerializedBoard);
+  currentSerializedRef.current = currentSerializedBoard;
+  const designNameRef = useRef(designName);
+  designNameRef.current = designName;
 
   // Escape key exits draw mode
   useEffect(() => {
@@ -169,14 +245,29 @@ export function SystemArchitect({ design, onSave, onUpdateName, onBack, document
   const guardRef = useRef(createTabCloseGuard('/api/save'));
   const queueRef = useRef(
     createSaveQueue(async (payload) => {
+      if (staleRef.current) {
+        return { updated_at: baseRef.current.updatedAt };
+      }
       const boardState: BoardState = JSON.parse(payload.content);
-      const res = await onSaveRef.current(boardState);
-      return { updated_at: (res as any)?.updated_at || new Date().toISOString() };
+      const expectedLocalRevision = baseRef.current.localRevision;
+      const res = (await onSaveRef.current(
+        boardState,
+        expectedLocalRevision !== undefined ? { expectedLocalRevision } : undefined,
+      )) as Partial<SystemDesign> | undefined;
+
+      baseRef.current = {
+        localRevision: res?.local_revision ?? baseRef.current.localRevision,
+        updatedAt: res?.updated_at ?? baseRef.current.updatedAt,
+        name: designNameRef.current,
+        serializedBoard: payload.content,
+      };
+      return { updated_at: res?.updated_at || new Date().toISOString() };
     })
   );
   const saverRef = useRef(
     createDebouncedSaver(
       async (content: string) => {
+        if (staleRef.current) return;
         try {
           setSaveStatus('saving');
           await queueRef.current.enqueue({ id: design.id, content });
@@ -184,8 +275,14 @@ export function SystemArchitect({ design, onSave, onUpdateName, onBack, document
           dirtyTracker.markClean(design.id);
           setSaveStatus('saved');
           setTimeout(() => setSaveStatus('idle'), 2000);
-        } catch (err) {
-          console.error('Canvas auto-save failed:', err);
+        } catch (err: any) {
+          if (err instanceof StaleBufferError || err?.code === 'STALE_BUFFER') {
+            saverRef.current.cancel();
+            staleRef.current = latestPropDesignRef.current;
+            setStaleRemoteDesign(latestPropDesignRef.current);
+          } else {
+            console.error('Canvas auto-save failed:', err);
+          }
           setSaveStatus('error');
         }
       },
@@ -199,8 +296,10 @@ export function SystemArchitect({ design, onSave, onUpdateName, onBack, document
     const guard = guardRef.current;
     const saver = saverRef.current;
     const onBeforeUnload = () => {
-      saver.flushSync();
-      guard.handleBeforeUnload();
+      if (!staleRef.current) {
+        saver.flushSync();
+        guard.handleBeforeUnload();
+      }
     };
     window.addEventListener('beforeunload', onBeforeUnload);
     return () => {
@@ -211,25 +310,8 @@ export function SystemArchitect({ design, onSave, onUpdateName, onBack, document
   }, []);
 
   const triggerAutoSave = useCallback(() => {
-    const boardState: BoardState = {
-      nodes: nodes.map((n) => ({
-        id: n.id,
-        type: n.data.nodeType,
-        position: n.position,
-        data: {
-          label: n.data.label,
-          description: n.data.description,
-        },
-      })),
-      edges: edges.map((e) => ({
-        id: e.id,
-        source: e.source,
-        target: e.target,
-        label: e.label as string | undefined,
-      })),
-      strokes,
-    };
-    const serialized = JSON.stringify(boardState);
+    if (staleRef.current) return;
+    const serialized = JSON.stringify(canonicalBoardStateFromFlow(nodes, edges, strokes));
     guardRef.current.markDirty(design.id, serialized);
     dirtyTracker.markDirty(design.id);
     saverRef.current.save(serialized);
@@ -239,13 +321,140 @@ export function SystemArchitect({ design, onSave, onUpdateName, onBack, document
   useEffect(() => {
     if (isInitialMount.current) {
       isInitialMount.current = false;
-      if (recoveredDraftState) {
+      if (initialRecoveredDraft) {
         triggerAutoSave();
       }
       return;
     }
+    if (applyingRemoteRef.current) {
+      applyingRemoteRef.current = false;
+      return;
+    }
     triggerAutoSave();
-  }, [nodes, edges, strokes, triggerAutoSave, recoveredDraftState]);
+  }, [nodes, edges, strokes, triggerAutoSave, initialRecoveredDraft]);
+
+  // Reconcile incoming remote / cross-tab updates against clean vs dirty board state
+  useEffect(() => {
+    const incomingSerialized = serializeBoardCanonical(design.board_state);
+    const revisionChanged =
+      design.local_revision !== undefined &&
+      baseRef.current.localRevision !== undefined &&
+      design.local_revision !== baseRef.current.localRevision;
+    const payloadDiffersFromBase =
+      incomingSerialized !== baseRef.current.serializedBoard ||
+      design.name !== baseRef.current.name;
+
+    if (!revisionChanged && !payloadDiffersFromBase) {
+      if (design.local_revision !== undefined) {
+        baseRef.current.localRevision = design.local_revision;
+      }
+      baseRef.current.updatedAt = design.updated_at;
+      return;
+    }
+
+    const isDirty =
+      currentSerializedRef.current !== baseRef.current.serializedBoard ||
+      designNameRef.current !== baseRef.current.name;
+
+    if (!isDirty && !staleRef.current) {
+      applyingRemoteRef.current = true;
+      setNodes(buildFlowNodesFromBoard(design.board_state));
+      setEdges(buildFlowEdgesFromBoard(design.board_state));
+      setStrokes(((design.board_state as any).strokes || []) as Stroke[]);
+      setDesignName(design.name);
+      baseRef.current = {
+        localRevision: design.local_revision,
+        updatedAt: design.updated_at,
+        name: design.name,
+        serializedBoard: incomingSerialized,
+      };
+    } else {
+      saverRef.current.cancel();
+      staleRef.current = design;
+      setStaleRemoteDesign(design);
+    }
+  }, [
+    design,
+    design.local_revision,
+    design.updated_at,
+    design.name,
+    design.board_state,
+    setNodes,
+    setEdges,
+  ]);
+
+  const handleLoadRemote = useCallback(() => {
+    const target = staleRef.current || latestPropDesignRef.current;
+    saverRef.current.cancel();
+    try {
+      localStorage.removeItem(`artix.draft.design-${design.id}`);
+    } catch {
+      // ignore
+    }
+    guardRef.current.markClean(design.id);
+    dirtyTracker.markClean(design.id);
+
+    const incomingSerialized = serializeBoardCanonical(target.board_state);
+    applyingRemoteRef.current = true;
+    setNodes(buildFlowNodesFromBoard(target.board_state));
+    setEdges(buildFlowEdgesFromBoard(target.board_state));
+    setStrokes(((target.board_state as any).strokes || []) as Stroke[]);
+    setDesignName(target.name);
+    baseRef.current = {
+      localRevision: target.local_revision,
+      updatedAt: target.updated_at,
+      name: target.name,
+      serializedBoard: incomingSerialized,
+    };
+    staleRef.current = null;
+    setStaleRemoteDesign(null);
+  }, [design.id, setNodes, setEdges]);
+
+  const handleKeepMine = useCallback(async () => {
+    const target = staleRef.current || latestPropDesignRef.current;
+    baseRef.current.localRevision = target.local_revision;
+    baseRef.current.updatedAt = target.updated_at;
+    staleRef.current = null;
+    setStaleRemoteDesign(null);
+
+    setSaveStatus('saving');
+    try {
+      const boardState = canonicalBoardStateFromFlow(nodes, edges, strokes);
+      const serialized = JSON.stringify(boardState);
+      const res = (await onSave(
+        boardState,
+        target.local_revision !== undefined
+          ? { expectedLocalRevision: target.local_revision }
+          : undefined,
+      )) as Partial<SystemDesign> | undefined;
+      baseRef.current = {
+        localRevision: res?.local_revision ?? target.local_revision,
+        updatedAt: res?.updated_at ?? target.updated_at,
+        name: designNameRef.current,
+        serializedBoard: serialized,
+      };
+      try {
+        localStorage.removeItem(`artix.draft.design-${design.id}`);
+      } catch {
+        // ignore
+      }
+      guardRef.current.markClean(design.id);
+      dirtyTracker.markClean(design.id);
+      setSaveStatus('saved');
+      setTimeout(() => setSaveStatus('idle'), 2000);
+    } catch {
+      setSaveStatus('error');
+    }
+  }, [design.id, nodes, edges, strokes, onSave]);
+
+  const handleSaveMineAsCopy = useCallback(async () => {
+    if (!onSaveAsCopy) return;
+    await onSaveAsCopy({
+      name: `${designNameRef.current} (Copy)`,
+      boardState: canonicalBoardStateFromFlow(nodes, edges, strokes),
+    });
+    handleLoadRemote();
+  }, [onSaveAsCopy, nodes, edges, strokes, handleLoadRemote]);
 
   const onConnect = useCallback(
     (connection: Connection) => {
@@ -395,7 +604,7 @@ export function SystemArchitect({ design, onSave, onUpdateName, onBack, document
     setNodes((nds) => [...nds, ...newNodes]);
     setEdges((eds) => [...eds, ...(newEdges as typeof eds)]);
     toast.success(`Added ${newNodes.length} nodes and ${newEdges.length} connections`);
-  }, [nodes, setNodes, setEdges]);
+  }, [nodes, mode, setNodes, setEdges]);
 
   const handleAutoLayout = useCallback(() => {
     if (nodes.length === 0) return;
@@ -440,43 +649,51 @@ export function SystemArchitect({ design, onSave, onUpdateName, onBack, document
     toast.success(`Arranged ${nodes.length} nodes cleanly (${rankDir === 'LR' ? 'Horizontal Flow' : 'Vertical Flow'})`);
   }, [nodes, edges, mode, setNodes]);
 
-
-
   const handleManualSave = async () => {
+    if (staleRef.current) return;
     setSaveStatus('saving');
     try {
-      const boardState: BoardState = {
-        nodes: nodes.map((n) => ({
-          id: n.id,
-          type: n.data.nodeType,
-          position: n.position,
-          data: {
-            label: n.data.label,
-            description: n.data.description,
-          },
-        })),
-        edges: edges.map((e) => ({
-          id: e.id,
-          source: e.source,
-          target: e.target,
-          label: e.label as string | undefined,
-        })),
-        strokes,
+      const boardState = canonicalBoardStateFromFlow(nodes, edges, strokes);
+      const serialized = JSON.stringify(boardState);
+      const expectedLocalRevision = baseRef.current.localRevision;
+      const res = (await onSave(
+        boardState,
+        expectedLocalRevision !== undefined ? { expectedLocalRevision } : undefined,
+      )) as Partial<SystemDesign> | undefined;
+      baseRef.current = {
+        localRevision: res?.local_revision ?? baseRef.current.localRevision,
+        updatedAt: res?.updated_at ?? baseRef.current.updatedAt,
+        name: designNameRef.current,
+        serializedBoard: serialized,
       };
-      await onSave(boardState);
+      guardRef.current.markClean(design.id);
+      dirtyTracker.markClean(design.id);
       setSaveStatus('saved');
       toast.success('Design saved');
       setTimeout(() => setSaveStatus('idle'), 2000);
-    } catch {
+    } catch (err: any) {
+      if (err instanceof StaleBufferError || err?.code === 'STALE_BUFFER') {
+        saverRef.current.cancel();
+        staleRef.current = latestPropDesignRef.current;
+        setStaleRemoteDesign(latestPropDesignRef.current);
+      } else {
+        toast.error('Failed to save design');
+      }
       setSaveStatus('error');
-      toast.error('Failed to save design');
     }
   };
 
   const handleNameSave = async () => {
     const trimmedName = designName.trim();
-    if (trimmedName && trimmedName !== design.name && onUpdateName) {
-      await onUpdateName(trimmedName);
+    if (trimmedName && trimmedName !== design.name && onUpdateName && !staleRef.current) {
+      const res = (await onUpdateName(trimmedName)) as Partial<SystemDesign> | undefined;
+      baseRef.current.name = trimmedName;
+      if (res?.local_revision !== undefined) {
+        baseRef.current.localRevision = res.local_revision;
+      }
+      if (res?.updated_at) {
+        baseRef.current.updatedAt = res.updated_at;
+      }
       toast.success('Design renamed');
     }
     setIsEditingName(false);
@@ -511,7 +728,7 @@ export function SystemArchitect({ design, onSave, onUpdateName, onBack, document
               onClick={() => setIsEditingName(true)}
               title="Click to rename"
             >
-              {design.name}
+              {designName}
             </h1>
           )}
         </div>
@@ -641,6 +858,34 @@ export function SystemArchitect({ design, onSave, onUpdateName, onBack, document
           </Button>
         </div>
       </header>
+
+      {staleRemoteDesign && (
+        <div
+          data-testid="stale-buffer-banner"
+          role="alert"
+          className="flex flex-wrap items-center justify-between gap-3 px-4 py-2.5 border-b border-amber-500/40 bg-amber-500/10 text-sm text-foreground shrink-0"
+        >
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="h-4 w-4 text-amber-400 shrink-0" />
+            <span>
+              Remote board changes arrived while you have unsaved edits. Auto-save is paused to prevent overwriting remote work.
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button size="sm" variant="outline" onClick={handleLoadRemote}>
+              Load remote (discard mine)
+            </Button>
+            <Button size="sm" variant="default" onClick={handleKeepMine}>
+              Keep mine
+            </Button>
+            {onSaveAsCopy && (
+              <Button size="sm" variant="secondary" onClick={handleSaveMineAsCopy}>
+                Save mine as copy
+              </Button>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Canvas */}
       <div className="flex-1 relative">

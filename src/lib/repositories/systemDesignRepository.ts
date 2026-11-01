@@ -1,6 +1,6 @@
 import { ArtixDB, getArtixDB } from '../local/db';
 import { LocalSystemDesign, RemoteSystemDesignSnapshot } from '../local/types';
-import { EntityNotFoundError } from '../local/errors';
+import { EntityNotFoundError, StaleBufferError } from '../local/errors';
 import { BoardState } from '@/hooks/useSystemDesigns';
 import { OutboxRepository } from './outboxRepository';
 import { SyncMetadataRepository } from './syncMetadataRepository';
@@ -96,16 +96,29 @@ export class SystemDesignRepository {
         }
       }
 
+      const nextProjectId = snapshot.projectId;
+      const nextFolderId = snapshot.folderId !== undefined ? snapshot.folderId : (existing?.folderId ?? null);
+      const nextName = snapshot.name ?? existing?.name ?? 'New System Design';
+      const nextBoardState = snapshot.boardState || existing?.boardState || defaultBoardState;
+
+      const payloadChanged =
+        !existing ||
+        existing.isDeleted ||
+        existing.projectId !== nextProjectId ||
+        existing.folderId !== nextFolderId ||
+        existing.name !== nextName ||
+        JSON.stringify(existing.boardState) !== JSON.stringify(nextBoardState);
+
       const design: LocalSystemDesign = {
         id: snapshot.id,
         userId: snapshot.userId,
-        projectId: snapshot.projectId,
-        folderId: snapshot.folderId !== undefined ? snapshot.folderId : (existing?.folderId ?? null),
-        name: snapshot.name ?? existing?.name ?? 'New System Design',
-        boardState: snapshot.boardState || existing?.boardState || defaultBoardState,
+        projectId: nextProjectId,
+        folderId: nextFolderId,
+        name: nextName,
+        boardState: nextBoardState,
         createdAt: snapshot.createdAt || existing?.createdAt || now,
         updatedAt: snapshot.updatedAt || now,
-        localRevision: existing ? existing.localRevision : 1,
+        localRevision: !existing ? 1 : payloadChanged ? existing.localRevision + 1 : existing.localRevision,
         isDeleted: false,
         deletedAt: null,
       };
@@ -185,7 +198,11 @@ export class SystemDesignRepository {
     });
   }
 
-  async update(id: string, updates: UpdateSystemDesignDTO, options?: { skipOutbox?: boolean }): Promise<LocalSystemDesign> {
+  async update(
+    id: string,
+    updates: UpdateSystemDesignDTO,
+    options?: { skipOutbox?: boolean; expectedLocalRevision?: number }
+  ): Promise<LocalSystemDesign> {
     if (options?.skipOutbox) {
       const existing = await this.getByIdIncludeDeleted(id);
       if (!existing) throw new EntityNotFoundError('SystemDesign', id);
@@ -203,6 +220,18 @@ export class SystemDesignRepository {
       const existing = await this.db.system_designs.get(id);
       if (!existing || existing.isDeleted) {
         throw new EntityNotFoundError('SystemDesign', id);
+      }
+
+      if (
+        options?.expectedLocalRevision !== undefined &&
+        existing.localRevision !== options.expectedLocalRevision
+      ) {
+        throw new StaleBufferError(
+          'SystemDesign',
+          id,
+          options.expectedLocalRevision,
+          existing.localRevision,
+        );
       }
 
       // Filter out undefined fields to prevent accidental overwrites of existing metadata

@@ -32,3 +32,18 @@ export class DuplicateNameError extends LocalStorageError {
     this.name = 'DuplicateNameError';
   }
 }
+
+export class StaleBufferError extends LocalStorageError {
+  constructor(
+    entityType: string,
+    id: string,
+    public readonly expectedLocalRevision: number,
+    public readonly actualLocalRevision: number,
+  ) {
+    super(
+      `${entityType} ${id} changed since it was loaded (expected localRevision ${expectedLocalRevision}, found ${actualLocalRevision})`,
+      'STALE_BUFFER',
+    );
+    this.name = 'StaleBufferError';
+  }
+}

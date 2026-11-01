@@ -10,7 +10,7 @@ import { useUsageLimits } from '@/hooks/useUsageLimits';
 import { useWorkspaceNavigation } from '@/hooks/useWorkspaceNavigation';
 import { useWorkspaceFolders } from '@/hooks/useWorkspaceFolders';
 import { toWorkspaceResources } from '@/lib/workspace/resourceAdapter';
-import { WorkspaceSelection, WorkspaceFolder, SidebarFilterKind } from '@/types/workspace';
+import { WorkspaceSelection, WorkspaceFolder, SidebarFilterKind, WorkspaceResource } from '@/types/workspace';
 import { ProjectWorkspaceLayout } from '@/components/ProjectWorkspace/ProjectWorkspaceLayout';
 import { ProjectWorkspaceSidebar } from '@/components/ProjectWorkspace/ProjectWorkspaceSidebar';
 import { ProjectOverview } from '@/components/ProjectWorkspace/ProjectOverview';
@@ -272,14 +272,23 @@ const ProjectWorkspace = () => {
     }
   }, [projectsLoading, isResourcesLoaded, id, searchParams, setSearchParams, createDocument]);
 
-  const handleSaveDesign = useCallback(async (boardState: BoardState) => {
-    if (!activeDesign?.id) return;
-    await updateDesign({ id: activeDesign.id, board_state: boardState });
-  }, [activeDesign?.id, updateDesign]);
+  const handleSaveDesign = useCallback(
+    async (boardState: BoardState, options?: { expectedLocalRevision?: number }) => {
+      if (!activeDesign?.id) return;
+      return await updateDesign({
+        id: activeDesign.id,
+        board_state: boardState,
+        ...(options?.expectedLocalRevision !== undefined
+          ? { expectedLocalRevision: options.expectedLocalRevision }
+          : {}),
+      });
+    },
+    [activeDesign?.id, updateDesign],
+  );
 
   const handleUpdateDesignName = useCallback(async (name: string) => {
     if (!activeDesign?.id) return;
-    await updateDesign({ id: activeDesign.id, name });
+    return await updateDesign({ id: activeDesign.id, name });
   }, [activeDesign?.id, updateDesign]);
 
   // Helper to detect duplicate resource names in the same folder / location
@@ -504,12 +513,18 @@ const ProjectWorkspace = () => {
     }
   };
 
-  const handleSaveDocument = async (updates: Partial<Document>) => {
+  const handleSaveDocument = async (
+    updates: Partial<Document> & { expectedLocalRevision?: number },
+  ) => {
     if (!updates.id) return;
     try {
-      await updateDocument(updates as Partial<Document> & { id: string });
-    } catch (error) {
-      toast.error('Failed to save document');
+      return await updateDocument(
+        updates as Partial<Document> & { id: string; expectedLocalRevision?: number },
+      );
+    } catch (error: any) {
+      if (error?.code !== 'STALE_BUFFER') {
+        toast.error('Failed to save document');
+      }
       throw error;
     }
   };
@@ -686,6 +701,17 @@ const ProjectWorkspace = () => {
             key={activeDocument.id}
             document={activeDocument}
             onSave={handleSaveDocument}
+            onSaveAsCopy={async ({ title, content, format }) => {
+              const copy = await createDocument({
+                projectId: id,
+                title,
+                content,
+                format,
+                folderId: activeDocument.folder_id ?? null,
+              });
+              recentlyCreatedRef.current.add(copy.id);
+              toast.success('Saved local edits as a copy');
+            }}
             onBack={openOverview}
             projectId={id}
           />
@@ -700,6 +726,17 @@ const ProjectWorkspace = () => {
             key={activeDesign.id}
             design={activeDesign}
             onSave={handleSaveDesign}
+            onSaveAsCopy={async ({ name, boardState }) => {
+              if (!id) return;
+              const copy = await createDesign({
+                name,
+                projectId: id,
+                folderId: activeDesign.folder_id ?? null,
+                boardState,
+              });
+              recentlyCreatedRef.current.add(copy.id);
+              toast.success('Saved local board edits as a copy');
+            }}
             onUpdateName={handleUpdateDesignName}
             onBack={openOverview}
             documents={documents.map((d) => ({ id: d.id, title: d.title, content: d.content || '' }))}

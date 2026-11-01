@@ -1,6 +1,6 @@
 import { ArtixDB, getArtixDB } from '../local/db';
 import { LocalDocument, RemoteDocumentSnapshot } from '../local/types';
-import { EntityNotFoundError } from '../local/errors';
+import { EntityNotFoundError, StaleBufferError } from '../local/errors';
 import { DocumentFormat } from '@/components/Editor/languageMap';
 import { OutboxRepository } from './outboxRepository';
 import { SyncMetadataRepository } from './syncMetadataRepository';
@@ -98,17 +98,32 @@ export class DocumentRepository {
         }
       }
 
+      const nextProjectId = snapshot.projectId ?? existing?.projectId ?? null;
+      const nextFolderId = snapshot.folderId !== undefined ? snapshot.folderId : (existing?.folderId ?? null);
+      const nextTitle = snapshot.title ?? existing?.title ?? 'Untitled Document';
+      const nextContent = snapshot.content ?? existing?.content ?? '';
+      const nextFormat = snapshot.format || existing?.format || 'markdown';
+
+      const payloadChanged =
+        !existing ||
+        existing.isDeleted ||
+        existing.projectId !== nextProjectId ||
+        existing.folderId !== nextFolderId ||
+        existing.title !== nextTitle ||
+        existing.content !== nextContent ||
+        existing.format !== nextFormat;
+
       const doc: LocalDocument = {
         id: snapshot.id,
         userId: snapshot.userId,
-        projectId: snapshot.projectId ?? existing?.projectId ?? null,
-        folderId: snapshot.folderId !== undefined ? snapshot.folderId : (existing?.folderId ?? null),
-        title: snapshot.title ?? existing?.title ?? 'Untitled Document',
-        content: snapshot.content ?? existing?.content ?? '',
-        format: snapshot.format || existing?.format || 'markdown',
+        projectId: nextProjectId,
+        folderId: nextFolderId,
+        title: nextTitle,
+        content: nextContent,
+        format: nextFormat,
         createdAt: snapshot.createdAt || existing?.createdAt || now,
         updatedAt: snapshot.updatedAt || now,
-        localRevision: existing ? existing.localRevision : 1,
+        localRevision: !existing ? 1 : payloadChanged ? existing.localRevision + 1 : existing.localRevision,
         isDeleted: false,
         deletedAt: null,
       };
@@ -191,7 +206,11 @@ export class DocumentRepository {
     });
   }
 
-  async update(id: string, updates: UpdateDocumentDTO, options?: { skipOutbox?: boolean }): Promise<LocalDocument> {
+  async update(
+    id: string,
+    updates: UpdateDocumentDTO,
+    options?: { skipOutbox?: boolean; expectedLocalRevision?: number }
+  ): Promise<LocalDocument> {
     if (options?.skipOutbox) {
       const existing = await this.getByIdIncludeDeleted(id);
       if (!existing) throw new EntityNotFoundError('Document', id);
@@ -210,6 +229,18 @@ export class DocumentRepository {
       const existing = await this.db.documents.get(id);
       if (!existing || existing.isDeleted) {
         throw new EntityNotFoundError('Document', id);
+      }
+
+      if (
+        options?.expectedLocalRevision !== undefined &&
+        existing.localRevision !== options.expectedLocalRevision
+      ) {
+        throw new StaleBufferError(
+          'Document',
+          id,
+          options.expectedLocalRevision,
+          existing.localRevision,
+        );
       }
 
       // Filter out undefined fields to prevent accidental overwrites of existing metadata

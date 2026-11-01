@@ -12,7 +12,7 @@ export interface BoardState {
     id: string;
     type: string;
     position: { x: number; y: number };
-    data: { label: string; description?: string };
+    data: { label: string; description?: string; color?: string };
   }>;
   edges: Array<{
     id: string;
@@ -36,6 +36,7 @@ export interface SystemDesign {
   created_at: string;
   updated_at: string;
   folder_id?: string | null;
+  local_revision?: number;
 }
 
 export function useSystemDesigns(projectId: string | undefined) {
@@ -81,6 +82,7 @@ export function useSystemDesigns(projectId: string | undefined) {
         created_at: d.createdAt,
         updated_at: d.updatedAt,
         folder_id: d.folderId,
+        local_revision: d.localRevision,
       })) as SystemDesign[];
     },
     enabled: !!user && !!projectId && isRuntimeReady,
@@ -89,7 +91,17 @@ export function useSystemDesigns(projectId: string | undefined) {
 
   const createDesignMutation = useMutation({
     networkMode: 'always',
-    mutationFn: async ({ name, projectId, folderId }: { name: string; projectId: string; folderId?: string | null }) => {
+    mutationFn: async ({
+      name,
+      projectId,
+      folderId,
+      boardState,
+    }: {
+      name: string;
+      projectId: string;
+      folderId?: string | null;
+      boardState?: BoardState;
+    }) => {
       if (!user) throw new Error('Not authenticated');
 
       // 1. Create immediately in local IndexedDB + Outbox (Local-First Authority)
@@ -97,7 +109,7 @@ export function useSystemDesigns(projectId: string | undefined) {
         userId: user.id,
         projectId,
         name,
-        boardState: { nodes: [], edges: [] },
+        boardState: boardState || { nodes: [], edges: [] },
         folderId: folderId ?? null,
       });
 
@@ -110,6 +122,7 @@ export function useSystemDesigns(projectId: string | undefined) {
         created_at: localDesign.createdAt,
         updated_at: localDesign.updatedAt,
         folder_id: localDesign.folderId,
+        local_revision: localDesign.localRevision,
       } as SystemDesign;
     },
     onSuccess: (newDesign) => {
@@ -121,7 +134,7 @@ export function useSystemDesigns(projectId: string | undefined) {
         entityType: 'system_design',
         entityId: newDesign.id,
         operation: 'create',
-        localRevision: 1,
+        localRevision: newDesign.local_revision ?? 1,
       });
       queryClient.invalidateQueries({ queryKey: ['system_designs', projectId] });
       queryClient.invalidateQueries({ queryKey: ['projects'] });
@@ -130,16 +143,30 @@ export function useSystemDesigns(projectId: string | undefined) {
 
   const updateDesignMutation = useMutation({
     networkMode: 'always',
-    mutationFn: async ({ id, board_state, expectedUpdatedAt, ...updates }: Partial<SystemDesign> & { id: string; expectedUpdatedAt?: string }) => {
+    mutationFn: async ({
+      id,
+      board_state,
+      expectedUpdatedAt,
+      expectedLocalRevision,
+      ...updates
+    }: Partial<SystemDesign> & {
+      id: string;
+      expectedUpdatedAt?: string;
+      expectedLocalRevision?: number;
+    }) => {
       // 1. Update immediately in local IndexedDB + Outbox (Local-First Authority)
       const localDesign = await designRepo.getById(id);
       let updatedLocal = localDesign;
       if (localDesign) {
-        updatedLocal = await designRepo.update(id, {
-          name: updates.name,
-          boardState: board_state,
-          folderId: updates.folder_id,
-        });
+        updatedLocal = await designRepo.update(
+          id,
+          {
+            name: updates.name,
+            boardState: board_state,
+            folderId: updates.folder_id,
+          },
+          expectedLocalRevision !== undefined ? { expectedLocalRevision } : undefined,
+        );
       }
 
       return {
@@ -151,6 +178,7 @@ export function useSystemDesigns(projectId: string | undefined) {
         created_at: updatedLocal?.createdAt || new Date().toISOString(),
         updated_at: updatedLocal?.updatedAt || new Date().toISOString(),
         folder_id: updatedLocal?.folderId ?? updates.folder_id ?? null,
+        local_revision: updatedLocal?.localRevision,
       } as SystemDesign;
     },
     onSuccess: (updatedDesign, variables) => {
@@ -170,7 +198,7 @@ export function useSystemDesigns(projectId: string | undefined) {
         entityType: 'system_design',
         entityId: variables.id,
         operation: 'update',
-        localRevision: 2,
+        localRevision: updatedDesign.local_revision ?? 2,
       });
       queryClient.invalidateQueries({ queryKey: ['system_designs', projectId] });
     },
