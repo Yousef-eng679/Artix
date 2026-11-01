@@ -12,21 +12,29 @@ describe('Phase 4: Structured Push Adapters', () => {
   it('WorkspaceFolderPushAdapter pushes create, update, and delete operations', async () => {
     const adapter = new WorkspaceFolderPushAdapter();
 
-    const mockUpsert = vi.fn().mockReturnValue({
-      select: () => ({ single: () => Promise.resolve({ data: { updated_at: '2026-09-28T00:00:00Z' }, error: null }) }),
+    const mockInsert = vi.fn().mockReturnValue({
+      select: () => ({ single: () => Promise.resolve({ data: { version: 1, updated_at: '2026-09-28T00:00:00Z' }, error: null }) }),
     });
     const mockUpdate = vi.fn().mockReturnValue({
-      eq: () => ({ select: () => ({ single: () => Promise.resolve({ data: { updated_at: '2026-09-28T01:00:00Z' }, error: null }) }) }),
+      eq: () => ({
+        eq: () => ({
+          select: () => ({
+            single: () => Promise.resolve({ data: { version: 2, updated_at: '2026-09-28T01:00:00Z' }, error: null }),
+          }),
+        }),
+      }),
     });
     const mockDelete = vi.fn().mockReturnValue({
-      eq: () => Promise.resolve({ error: null }),
+      eq: () => ({
+        eq: () => Promise.resolve({ data: [{ id: 'f1' }], error: null }),
+      }),
     });
 
     const mockSupabase = {
       from: (table: string) => {
         expect(table).toBe('workspace_folders');
         return {
-          upsert: mockUpsert,
+          insert: mockInsert,
           update: mockUpdate,
           delete: mockDelete,
         };
@@ -51,11 +59,12 @@ describe('Phase 4: Structured Push Adapters', () => {
 
     const createRes = await adapter.push(createEntry, mockSupabase);
     expect(createRes?.updated_at).toBe('2026-09-28T00:00:00Z');
-    expect(mockUpsert).toHaveBeenCalled();
+    expect(mockInsert).toHaveBeenCalled();
 
     const updateEntry: OutboxEntry = {
       ...createEntry,
       operation: 'update',
+      baseServerVersion: '1',
       payload: { name: 'Folder Renamed' },
     };
     const updateRes = await adapter.push(updateEntry, mockSupabase);
@@ -65,6 +74,7 @@ describe('Phase 4: Structured Push Adapters', () => {
     const deleteEntry: OutboxEntry = {
       ...createEntry,
       operation: 'delete',
+      baseServerVersion: '2',
       payload: null,
     };
     const deleteRes = await adapter.push(deleteEntry, mockSupabase);
@@ -75,14 +85,14 @@ describe('Phase 4: Structured Push Adapters', () => {
   it('DocumentPushAdapter pushes document mutations to documents table', async () => {
     const adapter = new DocumentPushAdapter();
 
-    const mockUpsert = vi.fn().mockReturnValue({
-      select: () => ({ single: () => Promise.resolve({ data: { updated_at: '2026-09-28T02:00:00Z' }, error: null }) }),
+    const mockInsert = vi.fn().mockReturnValue({
+      select: () => ({ single: () => Promise.resolve({ data: { version: 1, updated_at: '2026-09-28T02:00:00Z' }, error: null }) }),
     });
 
     const mockSupabase = {
       from: (table: string) => {
         expect(table).toBe('documents');
-        return { upsert: mockUpsert };
+        return { insert: mockInsert };
       },
     };
 
@@ -104,7 +114,7 @@ describe('Phase 4: Structured Push Adapters', () => {
 
     const res = await adapter.push(docEntry, mockSupabase);
     expect(res?.updated_at).toBe('2026-09-28T02:00:00Z');
-    expect(mockUpsert).toHaveBeenCalledWith(
+    expect(mockInsert).toHaveBeenCalledWith(
       expect.objectContaining({
         id: 'doc-123',
         folder_id: 'f1',

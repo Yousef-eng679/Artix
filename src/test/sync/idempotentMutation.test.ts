@@ -87,7 +87,7 @@ describe('Phase C1: Mutation Identity & Idempotent Server Protocol', () => {
 
         if (table === 'documents') {
           return {
-            upsert: (_payload: any) => ({
+            insert: (_payload: any) => ({
               select: () => ({
                 single: () => {
                   serverDocumentVersion++;
@@ -166,7 +166,7 @@ describe('Phase C1: Mutation Identity & Idempotent Server Protocol', () => {
           };
         }
         return {
-          upsert: (_payload: any) => ({
+          insert: (_payload: any) => ({
             select: () => ({
               single: () => Promise.resolve({ data: { version: 5, updated_at: '2026-09-28T14:10:00Z' }, error: null }),
             }),
@@ -248,7 +248,7 @@ describe('Phase C1: Mutation Identity & Idempotent Server Protocol', () => {
           };
         }
         return {
-          upsert: (_payload: any) => ({
+          insert: (_payload: any) => ({
             select: () => ({
               single: async () => {
                 callCount++;
@@ -528,8 +528,8 @@ describe('Phase C1: Mutation Identity & Idempotent Server Protocol', () => {
       );
     });
 
-    it('falls back to legacy table path on PGRST202 and surfaces ledger upsert errors in recordIdempotency', async () => {
-      let fallbackUpsertCalled = false;
+    it('fails closed on PGRST202 without silent table fallback and surfaces ledger upsert errors in recordIdempotency', async () => {
+      let fallbackTableCalled = false;
       const mockPreMigrationSupabase = {
         rpc: async () => ({
           data: null,
@@ -552,13 +552,11 @@ describe('Phase C1: Mutation Identity & Idempotent Server Protocol', () => {
               }),
             };
           }
+          fallbackTableCalled = true;
           return {
-            upsert: () => ({
+            insert: () => ({
               select: () => ({
-                single: async () => {
-                  fallbackUpsertCalled = true;
-                  return { data: { version: 1, updated_at: '2026-10-20T12:10:00Z' }, error: null };
-                },
+                single: async () => ({ data: { version: 1, updated_at: '2026-10-20T12:10:00Z' }, error: null }),
               }),
             }),
           };
@@ -583,11 +581,12 @@ describe('Phase C1: Mutation Identity & Idempotent Server Protocol', () => {
       };
 
       const adapter = new DocumentPushAdapter();
-      const res = await adapter.push(entry, mockPreMigrationSupabase);
-      expect(fallbackUpsertCalled).toBe(true);
-      expect(res?.version).toBe('1');
+      await expect(adapter.push(entry, mockPreMigrationSupabase)).rejects.toMatchObject({
+        code: 'SCHEMA_ERROR',
+      });
+      expect(fallbackTableCalled).toBe(false);
 
-      const ledgerOutcome = await recordIdempotency(entry, res, mockPreMigrationSupabase);
+      const ledgerOutcome = await recordIdempotency(entry, { version: '1' }, mockPreMigrationSupabase);
       expect(ledgerOutcome.recorded).toBe(false);
       expect((ledgerOutcome.error as any)?.code).toBe('42501');
     });

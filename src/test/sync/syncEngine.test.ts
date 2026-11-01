@@ -49,10 +49,10 @@ describe('SyncEngine', () => {
     // 2. Mock Supabase client
     const mockSupabase = {
       from: vi.fn().mockReturnValue({
-        upsert: vi.fn().mockReturnValue({
+        insert: vi.fn().mockReturnValue({
           select: vi.fn().mockReturnValue({
             single: vi.fn().mockResolvedValue({
-              data: { updated_at: '2026-09-26T12:00:00Z' },
+              data: { version: 1, updated_at: '2026-09-26T12:00:00Z' },
               error: null,
             }),
           }),
@@ -91,16 +91,19 @@ describe('SyncEngine', () => {
       entityType: 'document',
       entityId: 'doc-sync-upd',
       operation: 'update',
+      baseServerVersion: '1',
       payload: { title: 'Updated Title', content: 'Updated Body' },
       localRevision: 2,
     });
 
     const mockUpdate = vi.fn().mockReturnValue({
       eq: vi.fn().mockReturnValue({
-        select: vi.fn().mockReturnValue({
-          single: vi.fn().mockResolvedValue({
-            data: { updated_at: '2026-09-26T12:30:00Z' },
-            error: null,
+        eq: vi.fn().mockReturnValue({
+          select: vi.fn().mockReturnValue({
+            single: vi.fn().mockResolvedValue({
+              data: { version: 2, updated_at: '2026-09-26T12:30:00Z' },
+              error: null,
+            }),
           }),
         }),
       }),
@@ -143,11 +146,13 @@ describe('SyncEngine', () => {
       entityType: 'document',
       entityId: 'doc-sync-del',
       operation: 'delete',
+      baseServerVersion: '2',
       payload: null,
       localRevision: 3,
     });
 
-    const mockEq = vi.fn().mockResolvedValue({ error: null });
+    const mockEqVersion = vi.fn().mockResolvedValue({ data: [{ id: 'doc-sync-del' }], error: null });
+    const mockEq = vi.fn().mockReturnValue({ eq: mockEqVersion });
     const mockDelete = vi.fn().mockReturnValue({ eq: mockEq });
 
     const mockSupabase = {
@@ -167,6 +172,7 @@ describe('SyncEngine', () => {
     expect(mockSupabase.from).toHaveBeenCalledWith('documents');
     expect(mockDelete).toHaveBeenCalled();
     expect(mockEq).toHaveBeenCalledWith('id', 'doc-sync-del');
+    expect(mockEqVersion).toHaveBeenCalledWith('version', 2);
     expect(await outboxRepo.countPending('user-1')).toBe(0);
 
     engine.destroy();
@@ -244,7 +250,7 @@ describe('SyncEngine', () => {
 
     const mockSupabase = {
       from: vi.fn().mockReturnValue({
-        upsert: vi.fn().mockReturnValue({
+        insert: vi.fn().mockReturnValue({
           select: vi.fn().mockReturnValue({
             single: vi.fn().mockRejectedValue(new Error('Network fetch failed')),
           }),
@@ -286,10 +292,10 @@ describe('SyncEngine', () => {
 
     const mockSupabase = {
       from: vi.fn().mockReturnValue({
-        upsert: vi.fn().mockReturnValue({
+        insert: vi.fn().mockReturnValue({
           select: vi.fn().mockReturnValue({
             single: vi.fn().mockResolvedValue({
-              data: { updated_at: '2026-09-26T12:00:00Z' },
+              data: { version: 1, updated_at: '2026-09-26T12:00:00Z' },
               error: null,
             }),
           }),
@@ -335,7 +341,7 @@ describe('SyncEngine', () => {
 
     const mockSupabase = {
       from: vi.fn().mockReturnValue({
-        upsert: vi.fn().mockReturnValue({
+        insert: vi.fn().mockReturnValue({
           select: vi.fn().mockReturnValue({
             single: vi.fn().mockRejectedValue(timeoutError),
           }),

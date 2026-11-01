@@ -151,7 +151,7 @@ describe('Phase C12: Correctness Test Matrix (Scenarios A through J)', () => {
         }
         if (table === 'documents') {
           return {
-            upsert: vi.fn().mockImplementation(() => {
+            insert: vi.fn().mockImplementation(() => {
               serverInsertCount++;
               serverProcessedLedger.set(stableMutationId, {
                 mutation_id: stableMutationId,

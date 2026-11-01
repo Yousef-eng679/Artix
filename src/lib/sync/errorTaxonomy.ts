@@ -43,6 +43,36 @@ export function classifySyncError(error: unknown): ClassifiedSyncError {
   const message = String(err.message || err.error_description || err.details || 'Sync error');
   const lowerMsg = message.toLowerCase();
 
+  // 0. Deterministic local validation / missing RPC schema errors (must not be masked when offline)
+  if (rawCode === 'INVALID_CAS_BASELINE' || rawCode === '22023') {
+    return {
+      code: 'VALIDATION_FAILED',
+      category: 'VALIDATION_FAILED',
+      message: message || 'Missing or invalid CAS baseServerVersion',
+      retryable: false,
+      status: status || 422,
+      rawError: error,
+    };
+  }
+
+  if (
+    rawCode === 'SCHEMA_ERROR' ||
+    rawCode === 'PGRST202' ||
+    rawCode === '42883' ||
+    rawCode === '42703' ||
+    lowerMsg.includes('column does not exist') ||
+    lowerMsg.includes('schema mismatch') ||
+    lowerMsg.includes('could not find the function')
+  ) {
+    return {
+      code: 'SCHEMA_ERROR',
+      category: 'SCHEMA_ERROR',
+      message: message || 'Database schema mismatch detected',
+      retryable: false,
+      rawError: error,
+    };
+  }
+
   // 1. Timeout detection
   if (
     err.name === 'TimeoutError' ||
@@ -183,18 +213,7 @@ export function classifySyncError(error: unknown): ClassifiedSyncError {
     };
   }
 
-  // 10. Database Schema Mismatch
-  if (rawCode === '42703' || lowerMsg.includes('column does not exist') || lowerMsg.includes('schema mismatch')) {
-    return {
-      code: 'SCHEMA_ERROR',
-      category: 'SCHEMA_ERROR',
-      message: 'Database schema mismatch detected',
-      retryable: false,
-      rawError: error,
-    };
-  }
-
-  // 11. Server 5xx Errors (Transient, retryable)
+  // 10. Server 5xx Errors (Transient, retryable)
   if (status && status >= 500 && status < 600) {
     return {
       code: 'SERVER_ERROR',
@@ -206,7 +225,7 @@ export function classifySyncError(error: unknown): ClassifiedSyncError {
     };
   }
 
-  // 12. Default / Unclassified
+  // 11. Default / Unclassified
   return {
     code: 'UNKNOWN',
     category: 'UNKNOWN',

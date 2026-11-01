@@ -287,7 +287,15 @@ export class SyncEngine {
         const orderedEntries = orderOutboxByDependency(pendingEntries);
         let stopDrainBatch = false;
 
-        for (const entry of orderedEntries) {
+        for (const queuedEntry of orderedEntries) {
+          // Re-read entry from Dexie so any baseServerVersion refreshed by an earlier
+          // pipelined mutation in this batch is observed rather than pushing a stale null baseline.
+          const latestEntry = await this.outboxRepo.getById(queuedEntry.id);
+          if (!latestEntry || latestEntry.state === 'blocked') {
+            continue;
+          }
+          const entry = latestEntry;
+
           // Mark in-flight with tab lease owner and 30s timeout
           const leaseOwner = this.tabCoordinator?.getTabId?.() || 'sync_engine';
           await this.outboxRepo.markInFlight(entry.id, leaseOwner, 30000);
@@ -310,8 +318,8 @@ export class SyncEngine {
 
             // If there is newer local work pending for this entity, refresh its CAS baseline to the newly acknowledged server version
             if (!isFullySynced && serverResult?.version) {
-              const pendingEntries = await this.outboxRepo.getPending(undefined, entry.userId);
-              const nextEntry = pendingEntries.find(
+              const remainingPending = await this.outboxRepo.getPending(undefined, entry.userId);
+              const nextEntry = remainingPending.find(
                 (e) => e.entityType === entry.entityType && e.entityId === entry.entityId
               );
               if (nextEntry) {
@@ -332,27 +340,29 @@ export class SyncEngine {
             await this.outboxRepo.markFailed(entry.id, classified, this.maxRetries);
 
             if (classified.code === 'CONFLICT') {
-              let remotePayload: any = null;
-              try {
-                const tableName =
-                  entry.entityType === 'document'
-                    ? 'documents'
-                    : entry.entityType === 'system_design'
-                    ? 'system_designs'
-                    : 'workspace_folders';
-                const sel = this.supabase
-                  .from(tableName)
-                  .select('*')
-                  .eq('id', entry.entityId);
-                const queryPromise = typeof sel?.maybeSingle === 'function'
-                  ? sel.maybeSingle()
-                  : typeof sel?.single === 'function'
-                  ? sel.single()
-                  : Promise.resolve({ data: null });
-                const { data } = await queryPromise;
-                remotePayload = data;
-              } catch (fetchErr) {
-                console.warn('[SyncEngine] Failed to fetch remote payload for conflict:', fetchErr);
+              let remotePayload: any = err?.remoteSnapshot !== undefined ? err.remoteSnapshot : null;
+              if (err?.remoteSnapshot === undefined) {
+                try {
+                  const tableName =
+                    entry.entityType === 'document'
+                      ? 'documents'
+                      : entry.entityType === 'system_design'
+                      ? 'system_designs'
+                      : 'workspace_folders';
+                  const sel = this.supabase
+                    .from(tableName)
+                    .select('*')
+                    .eq('id', entry.entityId);
+                  const queryPromise = typeof sel?.maybeSingle === 'function'
+                    ? sel.maybeSingle()
+                    : typeof sel?.single === 'function'
+                    ? sel.single()
+                    : Promise.resolve({ data: null });
+                  const { data } = await queryPromise;
+                  remotePayload = data;
+                } catch (fetchErr) {
+                  console.warn('[SyncEngine] Failed to fetch remote payload for conflict:', fetchErr);
+                }
               }
 
               const syncMeta = await this.syncMetadataRepo.get(entry.entityType, entry.entityId);

@@ -47,3 +47,20 @@ export class StaleBufferError extends LocalStorageError {
     this.name = 'StaleBufferError';
   }
 }
+
+export class MissingCasBaselineError extends LocalStorageError {
+  public readonly status = 422;
+
+  constructor(
+    entityType: string,
+    id: string,
+    operation: string,
+    received: unknown,
+  ) {
+    super(
+      `Missing or invalid CAS baseServerVersion (${String(received)}) for ${entityType} '${id}' ${operation}`,
+      'INVALID_CAS_BASELINE',
+    );
+    this.name = 'MissingCasBaselineError';
+  }
+}
