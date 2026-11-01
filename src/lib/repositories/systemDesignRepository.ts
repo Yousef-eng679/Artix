@@ -282,10 +282,10 @@ export class SystemDesignRepository {
     });
   }
 
-  async delete(id: string, options?: { skipOutbox?: boolean }): Promise<void> {
-    await this.db.transaction('rw', [this.db.system_designs, this.db.outbox, this.db.sync_metadata], async () => {
+  async delete(id: string, options?: { skipOutbox?: boolean }): Promise<number | null> {
+    return await this.db.transaction('rw', [this.db.system_designs, this.db.outbox, this.db.sync_metadata], async () => {
       const existing = await this.db.system_designs.get(id);
-      if (!existing) return;
+      if (!existing) return null;
 
       const softDeleted: LocalSystemDesign = {
         ...existing,
@@ -323,6 +323,8 @@ export class SystemDesignRepository {
         syncState: options?.skipOutbox ? 'synced' : 'pending',
         localRevision: softDeleted.localRevision,
       });
+
+      return softDeleted.localRevision;
     });
   }
 

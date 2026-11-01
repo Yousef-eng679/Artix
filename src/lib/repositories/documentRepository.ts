@@ -291,10 +291,10 @@ export class DocumentRepository {
     });
   }
 
-  async delete(id: string, options?: { skipOutbox?: boolean }): Promise<void> {
-    await this.db.transaction('rw', [this.db.documents, this.db.outbox, this.db.sync_metadata], async () => {
+  async delete(id: string, options?: { skipOutbox?: boolean }): Promise<number | null> {
+    return await this.db.transaction('rw', [this.db.documents, this.db.outbox, this.db.sync_metadata], async () => {
       const existing = await this.db.documents.get(id);
-      if (!existing) return;
+      if (!existing) return null;
 
       const softDeleted: LocalDocument = {
         ...existing,
@@ -332,6 +332,8 @@ export class DocumentRepository {
         syncState: options?.skipOutbox ? 'synced' : 'pending',
         localRevision: softDeleted.localRevision,
       });
+
+      return softDeleted.localRevision;
     });
   }
 

@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback, useMemo } from 'react';
 import { getSyncEngine, SyncStatus } from '@/lib/sync/syncEngine';
+import { getTabCoordinator } from '@/lib/sync/tabCoordinator';
 import { useAuth } from './useAuth';
 import { useUserSyncRuntime } from '@/contexts/UserSyncRuntimeContext';
 
@@ -19,6 +20,10 @@ export function useSyncStatus(): UseSyncStatusReturn {
     () => runtimeContext?.syncEngine || getSyncEngine(user?.id),
     [runtimeContext?.syncEngine, user?.id]
   );
+  const coordinator = useMemo(
+    () => runtimeContext?.tabCoordinator || getTabCoordinator(user?.id),
+    [runtimeContext?.tabCoordinator, user?.id]
+  );
 
   const [status, setStatus] = useState<SyncStatus>(() => engine.getStatus());
   const [pendingCount, setPendingCount] = useState<number>(0);
@@ -36,15 +41,20 @@ export function useSyncStatus(): UseSyncStatusReturn {
     // Initial fetch of pending count
     refreshPendingCount();
 
-    const unsubscribe = engine.subscribe((newStatus) => {
+    const unsubscribeEngine = engine.subscribe((newStatus) => {
       setStatus(newStatus);
       refreshPendingCount();
     });
 
+    const unsubscribeCoordinator = coordinator.onCrossTabChange(() => {
+      refreshPendingCount();
+    });
+
     return () => {
-      unsubscribe();
+      unsubscribeEngine();
+      unsubscribeCoordinator();
     };
-  }, [engine, refreshPendingCount]);
+  }, [engine, coordinator, refreshPendingCount]);
 
   const triggerSync = useCallback(async () => {
     await engine.triggerSync(user?.id);

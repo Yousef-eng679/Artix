@@ -205,6 +205,36 @@ export class TabCoordinator {
   }
 
   /**
+   * Notifies both local subscribers in the current tab AND broadcasts to peer tabs
+   * after remote changes are pulled and committed into IndexedDB.
+   */
+  notifyRemoteChange(params: {
+    entityType: EntityType;
+    entityId: string;
+    operation: OutboxOperation;
+    localRevision: number;
+  }): void {
+    const localEvent: CrossTabChangeEvent = {
+      type: 'ENTITY_CHANGED',
+      tabId: 'remote-pull',
+      entityType: params.entityType,
+      entityId: params.entityId,
+      operation: params.operation,
+      localRevision: params.localRevision,
+    };
+
+    for (const listener of this.changeListeners) {
+      try {
+        listener(localEvent);
+      } catch (err) {
+        console.error('[TabCoordinator] Error in change listener:', err);
+      }
+    }
+
+    this.broadcastChange(params);
+  }
+
+  /**
    * Standby tabs call this to ask the leader tab to trigger cloud synchronization.
    */
   requestLeaderSync(): void {
@@ -228,7 +258,7 @@ export class TabCoordinator {
   }
 
   /**
-   * Subscribe to changes coming from other tabs.
+   * Subscribe to changes coming from other tabs or remote pull batches.
    */
   onCrossTabChange(callback: (event: CrossTabChangeEvent) => void): () => void {
     this.changeListeners.add(callback);

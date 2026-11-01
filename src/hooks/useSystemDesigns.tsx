@@ -60,11 +60,12 @@ export function useSystemDesigns(projectId: string | undefined) {
   useEffect(() => {
     const unsub = coordinator.onCrossTabChange((event) => {
       if (event.entityType === 'system_design') {
-        queryClient.invalidateQueries({ queryKey: ['system_designs', projectId] });
+        queryClient.invalidateQueries({ queryKey: ['system_designs'] });
+        queryClient.invalidateQueries({ queryKey: ['projects'] });
       }
     });
     return unsub;
-  }, [coordinator, queryClient, projectId]);
+  }, [coordinator, queryClient]);
 
   const designsQuery = useQuery({
     queryKey: ['system_designs', projectId],
@@ -208,9 +209,9 @@ export function useSystemDesigns(projectId: string | undefined) {
     networkMode: 'always',
     mutationFn: async (id: string) => {
       // 1. Soft-delete immediately in local IndexedDB + Outbox (Local-First Authority)
-      await designRepo.delete(id);
+      return await designRepo.delete(id);
     },
-    onSuccess: (_, id) => {
+    onSuccess: (localRevision, id) => {
       queryClient.setQueryData<SystemDesign[]>(
         ['system_designs', projectId],
         (old = []) => old.filter((d) => d.id !== id)
@@ -219,7 +220,7 @@ export function useSystemDesigns(projectId: string | undefined) {
         entityType: 'system_design',
         entityId: id,
         operation: 'delete',
-        localRevision: 2,
+        localRevision: localRevision ?? Date.now(),
       });
       queryClient.invalidateQueries({ queryKey: ['system_designs', projectId] });
       queryClient.invalidateQueries({ queryKey: ['projects'] });

@@ -31,6 +31,7 @@ export function useDocuments(projectId?: string) {
     const unsub = coordinator.onCrossTabChange((event) => {
       if (event.entityType === 'document') {
         queryClient.invalidateQueries({ queryKey: ['documents', user?.id] });
+        queryClient.invalidateQueries({ queryKey: ['projects'] });
       }
     });
     return unsub;
@@ -182,9 +183,9 @@ export function useDocuments(projectId?: string) {
   const deleteDocumentMutation = useMutation({
     networkMode: 'always',
     mutationFn: async (id: string) => {
-      await docRepo.delete(id);
+      return await docRepo.delete(id);
     },
-    onSuccess: (_, id) => {
+    onSuccess: (localRevision, id) => {
       queryClient.setQueryData<Document[]>(
         ['documents', user?.id, projectId],
         (old = []) => old.filter((d) => d.id !== id)
@@ -193,7 +194,7 @@ export function useDocuments(projectId?: string) {
         entityType: 'document',
         entityId: id,
         operation: 'delete',
-        localRevision: 2,
+        localRevision: localRevision ?? Date.now(),
       });
       queryClient.invalidateQueries({ queryKey: ['documents', user?.id] });
       queryClient.invalidateQueries({ queryKey: ['projects'] });

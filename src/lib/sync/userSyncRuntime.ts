@@ -136,6 +136,7 @@ export class UserSyncRuntime {
       systemDesignRepo: this.systemDesignRepo,
       conflictRepo: this.conflictRepo,
       syncMetadataRepo: this.syncMetadataRepo,
+      tabCoordinator: this.tabCoordinator,
     });
 
     this.syncEngine = new SyncEngine({

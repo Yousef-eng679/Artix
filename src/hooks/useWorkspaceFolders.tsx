@@ -29,11 +29,11 @@ export function useWorkspaceFolders(projectId?: string) {
   useEffect(() => {
     const unsub = coordinator.onCrossTabChange((event) => {
       if (event.entityType === 'workspace_folder') {
-        queryClient.invalidateQueries({ queryKey: ['workspace_folders', projectId] });
+        queryClient.invalidateQueries({ queryKey: ['workspace_folders'] });
       }
     });
     return unsub;
-  }, [coordinator, queryClient, projectId]);
+  }, [coordinator, queryClient]);
 
   const foldersQuery = useQuery({
     queryKey: ['workspace_folders', projectId],
@@ -82,20 +82,22 @@ export function useWorkspaceFolders(projectId?: string) {
         name: localFolder.name,
         createdAt: localFolder.createdAt,
         updatedAt: localFolder.updatedAt,
-      } as WorkspaceFolder;
+        localRevision: localFolder.localRevision,
+      } as WorkspaceFolder & { localRevision: number };
     },
     onSuccess: (newFolder) => {
+      const { localRevision, ...folderView } = newFolder;
       queryClient.setQueryData<WorkspaceFolder[]>(
         ['workspace_folders', projectId],
-        (old = []) => [...old.filter((f) => f.id !== newFolder.id), newFolder].sort((a, b) =>
+        (old = []) => [...old.filter((f) => f.id !== folderView.id), folderView].sort((a, b) =>
           a.name.localeCompare(b.name)
         )
       );
       coordinator.broadcastChange({
         entityType: 'workspace_folder',
-        entityId: newFolder.id,
+        entityId: folderView.id,
         operation: 'create',
-        localRevision: 1,
+        localRevision: localRevision ?? 1,
       });
       queryClient.invalidateQueries({ queryKey: ['workspace_folders', projectId] });
     },
@@ -117,9 +119,9 @@ export function useWorkspaceFolders(projectId?: string) {
         }
       }
 
-      // Update local IndexedDB
-      await folderRepo.rename(id, trimmedName);
-      return { id, name: trimmedName };
+      // Update local IndexedDB and capture real localRevision
+      const updatedFolder = await folderRepo.rename(id, trimmedName);
+      return { id, name: trimmedName, localRevision: updatedFolder.localRevision };
     },
     onSuccess: (updated) => {
       queryClient.setQueryData<WorkspaceFolder[]>(
@@ -133,7 +135,7 @@ export function useWorkspaceFolders(projectId?: string) {
         entityType: 'workspace_folder',
         entityId: updated.id,
         operation: 'update',
-        localRevision: 2,
+        localRevision: updated.localRevision,
       });
       queryClient.invalidateQueries({ queryKey: ['workspace_folders', projectId] });
     },
@@ -142,9 +144,9 @@ export function useWorkspaceFolders(projectId?: string) {
   const deleteFolderMutation = useMutation({
     networkMode: 'always',
     mutationFn: async (id: string) => {
-      await folderRepo.delete(id);
+      return await folderRepo.delete(id);
     },
-    onSuccess: (_, id) => {
+    onSuccess: (localRevision, id) => {
       queryClient.setQueryData<WorkspaceFolder[]>(
         ['workspace_folders', projectId],
         (old = []) => old.filter((f) => f.id !== id)
@@ -153,7 +155,7 @@ export function useWorkspaceFolders(projectId?: string) {
         entityType: 'workspace_folder',
         entityId: id,
         operation: 'delete',
-        localRevision: 2,
+        localRevision: localRevision ?? Date.now(),
       });
       queryClient.invalidateQueries({ queryKey: ['workspace_folders', projectId] });
       queryClient.invalidateQueries({ queryKey: ['documents'] });

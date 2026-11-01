@@ -6,12 +6,15 @@ import { SystemDesignRepository } from '../repositories/systemDesignRepository';
 import { ConflictRepository } from '../repositories/conflictRepository';
 import { SyncMetadataRepository } from '../repositories/syncMetadataRepository';
 import {
+  EntityType,
+  OutboxOperation,
   RemoteDocumentSnapshot,
   RemoteWorkspaceFolderSnapshot,
   RemoteSystemDesignSnapshot,
   ConflictRecord,
 } from '../local/types';
 import { withTimeout } from './syncEngine';
+import { TabCoordinator, getTabCoordinator } from './tabCoordinator';
 
 export interface PullEngineOptions {
   supabaseClient?: any;
@@ -21,6 +24,7 @@ export interface PullEngineOptions {
   systemDesignRepo?: SystemDesignRepository;
   conflictRepo?: ConflictRepository;
   syncMetadataRepo?: SyncMetadataRepository;
+  tabCoordinator?: TabCoordinator;
   batchSize?: number;
 }
 
@@ -38,6 +42,7 @@ export class PullEngine {
   private systemDesignRepo: SystemDesignRepository;
   private conflictRepo: ConflictRepository;
   private syncMetadataRepo: SyncMetadataRepository;
+  private tabCoordinator?: TabCoordinator;
   private batchSize: number;
 
   constructor(options: PullEngineOptions = {}) {
@@ -48,6 +53,7 @@ export class PullEngine {
     this.systemDesignRepo = options.systemDesignRepo || new SystemDesignRepository(this.db);
     this.conflictRepo = options.conflictRepo || new ConflictRepository(this.db);
     this.syncMetadataRepo = options.syncMetadataRepo || new SyncMetadataRepository(this.db);
+    this.tabCoordinator = options.tabCoordinator;
     this.batchSize = options.batchSize ?? 50;
   }
 
@@ -123,6 +129,12 @@ export class PullEngine {
     }
 
     let maxAppliedSequence = currentCursor;
+    const committedNotifications: Array<{
+      entityType: EntityType;
+      entityId: string;
+      operation: OutboxOperation;
+      localRevision: number;
+    }> = [];
 
     // Apply entire batch inside an atomic Dexie transaction
     await this.db.transaction(
@@ -150,9 +162,9 @@ export class PullEngine {
             maxAppliedSequence = change.sequence;
           }
 
-          const entityType = change.entity_type;
-          const entityId = change.entity_id;
-          const operation = change.operation;
+          const entityType = change.entity_type as EntityType;
+          const entityId = change.entity_id as string;
+          const operation = change.operation as OutboxOperation;
           const version = change.entity_version;
           const payload = change.payload || {};
 
@@ -179,12 +191,13 @@ export class PullEngine {
               // Concurrent delete convergence: both sides deleted it!
               // Remove pending outbox delete and mark sync metadata deleted_synced
               await this.db.outbox.delete(activeOutbox.id);
+              let rev: number | null = null;
               if (entityType === 'document') {
-                await this.documentRepo.delete(entityId, { skipOutbox: true });
+                rev = await this.documentRepo.delete(entityId, { skipOutbox: true });
               } else if (entityType === 'workspace_folder') {
-                await this.folderRepo.delete(entityId, { skipOutbox: true });
+                rev = await this.folderRepo.delete(entityId, { skipOutbox: true });
               } else if (entityType === 'system_design') {
-                await this.systemDesignRepo.delete(entityId, { skipOutbox: true });
+                rev = await this.systemDesignRepo.delete(entityId, { skipOutbox: true });
               }
               await this.syncMetadataRepo.upsertInTx({
                 entityType,
@@ -193,6 +206,12 @@ export class PullEngine {
                 syncState: 'deleted_synced',
                 serverVersion: version !== undefined && version !== null ? String(version) : syncMeta?.serverVersion ?? null,
                 serverUpdatedAt: change.changed_at,
+              });
+              committedNotifications.push({
+                entityType,
+                entityId,
+                operation: 'delete',
+                localRevision: rev ?? change.sequence,
               });
               continue;
             }
@@ -231,6 +250,13 @@ export class PullEngine {
                 leaseExpiresAt: null,
                 updatedAt: Date.now(),
               });
+
+              committedNotifications.push({
+                entityType,
+                entityId,
+                operation,
+                localRevision: activeOutbox.localRevision,
+              });
             } else {
               // Stale remote observation (remoteVersion <= baselineVersion) -> ignore cleanly, preserve local intent
             }
@@ -249,12 +275,13 @@ export class PullEngine {
             const syncMeta = await this.db.sync_metadata.get(syncMetaId);
 
             if (operation === 'delete') {
+              let rev: number | null = null;
               if (entityType === 'document') {
-                await this.documentRepo.delete(entityId, { skipOutbox: true });
+                rev = await this.documentRepo.delete(entityId, { skipOutbox: true });
               } else if (entityType === 'workspace_folder') {
-                await this.folderRepo.delete(entityId, { skipOutbox: true });
+                rev = await this.folderRepo.delete(entityId, { skipOutbox: true });
               } else if (entityType === 'system_design') {
-                await this.systemDesignRepo.delete(entityId, { skipOutbox: true });
+                rev = await this.systemDesignRepo.delete(entityId, { skipOutbox: true });
               }
               await this.syncMetadataRepo.upsertInTx({
                 entityType,
@@ -263,6 +290,12 @@ export class PullEngine {
                 syncState: 'deleted_synced',
                 serverVersion: version !== undefined && version !== null ? String(version) : syncMeta?.serverVersion ?? null,
                 serverUpdatedAt: change.changed_at,
+              });
+              committedNotifications.push({
+                entityType,
+                entityId,
+                operation: 'delete',
+                localRevision: rev ?? change.sequence,
               });
             } else {
               // Remote operation is create or update
@@ -290,7 +323,13 @@ export class PullEngine {
                   updatedAt: payload.updated_at || change.changed_at,
                   createdAt: payload.created_at || change.changed_at,
                 };
-                await this.documentRepo.applyRemoteSnapshot(snapshot);
+                const doc = await this.documentRepo.applyRemoteSnapshot(snapshot);
+                committedNotifications.push({
+                  entityType,
+                  entityId,
+                  operation,
+                  localRevision: doc.localRevision,
+                });
               } else if (entityType === 'workspace_folder') {
                 const snapshot: RemoteWorkspaceFolderSnapshot = {
                   id: entityId,
@@ -302,7 +341,13 @@ export class PullEngine {
                   updatedAt: payload.updated_at || change.changed_at,
                   createdAt: payload.created_at || change.changed_at,
                 };
-                await this.folderRepo.applyRemoteSnapshot(snapshot);
+                const folder = await this.folderRepo.applyRemoteSnapshot(snapshot);
+                committedNotifications.push({
+                  entityType,
+                  entityId,
+                  operation,
+                  localRevision: folder.localRevision,
+                });
               } else if (entityType === 'system_design') {
                 const snapshot: RemoteSystemDesignSnapshot = {
                   id: entityId,
@@ -315,7 +360,13 @@ export class PullEngine {
                   updatedAt: payload.updated_at || change.changed_at,
                   createdAt: payload.created_at || change.changed_at,
                 };
-                await this.systemDesignRepo.applyRemoteSnapshot(snapshot);
+                const design = await this.systemDesignRepo.applyRemoteSnapshot(snapshot);
+                committedNotifications.push({
+                  entityType,
+                  entityId,
+                  operation,
+                  localRevision: design.localRevision,
+                });
               }
             }
           }
@@ -329,6 +380,14 @@ export class PullEngine {
         });
       }
     );
+
+    // Emit local & cross-tab reactivity notifications only AFTER the Dexie transaction commits
+    if (committedNotifications.length > 0) {
+      const coordinator = this.tabCoordinator || getTabCoordinator(userId);
+      for (const ev of committedNotifications) {
+        coordinator.notifyRemoteChange(ev);
+      }
+    }
 
     return {
       pulledCount: data.length,

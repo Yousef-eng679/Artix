@@ -77,15 +77,29 @@ export class WorkspaceFolderRepository {
         }
       }
 
+      const trimmedName = snapshot.name.trim();
+      const nextParentFolderId = snapshot.parentFolderId ?? null;
+      const payloadChanged =
+        !existing ||
+        existing.isDeleted ||
+        existing.name !== trimmedName ||
+        existing.parentFolderId !== nextParentFolderId ||
+        existing.projectId !== snapshot.projectId;
+      const nextLocalRevision = existing
+        ? payloadChanged
+          ? existing.localRevision + 1
+          : existing.localRevision
+        : 1;
+
       const folder: LocalWorkspaceFolder = {
         id: snapshot.id,
         userId: snapshot.userId,
         projectId: snapshot.projectId,
-        name: snapshot.name.trim(),
-        parentFolderId: snapshot.parentFolderId ?? null,
+        name: trimmedName,
+        parentFolderId: nextParentFolderId,
         createdAt: snapshot.createdAt || existing?.createdAt || now,
         updatedAt: snapshot.updatedAt || now,
-        localRevision: existing ? existing.localRevision : 1,
+        localRevision: nextLocalRevision,
         isDeleted: false,
         deletedAt: null,
       };
@@ -346,10 +360,10 @@ export class WorkspaceFolderRepository {
     });
   }
 
-  async delete(id: string, options?: { skipOutbox?: boolean }): Promise<void> {
-    await this.db.transaction('rw', [this.db.workspace_folders, this.db.outbox, this.db.sync_metadata], async () => {
+  async delete(id: string, options?: { skipOutbox?: boolean }): Promise<number | null> {
+    return await this.db.transaction('rw', [this.db.workspace_folders, this.db.outbox, this.db.sync_metadata], async () => {
       const existing = await this.db.workspace_folders.get(id);
-      if (!existing) return;
+      if (!existing) return null;
 
       const softDeleted: LocalWorkspaceFolder = {
         ...existing,
@@ -387,6 +401,8 @@ export class WorkspaceFolderRepository {
         syncState: options?.skipOutbox ? 'synced' : 'pending',
         localRevision: softDeleted.localRevision,
       });
+
+      return softDeleted.localRevision;
     });
   }
 
