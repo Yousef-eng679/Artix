@@ -22,6 +22,8 @@ export interface SyncStatus {
 }
 
 export interface SyncEngineOptions {
+  userId?: string;
+  autoSyncOnEnqueue?: boolean;
   supabaseClient?: any;
   outboxRepo?: OutboxRepository;
   syncMetadataRepo?: SyncMetadataRepository;
@@ -60,19 +62,26 @@ export class SyncEngine {
   private batchSize: number;
 
   private isOnline: boolean;
+  private userId?: string;
+  private autoSyncOnEnqueue: boolean;
   private state: SyncStatusState = 'idle';
   private lastSyncedAt: Date | null = null;
   private lastError: { code: string; message: string } | null = null;
   private activeSyncPromise: Promise<void> | null = null;
+  private pendingFollowUpSync = false;
+  private retryTimer: ReturnType<typeof setTimeout> | null = null;
   private listeners = new Set<(status: SyncStatus) => void>();
   private unsubSyncRequest?: () => void;
   private unsubLeadershipChange?: () => void;
+  private unsubEnqueue?: () => void;
 
   private onlineHandler?: () => void;
   private offlineHandler?: () => void;
   private isDestroyed = false;
 
   constructor(options: SyncEngineOptions = {}) {
+    this.userId = options.userId;
+    this.autoSyncOnEnqueue = options.autoSyncOnEnqueue ?? Boolean(options.userId);
     this.supabase = options.supabaseClient || defaultSupabaseClient;
     this.outboxRepo = options.outboxRepo || new OutboxRepository();
     this.syncMetadataRepo = options.syncMetadataRepo || new SyncMetadataRepository();
@@ -102,15 +111,30 @@ export class SyncEngine {
       console.warn('[SyncEngine] Initial stale lease recovery error:', err);
     });
 
+    // Wake automatically post-commit whenever a local mutation is enqueued (OF-09)
+    if (this.autoSyncOnEnqueue && typeof this.outboxRepo?.onEnqueue === 'function') {
+      this.unsubEnqueue = this.outboxRepo.onEnqueue((enqueuedUserId) => {
+        if (this.isDestroyed) return;
+        if (this.userId && enqueuedUserId !== this.userId) return;
+        this.triggerSync(enqueuedUserId).catch((err) => {
+          if (!this.isDestroyed && err?.name !== 'DatabaseClosedError') {
+            console.warn('[SyncEngine] Auto-sync on outbox enqueue failed:', err);
+          }
+        });
+      });
+    }
+
     // React immediately when this tab is promoted to leader
     if (typeof this.tabCoordinator?.onLeadershipChange === 'function') {
       this.unsubLeadershipChange = this.tabCoordinator.onLeadershipChange((isLeader) => {
         if (isLeader && !this.isDestroyed) {
-          this.triggerSync().catch((err) => {
+          this.triggerSync(this.userId).catch((err) => {
             if (!this.isDestroyed && err?.name !== 'DatabaseClosedError') {
               console.warn('[SyncEngine] Sync on leadership election failed:', err);
             }
           });
+        } else if (!isLeader) {
+          this.clearRetryTimer();
         }
       });
     }
@@ -118,10 +142,53 @@ export class SyncEngine {
     // Leader responds to sync requests from standby tabs
     if (typeof this.tabCoordinator?.onSyncRequest === 'function') {
       this.unsubSyncRequest = this.tabCoordinator.onSyncRequest(() => {
-        this.triggerSync().catch((err) => {
+        this.triggerSync(this.userId).catch((err) => {
           console.warn('[SyncEngine] Sync on remote request failed:', err);
         });
       });
+    }
+  }
+
+  private clearRetryTimer(): void {
+    if (this.retryTimer !== null) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = null;
+    }
+  }
+
+  private async scheduleNextRetryTimer(userId?: string): Promise<void> {
+    this.clearRetryTimer();
+    if (
+      this.isDestroyed ||
+      !this.isOnline ||
+      (typeof navigator !== 'undefined' && !navigator.onLine) ||
+      !this.tabCoordinator.isLeaderTab() ||
+      typeof this.outboxRepo?.getEarliestRetryAt !== 'function'
+    ) {
+      return;
+    }
+
+    try {
+      const targetUserId = userId || this.userId;
+      const earliestRetryAt = await this.outboxRepo.getEarliestRetryAt(targetUserId);
+      if (earliestRetryAt === null || this.isDestroyed) {
+        return;
+      }
+
+      const delayMs = Math.max(0, earliestRetryAt - Date.now());
+      this.retryTimer = setTimeout(() => {
+        this.retryTimer = null;
+        if (this.isDestroyed) return;
+        this.triggerSync(targetUserId || this.userId).catch((err) => {
+          if (!this.isDestroyed && err?.name !== 'DatabaseClosedError') {
+            console.warn('[SyncEngine] Scheduled retry sync failed:', err);
+          }
+        });
+      }, delayMs);
+    } catch (err: any) {
+      if (!this.isDestroyed && err?.name !== 'DatabaseClosedError') {
+        console.warn('[SyncEngine] Failed to inspect nextRetryAt schedule:', err);
+      }
     }
   }
 
@@ -130,7 +197,7 @@ export class SyncEngine {
       this.onlineHandler = () => {
         this.isOnline = true;
         this.notifySubscribers();
-        this.triggerSync().catch((err) => {
+        this.triggerSync(this.userId).catch((err) => {
           console.warn('[SyncEngine] Auto-sync on reconnection failed:', err);
         });
       };
@@ -138,6 +205,7 @@ export class SyncEngine {
       this.offlineHandler = () => {
         this.isOnline = false;
         this.state = 'offline';
+        this.clearRetryTimer();
         this.notifySubscribers();
       };
 
@@ -151,6 +219,12 @@ export class SyncEngine {
    */
   destroy(): void {
     this.isDestroyed = true;
+    this.pendingFollowUpSync = false;
+    this.clearRetryTimer();
+    if (this.unsubEnqueue) {
+      this.unsubEnqueue();
+      this.unsubEnqueue = undefined;
+    }
     if (this.unsubSyncRequest) {
       this.unsubSyncRequest();
       this.unsubSyncRequest = undefined;
@@ -226,20 +300,30 @@ export class SyncEngine {
 
   /**
    * Initiates synchronization of pending mutations to Supabase.
+   * Coalesces concurrent triggers arriving mid-flight into a single immediate follow-up pass.
    */
   async triggerSync(userId?: string): Promise<void> {
     if (this.isDestroyed) return;
 
+    if (userId) {
+      this.userId = userId;
+    }
+    const effectiveUserId = userId || this.userId;
+
     if (this.activeSyncPromise) {
+      this.pendingFollowUpSync = true;
       return this.activeSyncPromise;
     }
 
     if (typeof navigator !== 'undefined' && !navigator.onLine) {
       this.isOnline = false;
       this.state = 'offline';
+      this.clearRetryTimer();
       this.notifySubscribers();
       return;
     }
+
+    this.isOnline = true;
 
     // If this tab is not the elected leader, delegate sync to the leader tab
     if (!this.tabCoordinator.isLeaderTab()) {
@@ -247,11 +331,32 @@ export class SyncEngine {
       return;
     }
 
-    this.activeSyncPromise = this.drainOutbox(userId).finally(() => {
+    this.clearRetryTimer();
+    this.activeSyncPromise = this.runSyncPasses(effectiveUserId).finally(() => {
       this.activeSyncPromise = null;
     });
 
     return this.activeSyncPromise;
+  }
+
+  private async runSyncPasses(initialUserId?: string): Promise<void> {
+    try {
+      do {
+        this.pendingFollowUpSync = false;
+        const targetUserId = initialUserId || this.userId;
+        await this.drainOutbox(targetUserId);
+      } while (
+        this.pendingFollowUpSync &&
+        !this.isDestroyed &&
+        this.isOnline &&
+        (typeof navigator === 'undefined' || navigator.onLine) &&
+        this.tabCoordinator.isLeaderTab()
+      );
+    } finally {
+      if (!this.isDestroyed) {
+        await this.scheduleNextRetryTimer(initialUserId || this.userId);
+      }
+    }
   }
 
   /**
@@ -642,6 +747,7 @@ export function getSyncEngine(userId?: string | null): SyncEngine {
   if (!engine) {
     const userDb = userId ? getUserArtixDB(userId) : undefined;
     engine = new SyncEngine({
+      userId: userId ?? undefined,
       outboxRepo: userDb ? new OutboxRepository(userDb) : undefined,
       syncMetadataRepo: userDb ? new SyncMetadataRepository(userDb) : undefined,
       conflictRepo: userDb ? new ConflictRepository(userDb) : undefined,

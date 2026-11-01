@@ -1,5 +1,9 @@
+import Dexie from 'dexie';
 import { ArtixDB, getArtixDB } from '../local/db';
 import { EntityType, OutboxEntry, OutboxOperation, OutboxState } from '../local/types';
+
+const enqueueListenersByDb = new WeakMap<ArtixDB, Set<(userId: string) => void>>();
+const scheduledTxWakeups = new WeakMap<object, Set<string>>();
 
 export interface EnqueueOutboxParams {
   userId: string;
@@ -28,6 +32,56 @@ export class OutboxRepository {
 
   constructor(db?: ArtixDB) {
     this.db = db || getArtixDB();
+  }
+
+  /**
+   * Subscribes to post-commit enqueue notifications on this user's ArtixDB outbox.
+   */
+  onEnqueue(listener: (userId: string) => void): () => void {
+    let listeners = enqueueListenersByDb.get(this.db);
+    if (!listeners) {
+      listeners = new Set();
+      enqueueListenersByDb.set(this.db, listeners);
+    }
+    listeners.add(listener);
+    return () => {
+      listeners?.delete(listener);
+    };
+  }
+
+  private schedulePostCommitEnqueueWakeup(userId: string): void {
+    const listeners = enqueueListenersByDb.get(this.db);
+    if (!listeners || listeners.size === 0) return;
+
+    const fire = () => {
+      const activeListeners = enqueueListenersByDb.get(this.db);
+      if (!activeListeners) return;
+      for (const listener of activeListeners) {
+        try {
+          listener(userId);
+        } catch (err) {
+          console.error('[OutboxRepository] Enqueue listener error:', err);
+        }
+      }
+    };
+
+    const currentTx = Dexie.currentTransaction;
+    if (currentTx && typeof (currentTx as any).on === 'function') {
+      let txUsers = scheduledTxWakeups.get(currentTx);
+      if (!txUsers) {
+        txUsers = new Set();
+        scheduledTxWakeups.set(currentTx, txUsers);
+      }
+      if (txUsers.has(userId)) return;
+      txUsers.add(userId);
+
+      (currentTx as any).on('complete', () => {
+        queueMicrotask(fire);
+      });
+      return;
+    }
+
+    queueMicrotask(fire);
   }
 
   /**
@@ -69,6 +123,7 @@ export class OutboxRepository {
           updatedAt: now,
         };
         await this.db.outbox.put(updated);
+        this.schedulePostCommitEnqueueWakeup(params.userId);
         return updated;
       }
 
@@ -90,6 +145,7 @@ export class OutboxRepository {
           updatedAt: now,
         };
         await this.db.outbox.put(updated);
+        this.schedulePostCommitEnqueueWakeup(params.userId);
         return updated;
       }
 
@@ -105,6 +161,7 @@ export class OutboxRepository {
           updatedAt: now,
         };
         await this.db.outbox.put(updated);
+        this.schedulePostCommitEnqueueWakeup(params.userId);
         return updated;
       }
 
@@ -117,6 +174,7 @@ export class OutboxRepository {
             updatedAt: now,
           };
           await this.db.outbox.put(healed);
+          this.schedulePostCommitEnqueueWakeup(params.userId);
           return healed;
         }
         return existing;
@@ -134,6 +192,7 @@ export class OutboxRepository {
           updatedAt: now,
         };
         await this.db.outbox.put(updated);
+        this.schedulePostCommitEnqueueWakeup(params.userId);
         return updated;
       }
 
@@ -149,6 +208,7 @@ export class OutboxRepository {
           updatedAt: now,
         };
         await this.db.outbox.put(updated);
+        this.schedulePostCommitEnqueueWakeup(params.userId);
         return updated;
       }
     }
@@ -183,6 +243,7 @@ export class OutboxRepository {
     };
 
     await this.db.outbox.add(newEntry);
+    this.schedulePostCommitEnqueueWakeup(params.userId);
     return newEntry;
   }
 
@@ -429,6 +490,23 @@ export class OutboxRepository {
       await this.db.outbox.put(updated);
       return updated;
     });
+  }
+
+  /**
+   * Returns the earliest scheduled `nextRetryAt` timestamp across retryable pending entries.
+   */
+  async getEarliestRetryAt(userId?: string): Promise<number | null> {
+    const pending = await this.db.outbox.where('state').equals('pending').toArray();
+    let earliest: number | null = null;
+    for (const entry of pending) {
+      if (userId && entry.userId !== userId) continue;
+      if (typeof entry.nextRetryAt === 'number' && Number.isFinite(entry.nextRetryAt)) {
+        if (earliest === null || entry.nextRetryAt < earliest) {
+          earliest = entry.nextRetryAt;
+        }
+      }
+    }
+    return earliest;
   }
 
   /**

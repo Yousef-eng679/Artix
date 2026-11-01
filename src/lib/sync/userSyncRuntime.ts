@@ -144,6 +144,7 @@ export class UserSyncRuntime {
     });
 
     this.syncEngine = new SyncEngine({
+      userId: this.userId,
       supabaseClient: this.supabase,
       outboxRepo: this.outboxRepo,
       syncMetadataRepo: this.syncMetadataRepo,
