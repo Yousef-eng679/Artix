@@ -82,7 +82,11 @@ export function useUsageLimits(): UsageLimits {
         }
         try {
           const [projects, documents, systemDesigns, aiMeta] = await Promise.all([
-            userDb.projects.where('userId').equals(user.id).count(),
+            userDb.projects
+              .where('userId')
+              .equals(user.id)
+              .filter((p) => !p.isDeleted)
+              .count(),
             userDb.documents
               .where('userId')
               .equals(user.id)

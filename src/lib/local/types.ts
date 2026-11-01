@@ -1,7 +1,7 @@
 import { DocumentFormat } from '@/components/Editor/languageMap';
 import { BoardState } from '@/hooks/useSystemDesigns';
 
-export type EntityType = 'document' | 'system_design' | 'workspace_folder';
+export type EntityType = 'project' | 'document' | 'system_design' | 'workspace_folder';
 
 export type OutboxOperation = 'create' | 'update' | 'delete';
 
@@ -15,6 +15,9 @@ export interface LocalProject {
   name: string;
   createdAt: string;
   updatedAt: string;
+  localRevision: number;
+  isDeleted: boolean;
+  deletedAt?: string | null;
   cachedDocumentCount?: number;
   cachedDesignCount?: number;
 }
@@ -97,6 +100,17 @@ export interface SyncMetadata {
   syncState: SyncState;
   lastSyncedAt: number | null;
   baseSnapshot?: unknown | null;
+}
+
+export interface RemoteProjectSnapshot {
+  id: string;
+  userId: string;
+  name: string;
+  serverVersion?: string | null;
+  updatedAt?: string;
+  createdAt?: string;
+  cachedDocumentCount?: number;
+  cachedDesignCount?: number;
 }
 
 export interface RemoteWorkspaceFolderSnapshot {

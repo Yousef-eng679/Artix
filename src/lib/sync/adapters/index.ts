@@ -1,16 +1,19 @@
 import { EntityType } from '@/lib/local/types';
 import { EntityPushAdapter } from './types';
+import { ProjectPushAdapter } from './projectPushAdapter';
 import { WorkspaceFolderPushAdapter } from './folderPushAdapter';
 import { DocumentPushAdapter } from './documentPushAdapter';
 import { SystemDesignPushAdapter } from './systemDesignPushAdapter';
 
 export * from './types';
+export * from './projectPushAdapter';
 export * from './folderPushAdapter';
 export * from './documentPushAdapter';
 export * from './systemDesignPushAdapter';
 export * from './idempotency';
 
 const adapters: Record<EntityType, EntityPushAdapter> = {
+  project: new ProjectPushAdapter(),
   workspace_folder: new WorkspaceFolderPushAdapter(),
   document: new DocumentPushAdapter(),
   system_design: new SystemDesignPushAdapter(),

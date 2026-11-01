@@ -2,8 +2,8 @@ import { describe, it, expect } from 'vitest';
 import fs from 'fs';
 import path from 'path';
 
-describe('Architectural Boundary: Full-src Network & Offline Write Enforcement (Phase 0 + TASK-03 / Amendment B)', () => {
-  const syncableTables = ['documents', 'system_designs', 'workspace_folders'];
+describe('Architectural Boundary: Full-src Network & Offline Write Enforcement (Phase 0 + TASK-03 / TASK-26B)', () => {
+  const syncableTables = ['projects', 'documents', 'system_designs', 'workspace_folders'];
   const srcRoot = path.resolve(process.cwd(), 'src');
 
   function getSourceFiles(dir: string, fileList: string[] = []): string[] {
@@ -89,20 +89,25 @@ describe('Architectural Boundary: Full-src Network & Offline Write Enforcement (
     expect(content).toContain('withTimeout');
     expect(content).toContain('TRANSPORT_TIMEOUT_MS');
 
+    const projectAdapter = fs.readFileSync(path.resolve(process.cwd(), 'src/lib/sync/adapters/projectPushAdapter.ts'), 'utf-8');
     const folderAdapter = fs.readFileSync(path.resolve(process.cwd(), 'src/lib/sync/adapters/folderPushAdapter.ts'), 'utf-8');
     const docAdapter = fs.readFileSync(path.resolve(process.cwd(), 'src/lib/sync/adapters/documentPushAdapter.ts'), 'utf-8');
     const designAdapter = fs.readFileSync(path.resolve(process.cwd(), 'src/lib/sync/adapters/systemDesignPushAdapter.ts'), 'utf-8');
 
+    expect(projectAdapter).toContain(".from('projects')");
     expect(docAdapter).toContain(".from('documents')");
     expect(designAdapter).toContain(".from('system_designs')");
     expect(folderAdapter).toContain(".from('workspace_folders')");
+    expect(projectAdapter).toContain('withTimeout');
     expect(docAdapter).toContain('withTimeout');
     expect(designAdapter).toContain('withTimeout');
     expect(folderAdapter).toContain('withTimeout');
+    expect(projectAdapter).not.toContain('.upsert(');
     expect(docAdapter).not.toContain('.upsert(');
     expect(designAdapter).not.toContain('.upsert(');
     expect(folderAdapter).not.toContain('.upsert(');
 
+    expect(projectAdapter).toContain('executeAtomicMutation');
     expect(docAdapter).toContain('executeAtomicMutation');
     expect(designAdapter).toContain('executeAtomicMutation');
     expect(folderAdapter).toContain('executeAtomicMutation');

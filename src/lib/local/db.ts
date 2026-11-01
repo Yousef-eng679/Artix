@@ -44,6 +44,31 @@ export class ArtixDB extends Dexie {
       database_meta: 'key, updatedAt',
     });
 
+    this.version(3)
+      .stores({
+        projects: 'id, userId, updatedAt, name, localRevision, isDeleted',
+        documents: 'id, [userId+projectId], userId, projectId, folderId, localRevision, updatedAt, isDeleted',
+        system_designs: 'id, [userId+projectId], userId, projectId, folderId, localRevision, updatedAt, isDeleted',
+        workspace_folders: 'id, [userId+projectId], userId, projectId, parentFolderId, name, localRevision, updatedAt, isDeleted',
+        outbox: 'id, [userId+entityType+entityId], userId, state, createdAt, localRevision',
+        sync_metadata: 'id, [userId+entityType], userId, entityId, syncState, localRevision, lastSyncedAt',
+        conflicts: 'id, [userId+entityType+entityId], detectedAt',
+        database_meta: 'key, updatedAt',
+      })
+      .upgrade(async (tx) => {
+        await tx
+          .table('projects')
+          .toCollection()
+          .modify((proj: Record<string, any>) => {
+            if (typeof proj.localRevision !== 'number') {
+              proj.localRevision = 1;
+            }
+            if (typeof proj.isDeleted !== 'boolean') {
+              proj.isDeleted = false;
+            }
+          });
+      });
+
     this.on('versionchange', () => {
       console.warn(`[ArtixDB] Database schema version change detected for ${dbName}. Closing connection to permit upgrade.`);
       this.close();

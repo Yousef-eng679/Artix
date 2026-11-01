@@ -1,5 +1,6 @@
 import { supabase as defaultSupabaseClient } from '@/integrations/supabase/client';
 import { ArtixDB, getUserArtixDB, migrateLegacyArtixDB, MigrationResult } from '../local/db';
+import { ProjectRepository } from '../repositories/projectRepository';
 import { DocumentRepository } from '../repositories/documentRepository';
 import { WorkspaceFolderRepository } from '../repositories/folderRepository';
 import { SystemDesignRepository } from '../repositories/systemDesignRepository';
@@ -83,6 +84,7 @@ function wrapSupabaseWithCloudPauseGate(rawClient: any, isPaused: () => boolean)
 export class UserSyncRuntime {
   readonly userId: string;
   readonly db: ArtixDB;
+  readonly projectRepo: ProjectRepository;
   readonly documentRepo: DocumentRepository;
   readonly folderRepo: WorkspaceFolderRepository;
   readonly systemDesignRepo: SystemDesignRepository;
@@ -119,18 +121,20 @@ export class UserSyncRuntime {
       () => this.cloudSyncPaused,
     );
 
-    this.documentRepo = new DocumentRepository(this.db);
-    this.folderRepo = new WorkspaceFolderRepository(this.db);
-    this.systemDesignRepo = new SystemDesignRepository(this.db);
     this.outboxRepo = new OutboxRepository(this.db);
     this.syncMetadataRepo = new SyncMetadataRepository(this.db);
     this.conflictRepo = new ConflictRepository(this.db);
+    this.projectRepo = new ProjectRepository(this.db, this.outboxRepo, this.syncMetadataRepo);
+    this.documentRepo = new DocumentRepository(this.db, this.outboxRepo, this.syncMetadataRepo);
+    this.folderRepo = new WorkspaceFolderRepository(this.db, this.outboxRepo, this.syncMetadataRepo);
+    this.systemDesignRepo = new SystemDesignRepository(this.db, this.outboxRepo, this.syncMetadataRepo);
 
     this.tabCoordinator = options.tabCoordinator || getTabCoordinator(userId);
 
     this.pullEngine = new PullEngine({
       supabaseClient: this.supabase,
       db: this.db,
+      projectRepo: this.projectRepo,
       documentRepo: this.documentRepo,
       folderRepo: this.folderRepo,
       systemDesignRepo: this.systemDesignRepo,

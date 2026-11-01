@@ -36,6 +36,8 @@ export { TRANSPORT_TIMEOUT_MS, withTimeout };
 
 function getEntityTableName(entityType: EntityType): string {
   switch (entityType) {
+    case 'project':
+      return 'projects';
     case 'document':
       return 'documents';
     case 'system_design':

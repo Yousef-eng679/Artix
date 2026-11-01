@@ -66,6 +66,11 @@ export class RealtimeSyncManager {
         .channel(`user-sync-${userId}`)
         .on(
           'postgres_changes',
+          { event: '*', schema: 'public', table: 'projects', filter: `user_id=eq.${userId}` },
+          () => this.handleRemoteChange('projects')
+        )
+        .on(
+          'postgres_changes',
           { event: '*', schema: 'public', table: 'documents', filter: `user_id=eq.${userId}` },
           () => this.handleRemoteChange('documents')
         )

@@ -8,6 +8,7 @@ import {
   RuntimeStatus,
   RuntimeError,
 } from '@/lib/sync/userSyncRuntime';
+import { ProjectRepository } from '@/lib/repositories/projectRepository';
 import { DocumentRepository } from '@/lib/repositories/documentRepository';
 import { WorkspaceFolderRepository } from '@/lib/repositories/folderRepository';
 import { SystemDesignRepository } from '@/lib/repositories/systemDesignRepository';
@@ -20,6 +21,7 @@ import { ArtixDB } from '@/lib/local/db';
 export interface UserSyncRuntimeContextType {
   runtime: UserSyncRuntime | null;
   db: ArtixDB | null;
+  projectRepo: ProjectRepository | null;
   documentRepo: DocumentRepository | null;
   folderRepo: WorkspaceFolderRepository | null;
   systemDesignRepo: SystemDesignRepository | null;
@@ -139,6 +141,7 @@ export function UserSyncRuntimeProvider({ children }: { children: ReactNode }) {
       return {
         runtime: null,
         db: null,
+        projectRepo: null,
         documentRepo: null,
         folderRepo: null,
         systemDesignRepo: null,
@@ -156,6 +159,7 @@ export function UserSyncRuntimeProvider({ children }: { children: ReactNode }) {
     return {
       runtime,
       db: runtime.db,
+      projectRepo: runtime.projectRepo,
       documentRepo: runtime.documentRepo,
       folderRepo: runtime.folderRepo,
       systemDesignRepo: runtime.systemDesignRepo,

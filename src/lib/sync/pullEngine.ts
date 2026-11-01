@@ -1,5 +1,6 @@
 import { supabase as defaultSupabaseClient } from '@/integrations/supabase/client';
 import { ArtixDB, getArtixDB } from '../local/db';
+import { ProjectRepository } from '../repositories/projectRepository';
 import { DocumentRepository } from '../repositories/documentRepository';
 import { WorkspaceFolderRepository } from '../repositories/folderRepository';
 import { SystemDesignRepository } from '../repositories/systemDesignRepository';
@@ -8,6 +9,7 @@ import { SyncMetadataRepository } from '../repositories/syncMetadataRepository';
 import {
   EntityType,
   OutboxOperation,
+  RemoteProjectSnapshot,
   RemoteDocumentSnapshot,
   RemoteWorkspaceFolderSnapshot,
   RemoteSystemDesignSnapshot,
@@ -19,6 +21,7 @@ import { TabCoordinator, getTabCoordinator } from './tabCoordinator';
 export interface PullEngineOptions {
   supabaseClient?: any;
   db?: ArtixDB;
+  projectRepo?: ProjectRepository;
   documentRepo?: DocumentRepository;
   folderRepo?: WorkspaceFolderRepository;
   systemDesignRepo?: SystemDesignRepository;
@@ -37,6 +40,7 @@ export interface PullResult {
 export class PullEngine {
   private supabase: any;
   private db: ArtixDB;
+  private projectRepo: ProjectRepository;
   private documentRepo: DocumentRepository;
   private folderRepo: WorkspaceFolderRepository;
   private systemDesignRepo: SystemDesignRepository;
@@ -48,6 +52,7 @@ export class PullEngine {
   constructor(options: PullEngineOptions = {}) {
     this.db = options.db || getArtixDB();
     this.supabase = options.supabaseClient || defaultSupabaseClient;
+    this.projectRepo = options.projectRepo || new ProjectRepository(this.db);
     this.documentRepo = options.documentRepo || new DocumentRepository(this.db);
     this.folderRepo = options.folderRepo || new WorkspaceFolderRepository(this.db);
     this.systemDesignRepo = options.systemDesignRepo || new SystemDesignRepository(this.db);
@@ -140,6 +145,7 @@ export class PullEngine {
     await this.db.transaction(
       'rw',
       [
+        this.db.projects,
         this.db.documents,
         this.db.system_designs,
         this.db.workspace_folders,
@@ -192,7 +198,9 @@ export class PullEngine {
               // Remove pending outbox delete and mark sync metadata deleted_synced
               await this.db.outbox.delete(activeOutbox.id);
               let rev: number | null = null;
-              if (entityType === 'document') {
+              if (entityType === 'project') {
+                rev = await this.projectRepo.delete(entityId, { skipOutbox: true });
+              } else if (entityType === 'document') {
                 rev = await this.documentRepo.delete(entityId, { skipOutbox: true });
               } else if (entityType === 'workspace_folder') {
                 rev = await this.folderRepo.delete(entityId, { skipOutbox: true });
@@ -263,7 +271,9 @@ export class PullEngine {
           } else {
             // Clean application of remote change
             let localEntity: { isDeleted?: boolean } | null = null;
-            if (entityType === 'document') {
+            if (entityType === 'project') {
+              localEntity = (await this.db.projects.get(entityId)) ?? null;
+            } else if (entityType === 'document') {
               localEntity = (await this.db.documents.get(entityId)) ?? null;
             } else if (entityType === 'workspace_folder') {
               localEntity = (await this.db.workspace_folders.get(entityId)) ?? null;
@@ -276,7 +286,9 @@ export class PullEngine {
 
             if (operation === 'delete') {
               let rev: number | null = null;
-              if (entityType === 'document') {
+              if (entityType === 'project') {
+                rev = await this.projectRepo.delete(entityId, { skipOutbox: true });
+              } else if (entityType === 'document') {
                 rev = await this.documentRepo.delete(entityId, { skipOutbox: true });
               } else if (entityType === 'workspace_folder') {
                 rev = await this.folderRepo.delete(entityId, { skipOutbox: true });
@@ -310,7 +322,23 @@ export class PullEngine {
                 }
               }
               // 'create' or 'update'
-              if (entityType === 'document') {
+              if (entityType === 'project') {
+                const snapshot: RemoteProjectSnapshot = {
+                  id: entityId,
+                  userId,
+                  name: payload.name || 'Untitled Project',
+                  serverVersion: String(version),
+                  updatedAt: payload.updated_at || change.changed_at,
+                  createdAt: payload.created_at || change.changed_at,
+                };
+                const proj = await this.projectRepo.applyRemoteSnapshot(snapshot);
+                committedNotifications.push({
+                  entityType,
+                  entityId,
+                  operation,
+                  localRevision: proj.localRevision,
+                });
+              } else if (entityType === 'document') {
                 const snapshot: RemoteDocumentSnapshot = {
                   id: entityId,
                   userId,

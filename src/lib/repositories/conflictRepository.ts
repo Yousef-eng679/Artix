@@ -102,6 +102,7 @@ export class ConflictRepository {
       'rw',
       [
         this.db.conflicts,
+        this.db.projects,
         this.db.documents,
         this.db.workspace_folders,
         this.db.system_designs,
@@ -156,7 +157,21 @@ export class ConflictRepository {
           });
         } else if (params.strategy === 'keep_remote') {
           // Overwrite local entity with remote state and remove pending local outbox mutation
-          if (entityType === 'document') {
+          if (entityType === 'project') {
+            const existing = await this.db.projects.get(entityId);
+            await this.db.projects.put({
+              id: entityId,
+              userId,
+              name: remote.name ?? existing?.name ?? 'Untitled Project',
+              createdAt: remote.created_at || existing?.createdAt || remoteUpdatedAt,
+              updatedAt: remoteUpdatedAt,
+              localRevision: existing ? (existing.localRevision ?? 1) + 1 : 1,
+              isDeleted: false,
+              deletedAt: null,
+              cachedDocumentCount: existing?.cachedDocumentCount ?? 0,
+              cachedDesignCount: existing?.cachedDesignCount ?? 0,
+            });
+          } else if (entityType === 'document') {
             const existing = await this.db.documents.get(entityId);
             await this.db.documents.put({
               id: entityId,
@@ -297,7 +312,66 @@ export class ConflictRepository {
         } else if (params.strategy === 'create_copy') {
           copyEntityId = crypto.randomUUID();
 
-          if (entityType === 'document') {
+          if (entityType === 'project') {
+            const existing = await this.db.projects.get(entityId);
+            const copyName = params.copyTitle || `${existing?.name || 'Project'} (Conflict Copy)`;
+            const nowIso = new Date().toISOString();
+
+            await this.db.projects.add({
+              id: copyEntityId,
+              userId,
+              name: copyName,
+              createdAt: nowIso,
+              updatedAt: nowIso,
+              localRevision: 1,
+              isDeleted: false,
+              deletedAt: null,
+              cachedDocumentCount: 0,
+              cachedDesignCount: 0,
+            });
+
+            await this.db.outbox.add({
+              id: crypto.randomUUID(),
+              mutationId: crypto.randomUUID(),
+              userId,
+              projectId: copyEntityId,
+              entityType: 'project',
+              entityId: copyEntityId,
+              operation: 'create',
+              payload: { name: copyName },
+              localRevision: 1,
+              baseServerVersion: null,
+              state: 'pending',
+              attemptCount: 0,
+              createdAt: Date.now(),
+              updatedAt: Date.now(),
+            });
+
+            await this.db.sync_metadata.put({
+              id: `project:${copyEntityId}`,
+              entityType: 'project',
+              entityId: copyEntityId,
+              userId,
+              syncState: 'pending',
+              serverVersion: null,
+              serverUpdatedAt: null,
+              localRevision: 1,
+              lastSyncedAt: null,
+            });
+
+            await this.db.projects.put({
+              id: entityId,
+              userId,
+              name: remote.name ?? existing?.name ?? 'Untitled Project',
+              createdAt: remote.created_at || existing?.createdAt || remoteUpdatedAt,
+              updatedAt: remoteUpdatedAt,
+              localRevision: existing ? (existing.localRevision ?? 1) + 1 : 1,
+              isDeleted: false,
+              deletedAt: null,
+              cachedDocumentCount: existing?.cachedDocumentCount ?? 0,
+              cachedDesignCount: existing?.cachedDesignCount ?? 0,
+            });
+          } else if (entityType === 'document') {
             const existing = await this.db.documents.get(entityId);
             const copyTitle = params.copyTitle || `${existing?.title || 'Document'} (Conflict Copy)`;
 

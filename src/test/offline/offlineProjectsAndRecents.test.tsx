@@ -100,6 +100,7 @@ vi.mock('@/contexts/UserSyncRuntimeContext', () => ({
       ? {
           runtime: null,
           db: runtimeMockState.db,
+          projectRepo: null,
           documentRepo: null,
           folderRepo: null,
           systemDesignRepo: null,
@@ -330,7 +331,7 @@ describe('OF-04 / TASK-26: Local Dexie Read-Through Cache for projects & Local u
     expect(screen.queryByTestId('redirected-dashboard')).not.toBeInTheDocument();
   });
 
-  it('guards cloud-only project create, rename, and delete mutations immediately while offline instead of hanging', async () => {
+  it('supports offline project create, rename, and delete via local Dexie + Outbox without hanging', async () => {
     setBrowserOnline(false);
 
     const qc = new QueryClient({
@@ -342,21 +343,27 @@ describe('OF-04 / TASK-26: Local Dexie Read-Through Cache for projects & Local u
 
     const { result } = renderHook(() => useProjects(), { wrapper });
 
-    await expect(
-      Promise.race([
-        result.current.createProject('Offline Project'),
-        new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error('createProject hung paused')), 500),
-        ),
-      ]),
-    ).rejects.toThrow(/connect to the internet/i);
+    await waitFor(() => {
+      expect(result.current.isLoading).toBe(false);
+    });
 
-    await expect(
-      result.current.updateProject({ id: 'proj-alpha', name: 'Renamed Offline' }),
-    ).rejects.toThrow(/connect to the internet/i);
+    const created = await Promise.race([
+      result.current.createProject('Offline Project'),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('createProject hung paused')), 500),
+      ),
+    ]);
+    expect(created.name).toBe('Offline Project');
 
-    await expect(result.current.deleteProject('proj-alpha')).rejects.toThrow(
-      /connect to the internet/i,
-    );
+    const updated = await result.current.updateProject({
+      id: created.id,
+      name: 'Renamed Offline',
+    });
+    expect(updated.name).toBe('Renamed Offline');
+
+    await result.current.deleteProject(created.id);
+    await waitFor(() => {
+      expect(result.current.projects).toHaveLength(0);
+    });
   });
 });
