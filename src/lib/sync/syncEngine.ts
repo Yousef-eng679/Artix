@@ -84,12 +84,15 @@ export class SyncEngine {
     this.autoSyncOnEnqueue = options.autoSyncOnEnqueue ?? Boolean(options.userId);
     this.supabase = options.supabaseClient || defaultSupabaseClient;
     this.outboxRepo = options.outboxRepo || new OutboxRepository();
-    this.syncMetadataRepo = options.syncMetadataRepo || new SyncMetadataRepository();
-    this.conflictRepo = options.conflictRepo || new ConflictRepository();
+    const sharedDb =
+      typeof this.outboxRepo?.getDb === 'function' ? this.outboxRepo.getDb() : undefined;
+    this.syncMetadataRepo = options.syncMetadataRepo || new SyncMetadataRepository(sharedDb);
+    this.conflictRepo = options.conflictRepo || new ConflictRepository(sharedDb);
     this.pullEngine =
       options.pullEngine ||
       new PullEngine({
         supabaseClient: this.supabase,
+        db: sharedDb,
         conflictRepo: this.conflictRepo,
         syncMetadataRepo: this.syncMetadataRepo,
       });
@@ -601,89 +604,135 @@ export class SyncEngine {
             continue;
           }
 
-          // Mark in-flight with tab lease owner and 30s timeout
+          // Mark in-flight with tab lease owner, unique fencing leaseToken, and 30s timeout
           const leaseOwner = this.tabCoordinator?.getTabId?.() || 'sync_engine';
-          await this.outboxRepo.markInFlight(entry.id, leaseOwner, 30000);
+          const hasRealDb = typeof this.outboxRepo?.getDb === 'function';
+          const claimedLeaseToken = await this.outboxRepo.markInFlight(entry.id, leaseOwner, 30000);
+          if (hasRealDb && claimedLeaseToken === null) {
+            // Entry was concurrently removed or blocked before lease could be acquired
+            continue;
+          }
           await this.syncMetadataRepo.markSyncing(entry.entityType, entry.entityId, entry.userId);
 
+          let serverResult: { version?: string; updated_at?: string } | null = null;
+          let pushSucceeded = false;
+
           try {
-            const serverResult = await this.pushMutationToCloud(entry);
-
-            // Mutation pushed successfully
-            await this.outboxRepo.markCompleted(entry.id);
-            const { isFullySynced } = await this.syncMetadataRepo.acknowledgePush({
-              entityType: entry.entityType,
-              entityId: entry.entityId,
-              userId: entry.userId,
-              ackLocalRevision: entry.localRevision,
-              ackMutationId: entry.mutationId,
-              serverVersion: serverResult?.version ? String(serverResult.version) : null,
-              serverUpdatedAt: serverResult?.updated_at || new Date().toISOString(),
-              baseSnapshot: entry.payload || null,
-            });
-
-            // If there is newer local work pending for this entity, refresh its CAS baseline to the newly acknowledged server version
-            if (!isFullySynced && serverResult?.version) {
-              const remainingPending = await this.outboxRepo.getPending(undefined, entry.userId);
-              const nextEntry = remainingPending
-                .filter((e) => e.entityType === entry.entityType && e.entityId === entry.entityId)
-                .sort((a, b) => a.createdAt - b.createdAt)[0];
-              if (nextEntry) {
-                await this.outboxRepo.updateBaseServerVersion(nextEntry.id, String(serverResult.version));
-              }
-            }
-
-            this.lastSyncedAt = new Date();
-            madeProgressInPass = true;
+            serverResult = await this.pushMutationToCloud(entry);
+            pushSucceeded = true;
           } catch (err: any) {
             haltedEntityKeys.add(entityKey);
             console.warn(`[SyncEngine] Push failed for entry ${entry.id}:`, err);
 
             const classified = classifySyncError(err);
-            this.lastError = {
-              code: classified.code,
-              message: classified.message,
-            };
 
-            await this.outboxRepo.markFailed(entry.id, classified, this.maxRetries);
-            madeProgressInPass = true;
-
-            if (classified.code === 'CONFLICT') {
-              let remotePayload: any = err?.remoteSnapshot !== undefined ? err.remoteSnapshot : null;
-              if (err?.remoteSnapshot === undefined) {
-                try {
-                  const tableName = getEntityTableName(entry.entityType);
-                  const sel = this.supabase
-                    .from(tableName)
-                    .select('*')
-                    .eq('id', entry.entityId);
-                  const queryPromise = typeof sel?.maybeSingle === 'function'
+            let remotePayload: any = err?.remoteSnapshot !== undefined ? err.remoteSnapshot : null;
+            if (classified.code === 'CONFLICT' && err?.remoteSnapshot === undefined) {
+              try {
+                const tableName = getEntityTableName(entry.entityType);
+                const sel = this.supabase
+                  .from(tableName)
+                  .select('*')
+                  .eq('id', entry.entityId);
+                const queryPromise =
+                  typeof sel?.maybeSingle === 'function'
                     ? sel.maybeSingle()
                     : typeof sel?.single === 'function'
                     ? sel.single()
                     : Promise.resolve({ data: null });
-                  const { data } = await queryPromise;
-                  remotePayload = data;
-                } catch (fetchErr) {
-                  console.warn('[SyncEngine] Failed to fetch remote payload for conflict:', fetchErr);
-                }
+                const { data } = await queryPromise;
+                remotePayload = data;
+              } catch (fetchErr) {
+                console.warn('[SyncEngine] Failed to fetch remote payload for conflict:', fetchErr);
               }
-
-              const syncMeta = await this.syncMetadataRepo.get(entry.entityType, entry.entityId);
-
-              await this.conflictRepo.recordConflict({
-                entityType: entry.entityType,
-                entityId: entry.entityId,
-                userId: entry.userId,
-                basePayload: syncMeta?.baseSnapshot ?? null,
-                localPayload: entry.payload,
-                remotePayload,
-              });
-
-              await this.syncMetadataRepo.markConflict(entry.entityType, entry.entityId, entry.userId);
-            } else {
-              await this.syncMetadataRepo.markError(entry.entityType, entry.entityId, entry.userId);
             }
+
+            const db = hasRealDb ? this.outboxRepo.getDb() : null;
+            const canTransactAtomically =
+              Boolean(db) &&
+              typeof this.syncMetadataRepo?.getDb === 'function' &&
+              this.syncMetadataRepo.getDb() === db &&
+              (classified.code !== 'CONFLICT' ||
+                (typeof this.conflictRepo?.getDb === 'function' && this.conflictRepo.getDb() === db));
+
+            let wasFenced = false;
+
+            if (canTransactAtomically && db) {
+              const tables =
+                classified.code === 'CONFLICT'
+                  ? [db.outbox, db.sync_metadata, db.conflicts]
+                  : [db.outbox, db.sync_metadata];
+
+              await db.transaction('rw', tables, async () => {
+                const current = await db.outbox.get(entry.id);
+                if (!current || (claimedLeaseToken && current.leaseToken !== claimedLeaseToken)) {
+                  wasFenced = true;
+                  return;
+                }
+
+                await this.outboxRepo.markFailedInTx(entry.id, classified, this.maxRetries);
+
+                if (classified.code === 'CONFLICT') {
+                  const syncMeta = await this.syncMetadataRepo.get(entry.entityType, entry.entityId);
+                  await this.conflictRepo.recordConflictInTx({
+                    entityType: entry.entityType,
+                    entityId: entry.entityId,
+                    userId: entry.userId,
+                    basePayload: syncMeta?.baseSnapshot ?? null,
+                    localPayload: entry.payload,
+                    remotePayload,
+                  });
+                  await this.syncMetadataRepo.upsertInTx({
+                    entityType: entry.entityType,
+                    entityId: entry.entityId,
+                    userId: entry.userId,
+                    syncState: 'conflict',
+                  });
+                } else {
+                  await this.syncMetadataRepo.upsertInTx({
+                    entityType: entry.entityType,
+                    entityId: entry.entityId,
+                    userId: entry.userId,
+                    syncState: 'error',
+                  });
+                }
+              });
+            } else {
+              await this.outboxRepo.markFailed(entry.id, classified, this.maxRetries);
+              if (classified.code === 'CONFLICT') {
+                const syncMeta = await this.syncMetadataRepo.get(entry.entityType, entry.entityId);
+                await this.conflictRepo.recordConflict({
+                  entityType: entry.entityType,
+                  entityId: entry.entityId,
+                  userId: entry.userId,
+                  basePayload: syncMeta?.baseSnapshot ?? null,
+                  localPayload: entry.payload,
+                  remotePayload,
+                });
+                await this.syncMetadataRepo.markConflict(
+                  entry.entityType,
+                  entry.entityId,
+                  entry.userId
+                );
+              } else {
+                await this.syncMetadataRepo.markError(
+                  entry.entityType,
+                  entry.entityId,
+                  entry.userId
+                );
+              }
+            }
+
+            if (wasFenced) {
+              // Stale zombie tab lost lease ownership; ignore failure completely without touching engine error state
+              continue;
+            }
+
+            this.lastError = {
+              code: classified.code,
+              message: classified.message,
+            };
+            madeProgressInPass = true;
 
             if (classified.code === 'AUTH_EXPIRED') {
               this.state = 'error';
@@ -695,6 +744,88 @@ export class SyncEngine {
               stopDrainBatch = true;
               break; // Stop draining batch until network/transient issue resolves
             }
+          }
+
+          if (pushSucceeded) {
+            const db = hasRealDb ? this.outboxRepo.getDb() : null;
+            const canTransactAtomically =
+              Boolean(db) &&
+              typeof this.syncMetadataRepo?.getDb === 'function' &&
+              this.syncMetadataRepo.getDb() === db;
+
+            let wasFenced = false;
+
+            if (canTransactAtomically && db) {
+              await db.transaction('rw', [db.outbox, db.sync_metadata], async () => {
+                const current = await db.outbox.get(entry.id);
+                if (!current || (claimedLeaseToken && current.leaseToken !== claimedLeaseToken)) {
+                  wasFenced = true;
+                  return;
+                }
+
+                await db.outbox.delete(entry.id);
+                const { isFullySynced } = await this.syncMetadataRepo.acknowledgePushInTx({
+                  entityType: entry.entityType,
+                  entityId: entry.entityId,
+                  userId: entry.userId,
+                  ackLocalRevision: entry.localRevision,
+                  ackMutationId: entry.mutationId,
+                  serverVersion: serverResult?.version ? String(serverResult.version) : null,
+                  serverUpdatedAt: serverResult?.updated_at || new Date().toISOString(),
+                  baseSnapshot: entry.payload || null,
+                });
+
+                if (!isFullySynced && serverResult?.version) {
+                  const siblings = await db.outbox
+                    .where('[userId+entityType+entityId]')
+                    .equals([entry.userId, entry.entityType, entry.entityId])
+                    .toArray();
+                  const nextEntry = siblings
+                    .filter((e) => e.state === 'pending')
+                    .sort((a, b) => a.createdAt - b.createdAt)[0];
+                  if (nextEntry) {
+                    await db.outbox.update(nextEntry.id, {
+                      baseServerVersion: String(serverResult.version),
+                      updatedAt: Date.now(),
+                    });
+                  }
+                }
+              });
+            } else {
+              await this.outboxRepo.markCompleted(entry.id);
+              const { isFullySynced } = await this.syncMetadataRepo.acknowledgePush({
+                entityType: entry.entityType,
+                entityId: entry.entityId,
+                userId: entry.userId,
+                ackLocalRevision: entry.localRevision,
+                ackMutationId: entry.mutationId,
+                serverVersion: serverResult?.version ? String(serverResult.version) : null,
+                serverUpdatedAt: serverResult?.updated_at || new Date().toISOString(),
+                baseSnapshot: entry.payload || null,
+              });
+
+              if (!isFullySynced && serverResult?.version) {
+                const remainingPending = await this.outboxRepo.getPending(undefined, entry.userId);
+                const nextEntry = remainingPending
+                  .filter(
+                    (e) => e.entityType === entry.entityType && e.entityId === entry.entityId
+                  )
+                  .sort((a, b) => a.createdAt - b.createdAt)[0];
+                if (nextEntry) {
+                  await this.outboxRepo.updateBaseServerVersion(
+                    nextEntry.id,
+                    String(serverResult.version)
+                  );
+                }
+              }
+            }
+
+            if (wasFenced) {
+              continue;
+            }
+
+            this.lastSyncedAt = new Date();
+            madeProgressInPass = true;
           }
         }
 

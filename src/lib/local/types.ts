@@ -82,6 +82,7 @@ export interface OutboxEntry {
   dispatched?: boolean;
   dispatchedAt?: number | null;
   leaseOwner?: string | null;
+  leaseToken?: string | null;
   leaseExpiresAt?: number | null;
   nextRetryAt?: number | null;
   lastError?: {

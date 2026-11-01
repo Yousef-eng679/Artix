@@ -34,6 +34,10 @@ export class OutboxRepository {
     this.db = db || getArtixDB();
   }
 
+  getDb(): ArtixDB {
+    return this.db;
+  }
+
   /**
    * Subscribes to post-commit enqueue notifications on this user's ArtixDB outbox.
    */
@@ -363,33 +367,38 @@ export class OutboxRepository {
 
   /**
    * Marks an outbox entry as 'in_flight' while it is being synchronized,
-   * stamping the immutable `dispatched = true` flag, lease owner, and expiration timestamp.
+   * stamping the immutable `dispatched = true` flag, lease owner, unique fencing `leaseToken`,
+   * and expiration timestamp. Returns the claimed `leaseToken` (or `null` if unavailable).
    */
   async markInFlight(
     id: string,
     leaseOwner = 'sync_engine',
     leaseDurationMs = 30000
-  ): Promise<void> {
+  ): Promise<string | null> {
     const now = Date.now();
-    await this.db.transaction('rw', this.db.outbox, async () => {
+    return await this.db.transaction('rw', this.db.outbox, async () => {
       const existing = await this.db.outbox.get(id);
-      if (!existing) return;
+      if (!existing || existing.state === 'blocked') return null;
+      const leaseToken = crypto.randomUUID();
       await this.db.outbox.put({
         ...existing,
         state: 'in_flight',
         dispatched: true,
         dispatchedAt: existing.dispatchedAt ?? now,
         leaseOwner,
+        leaseToken,
         leaseExpiresAt: now + leaseDurationMs,
         updatedAt: now,
       });
+      return leaseToken;
     });
   }
 
   /**
    * Reclaims stale 'in_flight' entries whose lease has expired,
    * or entries orphaned by other crashed tabs when promoted to leader,
-   * restoring them back to 'pending' state while preserving `dispatched: true`.
+   * restoring them back to 'pending' state while preserving `dispatched: true`
+   * and clearing `leaseToken` to fence out any zombie holder.
    */
   async recoverStaleLeases(
     optionsOrNow?:
@@ -427,6 +436,7 @@ export class OutboxRepository {
             state: 'pending',
             dispatched: true,
             leaseOwner: null,
+            leaseToken: null,
             leaseExpiresAt: null,
             updatedAt: now,
           });
@@ -445,6 +455,53 @@ export class OutboxRepository {
   }
 
   /**
+   * Direct in-transaction failure update so callers can bundle outbox + sync_metadata + conflicts atomically.
+   * Preserves `entry.dispatched` immutably and clears `leaseToken`.
+   */
+  async markFailedInTx(
+    id: string,
+    error: { code: string; message: string; retryable?: boolean },
+    maxRetries = 5
+  ): Promise<OutboxEntry | undefined> {
+    const entry = await this.db.outbox.get(id);
+    if (!entry) return undefined;
+
+    const isRetryable = error.retryable !== false;
+    const attemptCount = entry.attemptCount + 1;
+    const isBlocked = !isRetryable || attemptCount >= maxRetries;
+    const state: OutboxState = isBlocked ? 'blocked' : 'pending';
+
+    const now = Date.now();
+    let nextRetryAt: number | null = null;
+    if (!isBlocked && isRetryable) {
+      const exponent = Math.max(0, attemptCount - 1);
+      const baseDelay = Math.min(1000 * Math.pow(2, exponent), 30000);
+      const jitter = Math.floor(Math.random() * Math.min(500, baseDelay));
+      nextRetryAt = now + baseDelay + jitter;
+    }
+
+    const updated: OutboxEntry = {
+      ...entry,
+      attemptCount,
+      state,
+      dispatched: entry.dispatched ? true : false,
+      leaseOwner: null,
+      leaseToken: null,
+      leaseExpiresAt: null,
+      nextRetryAt,
+      lastError: {
+        code: error.code,
+        message: error.message,
+        at: now,
+      },
+      updatedAt: now,
+    };
+
+    await this.db.outbox.put(updated);
+    return updated;
+  }
+
+  /**
    * Handles a sync failure: increments attempt count and marks as 'blocked' or schedules jittered backoff.
    * Preserves `entry.dispatched` immutably.
    */
@@ -454,41 +511,7 @@ export class OutboxRepository {
     maxRetries = 5
   ): Promise<OutboxEntry | undefined> {
     return await this.db.transaction('rw', this.db.outbox, async () => {
-      const entry = await this.db.outbox.get(id);
-      if (!entry) return undefined;
-
-      const isRetryable = error.retryable !== false;
-      const attemptCount = entry.attemptCount + 1;
-      const isBlocked = !isRetryable || attemptCount >= maxRetries;
-      const state: OutboxState = isBlocked ? 'blocked' : 'pending';
-
-      const now = Date.now();
-      let nextRetryAt: number | null = null;
-      if (!isBlocked && isRetryable) {
-        const exponent = Math.max(0, attemptCount - 1);
-        const baseDelay = Math.min(1000 * Math.pow(2, exponent), 30000);
-        const jitter = Math.floor(Math.random() * Math.min(500, baseDelay));
-        nextRetryAt = now + baseDelay + jitter;
-      }
-
-      const updated: OutboxEntry = {
-        ...entry,
-        attemptCount,
-        state,
-        dispatched: entry.dispatched ? true : false,
-        leaseOwner: null,
-        leaseExpiresAt: null,
-        nextRetryAt,
-        lastError: {
-          code: error.code,
-          message: error.message,
-          at: now,
-        },
-        updatedAt: now,
-      };
-
-      await this.db.outbox.put(updated);
-      return updated;
+      return await this.markFailedInTx(id, error, maxRetries);
     });
   }
 

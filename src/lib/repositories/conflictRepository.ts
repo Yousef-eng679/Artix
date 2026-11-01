@@ -17,10 +17,14 @@ export class ConflictRepository {
     this.db = db || getArtixDB();
   }
 
+  getDb(): ArtixDB {
+    return this.db;
+  }
+
   /**
-   * Persists a 3-way conflict record without destroying either local or remote data.
+   * Direct in-transaction conflict write so callers can bundle outbox + sync_metadata + conflicts atomically.
    */
-  async recordConflict(params: RecordConflictParams): Promise<ConflictRecord> {
+  async recordConflictInTx(params: RecordConflictParams): Promise<ConflictRecord> {
     const record: ConflictRecord = {
       id: crypto.randomUUID(),
       entityType: params.entityType,
@@ -35,6 +39,15 @@ export class ConflictRepository {
 
     await this.db.conflicts.add(record);
     return record;
+  }
+
+  /**
+   * Persists a 3-way conflict record without destroying either local or remote data.
+   */
+  async recordConflict(params: RecordConflictParams): Promise<ConflictRecord> {
+    return await this.db.transaction('rw', this.db.conflicts, async () => {
+      return await this.recordConflictInTx(params);
+    });
   }
 
   /**
@@ -136,6 +149,7 @@ export class ConflictRepository {
               attemptCount: 0,
               nextRetryAt: Date.now(),
               leaseOwner: null,
+              leaseToken: null,
               leaseExpiresAt: null,
               lastError: undefined,
               updatedAt: Date.now(),
@@ -274,6 +288,7 @@ export class ConflictRepository {
                 attemptCount: 0,
                 nextRetryAt: Date.now(),
                 leaseOwner: null,
+                leaseToken: null,
                 leaseExpiresAt: null,
                 lastError: undefined,
                 updatedAt: Date.now(),
@@ -282,6 +297,7 @@ export class ConflictRepository {
           } else {
             await this.db.outbox.add({
               id: crypto.randomUUID(),
+              mutationId: crypto.randomUUID(),
               userId,
               projectId: existing.projectId,
               entityType: 'document',
@@ -391,6 +407,7 @@ export class ConflictRepository {
 
             await this.db.outbox.add({
               id: crypto.randomUUID(),
+              mutationId: crypto.randomUUID(),
               userId,
               projectId: existing?.projectId ?? null,
               entityType: 'document',
@@ -455,6 +472,7 @@ export class ConflictRepository {
 
             await this.db.outbox.add({
               id: crypto.randomUUID(),
+              mutationId: crypto.randomUUID(),
               userId,
               projectId: existing?.projectId ?? '',
               entityType: 'system_design',
