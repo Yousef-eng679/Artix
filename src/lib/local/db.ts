@@ -1,5 +1,6 @@
 import Dexie, { type EntityTable } from 'dexie';
 import {
+  LocalProject,
   LocalDocument,
   LocalSystemDesign,
   LocalWorkspaceFolder,
@@ -10,6 +11,7 @@ import {
 } from './types';
 
 export class ArtixDB extends Dexie {
+  projects!: EntityTable<LocalProject, 'id'>;
   documents!: EntityTable<LocalDocument, 'id'>;
   system_designs!: EntityTable<LocalSystemDesign, 'id'>;
   workspace_folders!: EntityTable<LocalWorkspaceFolder, 'id'>;
@@ -22,6 +24,17 @@ export class ArtixDB extends Dexie {
     super(dbName);
 
     this.version(1).stores({
+      documents: 'id, [userId+projectId], userId, projectId, folderId, localRevision, updatedAt, isDeleted',
+      system_designs: 'id, [userId+projectId], userId, projectId, folderId, localRevision, updatedAt, isDeleted',
+      workspace_folders: 'id, [userId+projectId], userId, projectId, parentFolderId, name, localRevision, updatedAt, isDeleted',
+      outbox: 'id, [userId+entityType+entityId], userId, state, createdAt, localRevision',
+      sync_metadata: 'id, [userId+entityType], userId, entityId, syncState, localRevision, lastSyncedAt',
+      conflicts: 'id, [userId+entityType+entityId], detectedAt',
+      database_meta: 'key, updatedAt',
+    });
+
+    this.version(2).stores({
+      projects: 'id, userId, updatedAt, name',
       documents: 'id, [userId+projectId], userId, projectId, folderId, localRevision, updatedAt, isDeleted',
       system_designs: 'id, [userId+projectId], userId, projectId, folderId, localRevision, updatedAt, isDeleted',
       workspace_folders: 'id, [userId+projectId], userId, projectId, parentFolderId, name, localRevision, updatedAt, isDeleted',

@@ -9,6 +9,16 @@ export type OutboxState = 'pending' | 'in_flight' | 'blocked' | 'failed';
 
 export type SyncState = 'synced' | 'pending' | 'syncing' | 'conflict' | 'error' | 'deleted_pending' | 'deleted_synced';
 
+export interface LocalProject {
+  id: string;
+  userId: string;
+  name: string;
+  createdAt: string;
+  updatedAt: string;
+  cachedDocumentCount?: number;
+  cachedDesignCount?: number;
+}
+
 export interface LocalDocument {
   id: string;
   projectId: string | null;
