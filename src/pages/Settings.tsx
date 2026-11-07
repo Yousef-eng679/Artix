@@ -303,7 +303,7 @@ const Settings = () => {
 
 function BillingSection() {
   const navigate = useNavigate();
-  const { subscription, isPro, isLoading: isSubLoading } = useSubscription();
+  const { subscription, isPro, isPastDue, isLoading: isSubLoading } = useSubscription();
   const usage = useUsageLimits();
   const [isPortalLoading, setIsPortalLoading] = useState(false);
 
@@ -348,7 +348,7 @@ function BillingSection() {
               isPro ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20' : 'bg-secondary text-muted-foreground'
             }`}>
               {isPro && <Crown className="h-3.5 w-3.5" />}
-              {(subscription?.plan || 'free').toUpperCase()} TIER
+              {isPro ? 'PRO TIER' : 'FREE TIER'}
             </div>
           </div>
           <CardDescription>View your plan limits, current usage, and manage subscription settings.</CardDescription>
@@ -389,13 +389,17 @@ function BillingSection() {
                   Your Pro plan status is <span className="text-emerald-400 font-medium capitalize">{subscription?.status || 'active'}</span>.
                   {subscription?.currentPeriodEnd && ` Renews on ${new Date(subscription.currentPeriodEnd).toLocaleDateString()}.`}
                 </p>
+              ) : isPastDue ? (
+                <p className="text-xs text-amber-400">
+                  Your subscription payment is past due. Pro features are paused until payment succeeds.
+                </p>
               ) : (
                 <p className="text-xs text-muted-foreground">
                   You are currently on the Free plan. Upgrade to unlock unlimited storage and AI features.
                 </p>
               )}
             </div>
-            {isPro ? (
+            {isPro || (isPastDue && Boolean(subscription?.stripeCustomerId)) ? (
               <Button
                 variant="outline"
                 onClick={handleManageBilling}

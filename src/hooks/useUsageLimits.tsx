@@ -17,7 +17,7 @@ import { useSubscription } from './useSubscription';
 import { useUserSyncRuntime } from '@/contexts/UserSyncRuntimeContext';
 import { getUserArtixDB } from '@/lib/local/db';
 import { getTabCoordinator } from '@/lib/sync/tabCoordinator';
-import { PLAN_LIMITS, isWithinLimit } from '@/lib/plans';
+import { PLAN_LIMITS, PlanTier, isWithinLimit } from '@/lib/plans';
 
 interface UsageInfo {
   used: number;
@@ -42,7 +42,7 @@ interface CachedAiUsage {
 
 export function useUsageLimits(): UsageLimits {
   const { user } = useAuth();
-  const { subscription } = useSubscription();
+  const { isPro } = useSubscription();
   const queryClient = useQueryClient();
   const runtimeContext = useUserSyncRuntime();
   const isRuntimeReady = !runtimeContext || runtimeContext.isReady;
@@ -63,11 +63,13 @@ export function useUsageLimits(): UsageLimits {
     return unsub;
   }, [coordinator, queryClient, user?.id]);
 
-  const plan = subscription?.plan && (subscription.plan in PLAN_LIMITS) ? subscription.plan : 'free';
+  // Strict fail-closed entitlement (Decision A1 / B-02 & B-03):
+  // Pro quotas apply ONLY when `isPro === true` (active Stripe Pro or active manual_grants).
+  const plan: PlanTier = isPro ? 'pro' : 'free';
   const limits = PLAN_LIMITS[plan];
 
   const query = useQuery({
-    queryKey: ['usage-counts', user?.id, subscription.plan],
+    queryKey: ['usage-counts', user?.id, plan],
     queryFn: async () => {
       if (!user) return { projects: 0, documents: 0, systemDesigns: 0, aiGenerations: 0 };
 

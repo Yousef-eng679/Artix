@@ -26,6 +26,7 @@ export interface Subscription {
   billingCycle: 'monthly' | 'annual' | null;
   currentPeriodEnd: string | null;
   stripeCustomerId: string | null;
+  hasManualGrant?: boolean;
 }
 
 const CACHED_SUBSCRIPTION_KEY = 'cached_subscription';
@@ -108,25 +109,65 @@ export function useSubscription() {
         return (await readCached()) ?? FREE_FALLBACK;
       }
 
+      const readActiveManualGrant = async (): Promise<boolean> => {
+        try {
+          const builder = (supabase as any)
+            .from('manual_grants')
+            ?.select?.('plan_tier, starts_at, expires_at, revoked_at')
+            ?.eq?.('user_id', user.id);
+          if (typeof builder?.maybeSingle !== 'function') {
+            return false;
+          }
+          const { data: grant, error: grantError } = await builder.maybeSingle();
+          if (
+            grantError ||
+            !grant ||
+            typeof grant !== 'object' ||
+            !('revoked_at' in grant)
+          ) {
+            return false;
+          }
+          if (grant.plan_tier !== 'pro' || grant.revoked_at !== null) {
+            return false;
+          }
+          const nowMs = Date.now();
+          if (grant.starts_at && Date.parse(String(grant.starts_at)) > nowMs) {
+            return false;
+          }
+          if (grant.expires_at && Date.parse(String(grant.expires_at)) <= nowMs) {
+            return false;
+          }
+          return true;
+        } catch {
+          return false;
+        }
+      };
+
       try {
-        const { data, error } = await supabase
-          .from('subscriptions')
-          .select('plan_tier, status, billing_cycle, current_period_end, stripe_customer_id')
-          .eq('user_id', user.id)
-          .maybeSingle();
+        const [{ data, error }, hasManualGrant] = await Promise.all([
+          supabase
+            .from('subscriptions')
+            .select('plan_tier, status, billing_cycle, current_period_end, stripe_customer_id')
+            .eq('user_id', user.id)
+            .maybeSingle(),
+          readActiveManualGrant(),
+        ]);
 
         if (error) {
           console.error('Failed to load subscription:', error);
           if (isOfflineOrTransportFailure(error)) {
             return (await readCached()) ?? FREE_FALLBACK;
           }
-          return FREE_FALLBACK;
+          return hasManualGrant ? { ...FREE_FALLBACK, hasManualGrant: true } : FREE_FALLBACK;
         }
 
-        // No row = legacy user → free plan
+        // No row = legacy user → free plan unless granted via manual_grants
         if (!data) {
-          await writeCached(FREE_FALLBACK);
-          return FREE_FALLBACK;
+          const fallbackResolved: Subscription = hasManualGrant
+            ? { ...FREE_FALLBACK, hasManualGrant: true }
+            : FREE_FALLBACK;
+          await writeCached(fallbackResolved);
+          return fallbackResolved;
         }
 
         const resolved: Subscription = {
@@ -135,6 +176,7 @@ export function useSubscription() {
           billingCycle: data.billing_cycle as Subscription['billingCycle'],
           currentPeriodEnd: data.current_period_end,
           stripeCustomerId: data.stripe_customer_id,
+          hasManualGrant,
         };
 
         await writeCached(resolved);
@@ -153,12 +195,14 @@ export function useSubscription() {
   });
 
   const subscription = query.data ?? FREE_FALLBACK;
-  const isPro = subscription.plan === 'pro' && subscription.status === 'active';
+  const isPro =
+    (subscription.plan === 'pro' && subscription.status === 'active') ||
+    Boolean(subscription.hasManualGrant);
   const isPastDue = subscription.status === 'past_due';
 
   return {
     subscription,
-    planTier: subscription.plan,
+    planTier: subscription.hasManualGrant ? ('pro' as PlanTier) : subscription.plan,
     isPro,
     isPastDue,
     isLoading: query.isLoading || (Boolean(user) && (!isRuntimeReady || query.isPending)),

@@ -47,8 +47,12 @@ export const PLAN_PRICES = {
   },
 } as const;
 
-/** Grace period in days after a failed payment before downgrading. */
-export const GRACE_PERIOD_DAYS = 7;
+/**
+ * Grace period in days after a failed payment before downgrading.
+ * Strict fail-closed policy (Decision A1 / B-02): `past_due` downgrades Pro immediately
+ * until `invoice.paid` restores `active` status.
+ */
+export const GRACE_PERIOD_DAYS = 0;
 
 /**
  * Check if a usage count is within the plan limit.

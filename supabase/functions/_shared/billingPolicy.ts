@@ -37,9 +37,47 @@ export interface StripeSubscriptionItemLike {
 export interface StripeSubscriptionLike {
   id?: string;
   status: string;
+  customer?: string | { id?: string | null } | null;
+  current_period_end?: number | null;
+  metadata?: Record<string, string | undefined> | null;
   items?: {
     data?: StripeSubscriptionItemLike[];
   } | null;
+}
+
+export interface StripeWebhookEventLike {
+  id: string;
+  type: string;
+  created?: number;
+  data: {
+    object: Record<string, any>;
+  };
+}
+
+export interface StripeSubscriptionsClientLike {
+  subscriptions: {
+    retrieve: (subscriptionId: string) => Promise<StripeSubscriptionLike>;
+  };
+}
+
+export interface SupabaseAdminRpcLike {
+  rpc: (
+    fnName: string,
+    args: Record<string, unknown>,
+  ) => PromiseLike<{ data: any; error: { message: string } | null }>;
+}
+
+export interface WebhookReconciliationResult {
+  outcome:
+    | 'applied'
+    | 'duplicate_event'
+    | 'ignored_unlinked'
+    | 'ignored_event_type'
+    | 'stale_event_ignored';
+  userId?: string | null;
+  planTier?: PlanTier;
+  status?: DbSubscriptionStatus;
+  reconciliationVersion?: number;
 }
 
 export interface SubscriptionEntitlementDecision {
@@ -246,5 +284,166 @@ export function validateSubscriptionEntitlement(
     billingCycle: matchedSpec.billingCycle,
     matchedPriceId: matchedSpec.priceId,
     reason: 'Verified Pro subscription price and active status',
+  };
+}
+
+function extractId(ref: unknown): string | null {
+  if (typeof ref === 'string' && ref.trim().length > 0) {
+    return ref.trim();
+  }
+  if (ref && typeof ref === 'object' && typeof (ref as { id?: unknown }).id === 'string') {
+    const id = ((ref as { id: string }).id || '').trim();
+    return id.length > 0 ? id : null;
+  }
+  return null;
+}
+
+/**
+ * Extracts `(subscriptionId, customerId, fallbackUserId)` from supported Stripe
+ * webhook events so `reconcileStripeWebhookEvent` can always retrieve the
+ * authoritative live subscription from Stripe rather than trusting out-of-order
+ * event snapshots (`B-01`, `B-02`).
+ */
+export function extractSubscriptionContextFromWebhookEvent(event: StripeWebhookEventLike): {
+  handled: boolean;
+  subscriptionId: string | null;
+  customerId: string | null;
+  fallbackUserId: string | null;
+} {
+  const obj = event?.data?.object ?? {};
+
+  switch (event.type) {
+    case 'checkout.session.completed': {
+      if (obj.mode !== 'subscription') {
+        return {
+          handled: false,
+          subscriptionId: null,
+          customerId: extractId(obj.customer),
+          fallbackUserId: null,
+        };
+      }
+      return {
+        handled: true,
+        subscriptionId: extractId(obj.subscription),
+        customerId: extractId(obj.customer),
+        fallbackUserId:
+          (typeof obj.metadata?.supabase_user_id === 'string' &&
+            obj.metadata.supabase_user_id.trim()) ||
+          (typeof obj.client_reference_id === 'string' && obj.client_reference_id.trim()) ||
+          null,
+      };
+    }
+
+    case 'customer.subscription.created':
+    case 'customer.subscription.updated':
+    case 'customer.subscription.deleted': {
+      return {
+        handled: true,
+        subscriptionId: extractId(obj.id),
+        customerId: extractId(obj.customer),
+        fallbackUserId:
+          (typeof obj.metadata?.supabase_user_id === 'string' &&
+            obj.metadata.supabase_user_id.trim()) ||
+          null,
+      };
+    }
+
+    case 'invoice.paid':
+    case 'invoice.payment_succeeded':
+    case 'invoice.payment_failed': {
+      const subId =
+        extractId(obj.subscription) ??
+        extractId(obj.parent?.subscription_details?.subscription);
+      return {
+        handled: Boolean(subId),
+        subscriptionId: subId,
+        customerId: extractId(obj.customer),
+        fallbackUserId:
+          (typeof obj.subscription_details?.metadata?.supabase_user_id === 'string' &&
+            obj.subscription_details.metadata.supabase_user_id.trim()) ||
+          null,
+      };
+    }
+
+    default:
+      return {
+        handled: false,
+        subscriptionId: null,
+        customerId: extractId(obj.customer),
+        fallbackUserId: null,
+      };
+  }
+}
+
+/**
+ * Reconciles a verified Stripe webhook event atomically:
+ *   1. Fetches the authoritative live `Subscription` from Stripe (`stripe.subscriptions.retrieve`)
+ *      so delayed/out-of-order events (`payment_failed` arriving after `paid`, or stale `updated`
+ *      arriving after `deleted`) converge to the real current state (`B-01`).
+ *   2. Evaluates `validateSubscriptionEntitlement` under strict fail-closed policy (`B-02` / Decision A1:
+ *      `past_due` downgrades `plan_tier` to `'free'` until `invoice.paid` restores `'active'`).
+ *   3. Executes `public.reconcile_stripe_subscription` so advisory-locked deduplication,
+ *      `public.subscriptions` upsert, and `public.stripe_events` ledger write commit or
+ *      roll back in ONE PostgreSQL transaction.
+ */
+export async function reconcileStripeWebhookEvent(params: {
+  event: StripeWebhookEventLike;
+  stripe: StripeSubscriptionsClientLike;
+  supabaseAdmin: SupabaseAdminRpcLike;
+  envGetter?: EnvGetter;
+}): Promise<WebhookReconciliationResult> {
+  const { event, stripe, supabaseAdmin, envGetter = defaultEnvGetter } = params;
+  const ctx = extractSubscriptionContextFromWebhookEvent(event);
+
+  if (!ctx.handled || !ctx.subscriptionId) {
+    return { outcome: 'ignored_event_type' };
+  }
+
+  const liveSubscription = await stripe.subscriptions.retrieve(ctx.subscriptionId);
+  const decision = validateSubscriptionEntitlement(liveSubscription, envGetter);
+
+  const userId =
+    (typeof liveSubscription.metadata?.supabase_user_id === 'string' &&
+      liveSubscription.metadata.supabase_user_id.trim()) ||
+    ctx.fallbackUserId ||
+    null;
+
+  const customerId = extractId(liveSubscription.customer) ?? ctx.customerId ?? null;
+  const currentPeriodEnd =
+    typeof liveSubscription.current_period_end === 'number' &&
+    Number.isFinite(liveSubscription.current_period_end)
+      ? new Date(liveSubscription.current_period_end * 1000).toISOString()
+      : null;
+
+  const { data, error } = await supabaseAdmin.rpc('reconcile_stripe_subscription', {
+    p_stripe_event_id: event.id,
+    p_event_type: event.type,
+    p_event_created:
+      typeof event.created === 'number' ? event.created : Math.floor(Date.now() / 1000),
+    p_user_id: userId,
+    p_stripe_customer_id: customerId,
+    p_stripe_subscription_id: ctx.subscriptionId,
+    p_plan_tier: decision.planTier,
+    p_status: decision.dbStatus,
+    p_billing_cycle: decision.billingCycle,
+    p_current_period_end: currentPeriodEnd,
+    p_is_live_snapshot: true,
+  });
+
+  if (error) {
+    throw new Error(
+      `Failed to reconcile Stripe subscription (${ctx.subscriptionId}) for event ${event.id}: ${error.message}`,
+    );
+  }
+
+  return {
+    outcome: (data?.outcome ?? 'applied') as WebhookReconciliationResult['outcome'],
+    userId: data?.user_id ?? userId,
+    planTier: data?.plan_tier ?? decision.planTier,
+    status: data?.status ?? decision.dbStatus,
+    reconciliationVersion:
+      typeof data?.reconciliation_version === 'number'
+        ? data.reconciliation_version
+        : undefined,
   };
 }
