@@ -33,6 +33,7 @@ export interface RuntimeStatus {
   state: RuntimeState;
   userId: string;
   isStarted: boolean;
+  isHydrated: boolean;
   isDegraded: boolean;
   isCloudSyncPaused?: boolean;
   storagePersisted?: boolean | null;
@@ -106,6 +107,7 @@ export class UserSyncRuntime {
 
   private supabase: any;
   private isStarted = false;
+  private isHydrated = false;
   private cloudSyncPaused: boolean;
   private storagePersisted: boolean | null = null;
   private usageBytes: number | null = null;
@@ -149,6 +151,12 @@ export class UserSyncRuntime {
       conflictRepo: this.conflictRepo,
       syncMetadataRepo: this.syncMetadataRepo,
       tabCoordinator: this.tabCoordinator,
+      onHydrationChange: (hydrated) => {
+        if (this.isHydrated !== hydrated) {
+          this.isHydrated = hydrated;
+          this.notifyStatus();
+        }
+      },
     });
 
     this.syncEngine = new SyncEngine({
@@ -176,6 +184,7 @@ export class UserSyncRuntime {
       state: this.state,
       userId: this.userId,
       isStarted: this.isStarted,
+      isHydrated: this.isHydrated,
       isDegraded: this.state === 'degraded',
       isCloudSyncPaused: this.cloudSyncPaused,
       storagePersisted: this.storagePersisted,
@@ -312,6 +321,13 @@ export class UserSyncRuntime {
         fatal: false,
         originalError: migErr,
       };
+    }
+
+    // 2b. Inspect initial local hydration status
+    try {
+      this.isHydrated = await this.pullEngine.isHydrated();
+    } catch {
+      this.isHydrated = false;
     }
 
     // 3. Reclaim stale in-flight leases from crashed previous sessions

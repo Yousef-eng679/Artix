@@ -541,10 +541,14 @@ export class SyncEngine {
     this.notifySubscribers();
 
     try {
-      // Catch up on remote changes from durable sync_changes feed prior to pushing local mutations
+      // Catch up on remote changes (or bootstrap/resnapshot if unhydrated / below retention floor) prior to pushing local mutations
       if (userId) {
         try {
-          await this.pullEngine.pullAll(userId);
+          if (typeof (this.pullEngine as any).syncPull === 'function') {
+            await (this.pullEngine as any).syncPull(userId);
+          } else {
+            await this.pullEngine.pullAll(userId);
+          }
         } catch (pullErr: any) {
           if (!this.isDestroyed && pullErr?.name !== 'DatabaseClosedError') {
             console.warn('[SyncEngine] Pull feed sync error prior to push:', pullErr);

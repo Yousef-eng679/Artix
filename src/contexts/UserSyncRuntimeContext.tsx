@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useEffect, useState, useMemo, useRef, ReactNode } from 'react';
+import { liveQuery } from 'dexie';
 import { QueryClientContext } from '@tanstack/react-query';
 import { useAuth } from '@/hooks/useAuth';
 import {
@@ -32,6 +33,7 @@ export interface UserSyncRuntimeContextType {
   tabCoordinator: TabCoordinator | null;
   realtimeSync: RealtimeSyncManager | null;
   isReady: boolean;
+  isHydrated: boolean;
   runtimeStatus: RuntimeStatus | null;
   isDegraded: boolean;
   runtimeError: RuntimeError | null;
@@ -50,6 +52,7 @@ export function UserSyncRuntimeProvider({ children }: { children: ReactNode }) {
 
   const [runtime, setRuntime] = useState<UserSyncRuntime | null>(() => getActiveUserRuntime() ?? null);
   const [runtimeStatus, setRuntimeStatus] = useState<RuntimeStatus | null>(() => getActiveUserRuntime()?.getStatus() ?? null);
+  const [dbHydrated, setDbHydrated] = useState<boolean>(false);
   const [openError, setOpenError] = useState<RuntimeError | null>(null);
   const [isReady, setIsReady] = useState<boolean>(false);
 
@@ -133,21 +136,43 @@ export function UserSyncRuntimeProvider({ children }: { children: ReactNode }) {
     }
   }, [runtime, shouldPauseCloudSync]);
 
-  // Subscribe to live status changes on the active runtime
+  // Subscribe to live status & database_meta hydration changes on the active runtime
   useEffect(() => {
     if (!runtime) {
       setRuntimeStatus(null);
+      setDbHydrated(false);
       return;
     }
 
+    setDbHydrated(Boolean(runtime.getStatus().isHydrated));
+
     const unsub = runtime.subscribeStatus((status) => {
       setRuntimeStatus(status);
+      if (status.isHydrated) {
+        setDbHydrated(true);
+      }
+    });
+
+    const hydrationSub = liveQuery(async () => {
+      if (!runtime.db.isOpen()) return false;
+      const meta = await runtime.db.database_meta.get('hydration_complete');
+      return Boolean(meta?.value);
+    }).subscribe({
+      next: (hydrated) => {
+        setDbHydrated(Boolean(hydrated));
+      },
+      error: () => {
+        // Ignore transient closed-DB errors on teardown
+      },
     });
 
     return () => {
       unsub();
+      hydrationSub.unsubscribe();
     };
   }, [runtime]);
+
+  const isHydrated = Boolean(runtimeStatus?.isHydrated || dbHydrated);
 
   const value = useMemo<UserSyncRuntimeContextType>(() => {
     if (!runtime) {
@@ -163,6 +188,7 @@ export function UserSyncRuntimeProvider({ children }: { children: ReactNode }) {
         tabCoordinator: null,
         realtimeSync: null,
         isReady,
+        isHydrated: false,
         runtimeStatus: null,
         isDegraded: openError !== null,
         runtimeError: openError,
@@ -181,11 +207,12 @@ export function UserSyncRuntimeProvider({ children }: { children: ReactNode }) {
       tabCoordinator: runtime.tabCoordinator,
       realtimeSync: runtime.realtimeSync,
       isReady,
+      isHydrated,
       runtimeStatus,
       isDegraded: Boolean(runtimeStatus?.isDegraded || runtimeStatus?.state === 'errored'),
       runtimeError: runtimeStatus?.error ?? openError,
     };
-  }, [runtime, isReady, runtimeStatus, openError]);
+  }, [runtime, isReady, isHydrated, runtimeStatus, openError]);
 
   return (
     <UserSyncRuntimeContext.Provider value={value}>
