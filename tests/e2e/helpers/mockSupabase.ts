@@ -36,6 +36,8 @@ export async function mockSupabaseNetwork(
       id: E2E_PROJECT_ID,
       user_id: E2E_USER_ID,
       name: 'E2E Architecture Project',
+      version: 1,
+      deleted_at: null,
       created_at: nowIso,
       updated_at: nowIso,
     },
@@ -137,6 +139,29 @@ export async function mockSupabaseNetwork(
         status: 200,
         contentType: 'application/json',
         body: JSON.stringify(wantsObject ? sub : [sub]),
+      });
+      return;
+    }
+
+    if (url.includes('/realtime/v1')) {
+      await route.abort('connectionrefused');
+      return;
+    }
+
+    if (url.includes('/rest/v1/rpc/get_sync_feed_bounds')) {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ min_retained_sequence: 0, max_sequence: 0 }),
+      });
+      return;
+    }
+
+    if (url.includes('/rest/v1/rpc/apply_sync_mutation')) {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ status: 'applied', version: 1, updated_at: nowIso }),
       });
       return;
     }

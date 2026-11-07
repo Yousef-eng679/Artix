@@ -237,7 +237,7 @@ describe('TASK-04..06 & TASK-23: Atomic Stripe Reconciliation, Strict Fail-Close
     expect(typeof reconcileWebhook).toBe('function');
 
     const fakeDb = new FakeBillingDatabase();
-    let liveStripeSub: any = {
+    const liveStripeSub: any = {
       id: 'sub_live_001',
       customer: 'cus_live_001',
       status: 'active',

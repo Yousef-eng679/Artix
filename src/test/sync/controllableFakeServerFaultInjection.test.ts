@@ -99,8 +99,6 @@ class ControllableFakeSupabaseServer {
   }
 
   createClientForUser(activeUserIdGetter: () => string) {
-    const server = this;
-
     const makeTableBuilder = (tableName: string) => {
       const filters: Array<(row: any) => boolean> = [];
       let gtCol: string | null = null;
@@ -110,7 +108,7 @@ class ControllableFakeSupabaseServer {
       const executeSelect = async () => {
         const uid = activeUserIdGetter();
         if (tableName === 'sync_changes') {
-          let rows = server.syncChanges.filter((r) => r.user_id === uid);
+          let rows = this.syncChanges.filter((r) => r.user_id === uid);
           for (const f of filters) rows = rows.filter(f);
           if (gtCol === 'sequence' && gtVal !== null) {
             rows = rows.filter((r) => r.sequence > gtVal!);
@@ -121,7 +119,7 @@ class ControllableFakeSupabaseServer {
         }
 
         const map =
-          server.tables[tableName as keyof typeof server.tables] ??
+          this.tables[tableName as keyof typeof this.tables] ??
           new Map<string, ServerEntityRow>();
         let rows = Array.from(map.values()).filter((r) => r.user_id === uid);
         for (const f of filters) rows = rows.filter(f);
@@ -171,7 +169,7 @@ class ControllableFakeSupabaseServer {
         const uid = activeUserIdGetter();
 
         if (fnName === 'get_sync_feed_bounds') {
-          const userChanges = server.syncChanges.filter((c) => c.user_id === uid);
+          const userChanges = this.syncChanges.filter((c) => c.user_id === uid);
           const maxSeq =
             userChanges.length > 0 ? userChanges[userChanges.length - 1].sequence : 0;
           return {
@@ -189,16 +187,16 @@ class ControllableFakeSupabaseServer {
         }
 
         const mutationKey = `${uid}:${args.p_mutation_id}`;
-        if (server.processedMutations.has(mutationKey)) {
+        if (this.processedMutations.has(mutationKey)) {
           return {
-            data: structuredClone(server.processedMutations.get(mutationKey)!),
+            data: structuredClone(this.processedMutations.get(mutationKey)!),
             error: null,
           };
         }
 
         const entityType = args.p_entity_type as SyncChangeFeedRow['entity_type'];
-        const tableName = server.entityToTable(entityType);
-        const table = server.tables[tableName];
+        const tableName = this.entityToTable(entityType);
+        const table = this.tables[tableName];
         const entityId = String(args.p_entity_id);
         const op = String(args.p_operation);
         const payload = (args.p_payload ?? {}) as Record<string, any>;
@@ -227,13 +225,13 @@ class ControllableFakeSupabaseServer {
             deleted_at: null,
           };
           table.set(entityId, row);
-          server.recordChange(entityType, 'create', row, args.p_mutation_id);
+          this.recordChange(entityType, 'create', row, args.p_mutation_id);
           response = {
             status: 'applied',
             version: row.version,
             updated_at: row.updated_at,
           };
-          server.processedMutations.set(mutationKey, response);
+          this.processedMutations.set(mutationKey, response);
         } else if (op === 'update') {
           const baseVer = Number(args.p_base_version);
           if (!Number.isInteger(baseVer) || baseVer < 1) {
@@ -279,13 +277,13 @@ class ControllableFakeSupabaseServer {
             updated_at: nowIso,
           };
           table.set(entityId, updated);
-          server.recordChange(entityType, 'update', updated, args.p_mutation_id);
+          this.recordChange(entityType, 'update', updated, args.p_mutation_id);
           response = {
             status: 'applied',
             version: updated.version,
             updated_at: updated.updated_at,
           };
-          server.processedMutations.set(mutationKey, response);
+          this.processedMutations.set(mutationKey, response);
         } else if (op === 'delete') {
           const baseVer = Number(args.p_base_version);
           if (!Number.isInteger(baseVer) || baseVer < 1) {
@@ -297,7 +295,7 @@ class ControllableFakeSupabaseServer {
 
           if (!existing || existing.deleted_at !== null) {
             response = { status: 'applied', version: null, updated_at: nowIso };
-            server.processedMutations.set(mutationKey, response);
+            this.processedMutations.set(mutationKey, response);
           } else if (existing.version !== baseVer) {
             return {
               data: {
@@ -316,20 +314,20 @@ class ControllableFakeSupabaseServer {
               deleted_at: nowIso,
             };
             table.set(entityId, tombstoned);
-            server.recordChange(entityType, 'delete', tombstoned, args.p_mutation_id);
+            this.recordChange(entityType, 'delete', tombstoned, args.p_mutation_id);
             response = {
               status: 'applied',
               version: tombstoned.version,
               updated_at: nowIso,
             };
-            server.processedMutations.set(mutationKey, response);
+            this.processedMutations.set(mutationKey, response);
           }
         } else {
           return { data: null, error: { message: `Unsupported op ${op}` } };
         }
 
-        if (server.dropNextResponseAfterCommit) {
-          server.dropNextResponseAfterCommit = false;
+        if (this.dropNextResponseAfterCommit) {
+          this.dropNextResponseAfterCommit = false;
           throw new TypeError('Failed to fetch (simulated HTTP drop after server commit)');
         }
 

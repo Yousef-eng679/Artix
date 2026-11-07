@@ -12,6 +12,10 @@ export default defineConfig(() => ({
       overlay: false,
     },
   },
+  preview: {
+    host: "::",
+    port: 8080,
+  },
   build: {
     rollupOptions: {
       output: {

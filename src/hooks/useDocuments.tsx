@@ -206,6 +206,7 @@ export function useDocuments(projectId?: string) {
   return {
     documents: documentsQuery.data ?? [],
     isLoading: documentsQuery.isLoading || (Boolean(user) && (!isRuntimeReady || documentsQuery.isPending)),
+    isFetching: documentsQuery.isFetching,
     error: documentsQuery.error,
     createDocument: createDocumentMutation.mutateAsync,
     updateDocument: updateDocumentMutation.mutateAsync,

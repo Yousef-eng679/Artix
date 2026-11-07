@@ -232,6 +232,7 @@ export function useSystemDesigns(projectId: string | undefined) {
   return {
     designs: designsQuery.data ?? [],
     isLoading: designsQuery.isLoading || (Boolean(user) && Boolean(projectId) && (!isRuntimeReady || designsQuery.isPending)),
+    isFetching: designsQuery.isFetching,
     createDesign: createDesignMutation.mutateAsync,
     updateDesign: updateDesignMutation.mutateAsync,
     deleteDesign: deleteDesignMutation.mutateAsync,

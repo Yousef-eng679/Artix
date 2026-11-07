@@ -38,6 +38,7 @@ const ProjectWorkspace = () => {
   const {
     documents,
     isLoading: docsLoading,
+    isFetching: docsFetching,
     createDocument,
     updateDocument,
     deleteDocument,
@@ -45,6 +46,7 @@ const ProjectWorkspace = () => {
   const {
     designs,
     isLoading: designsLoading,
+    isFetching: designsFetching,
     createDesign,
     updateDesign,
     deleteDesign,
@@ -83,7 +85,23 @@ const ProjectWorkspace = () => {
     return toWorkspaceResources(documents, designs, id || '');
   }, [documents, designs, id]);
 
-  const isResourcesLoaded = !authLoading && Boolean(user) && isRuntimeReady && !docsLoading && !designsLoading;
+  const isInitialOnlineHydrating = Boolean(
+    runtimeContext &&
+      runtimeContext.isReady &&
+      runtimeContext.isHydrated === false &&
+      typeof navigator !== 'undefined' &&
+      navigator.onLine !== false,
+  );
+  const isInitialRefetchPending =
+    (docsFetching && documents.length === 0) || (designsFetching && designs.length === 0);
+  const isResourcesLoaded =
+    !authLoading &&
+    Boolean(user) &&
+    isRuntimeReady &&
+    !isInitialOnlineHydrating &&
+    !docsLoading &&
+    !designsLoading &&
+    !isInitialRefetchPending;
   const {
     tabs,
     activeTabId,
@@ -157,7 +175,7 @@ const ProjectWorkspace = () => {
 
   // Canonicalization on missing resource or project boundary violation
   useEffect(() => {
-    if (!isResourcesLoaded) return;
+    if (!isResourcesLoaded || docsFetching || designsFetching) return;
 
     if (rawDocId) {
       if (recentlyCreatedRef.current.has(rawDocId)) {
