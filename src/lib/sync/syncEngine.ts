@@ -703,6 +703,8 @@ export class SyncEngine {
                     basePayload: syncMeta?.baseSnapshot ?? null,
                     localPayload: entry.payload,
                     remotePayload,
+                    reason: err?.conflictReason ?? null,
+                    remoteVersion: err?.remoteVersion ?? null,
                   });
                   await this.syncMetadataRepo.upsertInTx({
                     entityType: entry.entityType,
@@ -730,6 +732,8 @@ export class SyncEngine {
                   basePayload: syncMeta?.baseSnapshot ?? null,
                   localPayload: entry.payload,
                   remotePayload,
+                  reason: err?.conflictReason ?? null,
+                  remoteVersion: err?.remoteVersion ?? null,
                 });
                 await this.syncMetadataRepo.markConflict(
                   entry.entityType,

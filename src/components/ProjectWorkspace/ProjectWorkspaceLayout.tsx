@@ -3,6 +3,7 @@ import { Menu } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet';
 import { SyncStatusBanner } from '@/components/SyncStatusBanner';
+import { ConflictResolutionCenter } from '@/components/ConflictResolutionModal';
 
 interface ProjectWorkspaceLayoutProps {
   sidebar: React.ReactNode;
@@ -56,7 +57,8 @@ export const ProjectWorkspaceLayout: React.FC<ProjectWorkspaceLayoutProps> = ({
           </span>
         </header>
 
-        {/* Blocked-sync recovery banner (renders nothing when queue is healthy) */}
+        {/* Blocked-sync & conflict recovery banners (render nothing when healthy) */}
+        <ConflictResolutionCenter />
         <SyncStatusBanner />
 
         {/* Tab bar */}

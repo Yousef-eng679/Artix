@@ -153,6 +153,8 @@ export interface RemoteSystemDesignSnapshot {
   createdAt?: string;
 }
 
+export type ConflictReason = 'version_mismatch' | 'remote_deleted' | 'already_exists';
+
 export interface ConflictRecord {
   id: string;
   entityType: EntityType;
@@ -161,6 +163,10 @@ export interface ConflictRecord {
   basePayload: unknown;
   localPayload: unknown;
   remotePayload: unknown;
+  /** Why the server/pull rejected local intent (S-03). Absent on legacy rows. */
+  reason?: ConflictReason | string | null;
+  /** Authoritative server version at detection time, used as the CAS base when keeping local. */
+  remoteVersion?: string | null;
   detectedAt: number;
   resolvedAt?: number | null;
 }

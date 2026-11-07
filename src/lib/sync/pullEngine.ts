@@ -350,6 +350,8 @@ export class PullEngine {
                 basePayload: syncMeta?.baseSnapshot ?? null,
                 localPayload: latestActive.operation === 'delete' ? { deleted: true } : latestActive.payload,
                 remotePayload: operation === 'delete' ? { deleted: true } : payload,
+                reason: operation === 'delete' ? 'remote_deleted' : 'version_mismatch',
+                remoteVersion: version !== undefined && version !== null ? String(version) : null,
                 detectedAt: Date.now(),
                 resolvedAt: null,
               };
@@ -365,13 +367,20 @@ export class PullEngine {
                 serverUpdatedAt: change.changed_at,
               });
 
-              // Block active outbox entries for this entity to prevent CAS churn
+              // Block active outbox entries for this entity to prevent CAS churn.
+              // Tag them CONFLICT so blocked-queue UI routes them to conflict resolution, not "Retry".
               for (const entry of outboxEntries) {
                 if (entry.state === 'pending' || entry.state === 'in_flight') {
                   await this.db.outbox.update(entry.id, {
                     state: 'blocked',
                     leaseOwner: null,
+                    leaseToken: null,
                     leaseExpiresAt: null,
+                    lastError: {
+                      code: 'CONFLICT',
+                      message: 'Concurrent modification conflict detected',
+                      at: Date.now(),
+                    },
                     updatedAt: Date.now(),
                   });
                 }
