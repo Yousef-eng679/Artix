@@ -90,7 +90,7 @@ Project (UUID)
 | **Durable Change Feed** | `IMPLEMENTED` | Cursor-based change log (`public.sync_changes`) with leading-edge Realtime wakeup and automatic reconnection catchup. |
 | **Multi-Tab Coordinator** | `IMPLEMENTED` | Web Locks API single-leader execution with instant zero-latency failover and cross-tab duplicate suppression. |
 | **AI Intelligence Suite** | `IMPLEMENTED` | Multi-mode PRD generator (Agile, Technical Spec, Lean MVP, Custom) and Vibe Coding prompt compiler with 2-pass refinement. |
-| **BYOK Security** | `IMPLEMENTED` | Client-side BYOK storage (default `obf:` Base64 obfuscation + opt-in PBKDF2 250k iterations / AES-GCM 256-bit passphrase vault) supporting OpenAI, Anthropic, Gemini, Groq, and Ollama. |
+| **BYOK Security** | `IMPLEMENTED` | Client-side BYOK storage (default `obf:` Base64 obfuscation + opt-in PBKDF2 600k iterations `v: 2` / AES-GCM 256-bit passphrase vault with `v: 1` 250k backward compatibility) supporting OpenAI, Anthropic, Gemini, Groq, and Ollama. |
 | **Stripe Billing & Limits**| `IMPLEMENTED` | Supabase Edge Functions with webhook signature verification, portal management, and PostgreSQL trigger tier limit enforcement. |
 | **PWA & Offline Worker** | `IMPLEMENTED` | Workbox service worker precaching full application bundles and static assets for zero-network launches. |
 
@@ -392,7 +392,7 @@ Artix includes a multi-provider prompt generation and context compiler engine:
 ## 19. Security Model
 
 1. **Row Level Security (RLS)**: Every PostgreSQL table in Supabase enforces RLS policies. Client queries can only select, insert, update, or delete rows where `auth.uid() = user_id`.
-2. **BYOK Client Key Protection**: Third-party AI API keys entered by the user stay strictly client-side. By default they are stored in `localStorage` with `obf:` Base64 obfuscation (`src/lib/ai/storage.ts`); when the optional passphrase vault is enabled, keys are encrypted at rest using PBKDF2 (250,000 iterations, SHA-256) and AES-GCM 256-bit (`src/lib/ai/crypto.ts`).
+2. **BYOK Client Key Protection**: Third-party AI API keys entered by the user stay strictly client-side. By default they are stored in `localStorage` with `obf:` Base64 obfuscation (`src/lib/ai/storage.ts`); when the optional passphrase vault is enabled, keys are encrypted at rest using PBKDF2 (600,000 iterations for `v: 2`, SHA-256; legacy `v: 1` 250,000 iterations supported for decryption) and AES-GCM 256-bit (`src/lib/ai/crypto.ts`).
 3. **Markdown AST Escaping & URL Protocol Filtering**: `MarkdownPreview.tsx` renders Markdown via `react-markdown` without `rehype-raw` (so raw inline HTML/scripts render as inert text) and enforces an explicit `sanitizeMarkdownUrl` protocol allowlist (`http:`, `https:`, `mailto:`, relative links), verified in `src/test/security.test.ts`.
 4. **Content Security Policy (CSP)**: HTTP headers restrict script, style, and iframe sources to trusted origins.
 

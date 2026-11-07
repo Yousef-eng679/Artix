@@ -71,10 +71,10 @@ Artix features a Bring-Your-Own-Key (BYOK) model allowing users to connect their
 ### Cryptographic Implementation Specifications ([`src/lib/ai/crypto.ts`](./src/lib/ai/crypto.ts))
 - **Cipher:** `AES-256-GCM` authenticated symmetric encryption.
 - **Key Derivation Function:** `PBKDF2` with `SHA-256`.
-- **Iteration Count:** **250,000 rounds** (`PBKDF2_ITERATIONS = 250_000`).
+- **Iteration Count:** **600,000 rounds** for all `v: 2` saves (`PBKDF2_ITERATIONS_V2 = 600_000`), with backward-compatible decryption for legacy `v: 1` blobs (**250,000 rounds**, `PBKDF2_ITERATIONS_V1 = 250_000`).
 - **Salt Length:** 16 cryptographically secure random bytes (`crypto.getRandomValues`).
 - **IV Length:** 12 cryptographically secure random bytes per encryption.
-- **Envelope Format:** Versioned JSON `{ v: 1, salt: "<b64>", iv: "<b64>", ct: "<b64>" }`.
+- **Envelope Format:** Versioned JSON `{ v: 2, salt: "<b64>", iv: "<b64>", ct: "<b64>" }` (legacy `{ v: 1, ... }` transparently upgraded on next save).
 
 ### State Breakdown & Security Guarantees:
 1. **State 1: Unencrypted/Default:**

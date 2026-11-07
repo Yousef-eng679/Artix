@@ -188,4 +188,4 @@ await db.transaction('rw', [db.documents, db.outbox, db.sync_metadata], async ()
 
 1. **Storage Separation**: User sessions access disjoint IndexedDB databases. Logging out completely closes and disposes of the active database instance.
 2. **PostgreSQL RLS**: Cloud queries enforce `auth.uid() = user_id`. Even if a client crafts a malicious REST call, Supabase database policies reject cross-tenant reads and writes.
-3. **Client Key Encryption**: User-supplied third-party AI keys are encrypted in `localStorage` with AES-GCM 256-bit and a PBKDF2-derived key (100,000 iterations). Plaintext keys are never sent to Artix servers.
+3. **Client Key Encryption**: User-supplied third-party AI keys are encrypted in `localStorage` with AES-GCM 256-bit and a PBKDF2-derived key (600,000 iterations v:2; legacy v:1 250,000). Plaintext keys are never sent to Artix servers.

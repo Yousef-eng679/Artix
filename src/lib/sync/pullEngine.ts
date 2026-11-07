@@ -16,7 +16,7 @@ import {
   RemoteSystemDesignSnapshot,
   ConflictRecord,
 } from '../local/types';
-import { withTimeout } from './syncEngine';
+import { withTimeout } from './transportTimeout';
 import { TabCoordinator, getTabCoordinator } from './tabCoordinator';
 
 export interface PullEngineOptions {

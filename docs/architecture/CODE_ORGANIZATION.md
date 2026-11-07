@@ -32,7 +32,7 @@ src/
 │
 ├── lib/                 # Core Business Logic & Non-React Utilities
 │   ├── ai/              # AI provider adapters, streaming, prompt generation, crypto
-│   │   ├── crypto.ts    # PBKDF2 100k + AES-GCM 256-bit client-side key encryption
+│   │   ├── crypto.ts    # PBKDF2 600k (v:2) + AES-GCM 256-bit client-side key encryption
 │   │   ├── storage.ts   # BYOK key settings persistence and sanitization
 │   │   ├── streaming.ts # SSE reader for token streaming
 │   │   └── refine.ts    # 2-pass prompt critique and expansion engine

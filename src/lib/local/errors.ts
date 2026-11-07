@@ -64,3 +64,15 @@ export class MissingCasBaselineError extends LocalStorageError {
     this.name = 'MissingCasBaselineError';
   }
 }
+
+export class UnresolvedConflictMarkersError extends LocalStorageError {
+  public readonly status = 422;
+
+  constructor(entityId: string) {
+    super(
+      `Document '${entityId}' still contains unresolved 3-way merge conflict markers (<<<<<<<, =======, >>>>>>>) and cannot be synced until resolved`,
+      'UNRESOLVED_CONFLICT_MARKERS',
+    );
+    this.name = 'UnresolvedConflictMarkersError';
+  }
+}

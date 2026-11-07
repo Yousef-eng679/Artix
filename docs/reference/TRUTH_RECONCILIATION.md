@@ -111,5 +111,5 @@ In accordance with Section 2 of the Artix Documentation Recovery Plan:
   - This is a **local storage separation and lifecycle management mechanism**, not encryption or cryptographic isolation.
   - True cryptographic security is provided by:
     1. **Supabase RLS & JWTs**: PostgreSQL Row Level Security checks `auth.uid() = user_id` for all network requests.
-    2. **Client-Side Key Encryption (`src/lib/ai/crypto.ts`)**: User-supplied third-party AI keys (OpenAI, Anthropic, Gemini) are encrypted using PBKDF2 (100,000 iterations) and AES-GCM 256-bit with user passphrases in `localStorage`.
+    2. **Client-Side Key Encryption (`src/lib/ai/crypto.ts`)**: User-supplied third-party AI keys (OpenAI, Anthropic, Gemini) are encrypted using PBKDF2 (600,000 iterations v:2; legacy v:1 250,000) and AES-GCM 256-bit with user passphrases in `localStorage`.
 - **Documentation Standard**: Categorize `getUserScopeHash` as namespace separation, and accurately locate cryptographic boundaries at RLS and BYOK client encryption.

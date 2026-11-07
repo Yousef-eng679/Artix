@@ -1,6 +1,8 @@
 import { OutboxEntry } from '@/lib/local/types';
+import { UnresolvedConflictMarkersError } from '@/lib/local/errors';
 import { EntityPushAdapter, PushResult } from './types';
 import { withTimeout } from '../transportTimeout';
+import { ConflictResolver } from '../conflictResolver';
 import {
   checkIdempotency,
   executeAtomicMutation,
@@ -10,6 +12,16 @@ import {
 
 export class DocumentPushAdapter implements EntityPushAdapter {
   async push(entry: OutboxEntry, supabase: any): Promise<PushResult | null> {
+    if (entry.operation === 'create' || entry.operation === 'update') {
+      const content = (entry.payload as Record<string, unknown> | null)?.content;
+      if (
+        typeof content === 'string' &&
+        ConflictResolver.hasUnresolvedConflictMarkers(content)
+      ) {
+        throw new UnresolvedConflictMarkersError(entry.entityId);
+      }
+    }
+
     // Primary atomic server path (Audit F-003, C-01, C-02, S-04):
     // Validates CAS baseline fail-closed and executes inside a single PostgreSQL
     // transaction via public.apply_sync_mutation whenever supabase.rpc exists.

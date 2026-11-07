@@ -179,7 +179,8 @@ export function ConflictResolutionModal({ conflicts, open, onOpenChange }: Confl
     setMergeText(suggestion.mergedText);
   };
 
-  const mergeHasMarkers = mergeText !== null && CONFLICT_MARKER.test(mergeText);
+  const mergeHasMarkers =
+    mergeText !== null && ConflictResolver.hasUnresolvedConflictMarkers(mergeText);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>

@@ -7,6 +7,7 @@ export type SyncErrorCode =
   | 'FORBIDDEN'
   | 'NOT_FOUND'
   | 'VALIDATION_FAILED'
+  | 'UNRESOLVED_CONFLICT_MARKERS'
   | 'DUPLICATE_NAME'
   | 'CONFLICT'
   | 'SERVER_ERROR'
@@ -137,6 +138,18 @@ export function classifySyncError(error: unknown): ClassifiedSyncError {
       message,
       retryable: false,
       status: status ?? 403,
+      rawError: error,
+    };
+  }
+
+  // 0d. Unresolved 3-way conflict markers guard (TASK-22)
+  if (rawCode === 'UNRESOLVED_CONFLICT_MARKERS') {
+    return {
+      code: 'UNRESOLVED_CONFLICT_MARKERS',
+      category: 'UNRESOLVED_CONFLICT_MARKERS',
+      message: message || 'Document contains unresolved conflict markers',
+      retryable: false,
+      status: status || 422,
       rawError: error,
     };
   }

@@ -45,7 +45,7 @@ The technical architecture of Artix is structured into focused, authoritative sp
 
 - **[Security Model & Threat Analysis](./security/SECURITY_MODEL.md)**: Comprehensive threat matrix, trust boundaries, and public vulnerability reporting guidelines.
 - **[Row Level Security (RLS) & Auth Architecture](./security/RLS_AND_AUTH.md)**: Complete SQL policies for multi-tenant isolation across all tables.
-- **[Client-Side BYOK Key Encryption & Storage](./security/CLIENT_KEY_STORAGE.md)**: Web Cryptography API implementation using PBKDF2 (100,000 iterations) and AES-GCM 256-bit.
+- **[Client-Side BYOK Key Encryption & Storage](./security/CLIENT_KEY_STORAGE.md)**: Web Cryptography API implementation using PBKDF2 (600,000 iterations v:2; legacy v:1 250,000) and AES-GCM 256-bit.
 
 ---
 

@@ -8,6 +8,7 @@ import {
   LocalWorkspaceFolder,
 } from '../local/types';
 import { ConflictResolver } from '../sync/conflictResolver';
+import { UnresolvedConflictMarkersError } from '../local/errors';
 
 export interface RecordConflictParams {
   entityType: EntityType;
@@ -567,7 +568,29 @@ export class ConflictRepository {
             throw new Error(`Document ${entityId} not found`);
           }
 
-          const mergedContent = params.mergedContent ?? existing.content;
+          let mergedContent = params.mergedContent;
+          if (mergedContent === undefined) {
+            const baseContent =
+              typeof (conflict.basePayload as any)?.content === 'string'
+                ? (conflict.basePayload as any).content
+                : '';
+            const localContent =
+              typeof (conflict.localPayload as any)?.content === 'string'
+                ? (conflict.localPayload as any).content
+                : existing.content;
+            const remoteContent =
+              typeof (remote as any)?.content === 'string' ? (remote as any).content : '';
+            mergedContent = ConflictResolver.mergeDocumentText(
+              baseContent,
+              localContent,
+              remoteContent,
+            ).mergedText;
+          }
+
+          if (ConflictResolver.hasUnresolvedConflictMarkers(mergedContent)) {
+            throw new UnresolvedConflictMarkersError(entityId);
+          }
+
           const nextRevision = existing.localRevision + 1;
           await this.db.documents.put({
             ...existing,
