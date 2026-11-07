@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useEffect, useState, useMemo, useRef, ReactNode } from 'react';
+import { QueryClientContext } from '@tanstack/react-query';
 import { useAuth } from '@/hooks/useAuth';
 import {
   UserSyncRuntime,
@@ -16,7 +17,8 @@ import { OutboxRepository } from '@/lib/repositories/outboxRepository';
 import { SyncEngine } from '@/lib/sync/syncEngine';
 import { TabCoordinator } from '@/lib/sync/tabCoordinator';
 import { RealtimeSyncManager } from '@/lib/sync/realtimeSync';
-import { ArtixDB } from '@/lib/local/db';
+import { ArtixDB, setActiveUserScope } from '@/lib/local/db';
+import { dirtyTracker } from '@/lib/workspace/dirtyTracker';
 
 export interface UserSyncRuntimeContextType {
   runtime: UserSyncRuntime | null;
@@ -39,10 +41,12 @@ export const UserSyncRuntimeContext = createContext<UserSyncRuntimeContextType |
 
 export function UserSyncRuntimeProvider({ children }: { children: ReactNode }) {
   const auth = useAuth();
+  const queryClient = useContext(QueryClientContext);
   const { user, loading: authLoading } = auth;
   const shouldPauseCloudSync = Boolean(auth.isOfflineSession || auth.reauthRequired);
   const shouldPauseCloudSyncRef = useRef(shouldPauseCloudSync);
   shouldPauseCloudSyncRef.current = shouldPauseCloudSync;
+  const prevUserIdRef = useRef<string | null>(null);
 
   const [runtime, setRuntime] = useState<UserSyncRuntime | null>(() => getActiveUserRuntime() ?? null);
   const [runtimeStatus, setRuntimeStatus] = useState<RuntimeStatus | null>(() => getActiveUserRuntime()?.getStatus() ?? null);
@@ -54,7 +58,15 @@ export function UserSyncRuntimeProvider({ children }: { children: ReactNode }) {
 
     if (authLoading) return;
 
-    if (!user?.id) {
+    const nextUserId = user?.id ?? null;
+    if (prevUserIdRef.current !== null && prevUserIdRef.current !== nextUserId) {
+      queryClient?.clear();
+      dirtyTracker.clear();
+    }
+    prevUserIdRef.current = nextUserId;
+
+    if (!nextUserId) {
+      setActiveUserScope(null);
       closeUserRuntime().then(() => {
         if (!isCancelled) {
           setRuntime(null);
@@ -68,11 +80,12 @@ export function UserSyncRuntimeProvider({ children }: { children: ReactNode }) {
       };
     }
 
+    setActiveUserScope(nextUserId);
     setIsReady(false);
     setOpenError(null);
     const openPromise = shouldPauseCloudSyncRef.current
-      ? openUserRuntime(user.id, { cloudSyncPaused: true })
-      : openUserRuntime(user.id);
+      ? openUserRuntime(nextUserId, { cloudSyncPaused: true })
+      : openUserRuntime(nextUserId);
 
     openPromise
       .then((active) => {
@@ -111,7 +124,7 @@ export function UserSyncRuntimeProvider({ children }: { children: ReactNode }) {
     return () => {
       isCancelled = true;
     };
-  }, [user?.id, authLoading]);
+  }, [user?.id, authLoading, queryClient]);
 
   // Dynamically pause/resume cloud sync when offline session refreshes online
   useEffect(() => {

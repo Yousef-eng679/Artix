@@ -158,8 +158,14 @@ export async function closeArtixDB(dbName = 'ArtixDB'): Promise<void> {
  * Safely closes and evicts a user's database instance from the cache.
  */
 export async function closeUserArtixDB(userId?: string | null): Promise<void> {
-  const dbName = getUserDbName(userId);
+  const trimmed = userId?.trim() || null;
+  const dbName = getUserDbName(trimmed);
   await closeArtixDB(dbName);
+  if (trimmed && activeUserScope === trimmed) {
+    activeUserScope = null;
+  } else if (!trimmed) {
+    activeUserScope = null;
+  }
 }
 
 /**

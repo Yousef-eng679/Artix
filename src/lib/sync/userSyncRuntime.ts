@@ -1,5 +1,12 @@
 import { supabase as defaultSupabaseClient } from '@/integrations/supabase/client';
-import { ArtixDB, getUserArtixDB, migrateLegacyArtixDB, MigrationResult } from '../local/db';
+import {
+  ArtixDB,
+  closeUserArtixDB,
+  getUserArtixDB,
+  migrateLegacyArtixDB,
+  MigrationResult,
+  setActiveUserScope,
+} from '../local/db';
 import { ProjectRepository } from '../repositories/projectRepository';
 import { DocumentRepository } from '../repositories/documentRepository';
 import { WorkspaceFolderRepository } from '../repositories/folderRepository';
@@ -8,9 +15,10 @@ import { OutboxRepository } from '../repositories/outboxRepository';
 import { SyncMetadataRepository } from '../repositories/syncMetadataRepository';
 import { ConflictRepository } from '../repositories/conflictRepository';
 import { PullEngine } from './pullEngine';
-import { SyncEngine } from './syncEngine';
-import { TabCoordinator, getTabCoordinator } from './tabCoordinator';
+import { SyncEngine, evictSyncEngine } from './syncEngine';
+import { TabCoordinator, evictTabCoordinator, getTabCoordinator } from './tabCoordinator';
 import { RealtimeSyncManager } from './realtimeSync';
+import { dirtyTracker } from '../workspace/dirtyTracker';
 
 export type RuntimeState = 'uninitialized' | 'starting' | 'running' | 'degraded' | 'errored' | 'stopped';
 
@@ -345,7 +353,13 @@ export class UserSyncRuntime {
    * destroys listeners, and cleanly closes the user's IndexedDB connection.
    */
   async stop(): Promise<void> {
-    if (!this.isStarted && this.state === 'stopped') return;
+    if (!this.isStarted && this.state === 'stopped') {
+      evictSyncEngine(this.userId);
+      evictTabCoordinator(this.userId);
+      await closeUserArtixDB(this.userId);
+      dirtyTracker.clear();
+      return;
+    }
 
     if (this.unsubCrossTab) {
       this.unsubCrossTab();
@@ -354,11 +368,15 @@ export class UserSyncRuntime {
 
     this.realtimeSync.stop();
     this.syncEngine.destroy();
+    evictSyncEngine(this.userId);
     this.tabCoordinator.destroy();
+    evictTabCoordinator(this.userId);
 
     if (this.db.isOpen()) {
       this.db.close();
     }
+    await closeUserArtixDB(this.userId);
+    dirtyTracker.clear();
 
     this.isStarted = false;
     this.state = 'stopped';
@@ -445,6 +463,14 @@ export async function closeUserRuntime(userId?: string): Promise<void> {
       await activeRuntime.stop();
       activeRuntime = null;
     }
+  } else if (userId) {
+    evictSyncEngine(userId);
+    evictTabCoordinator(userId);
+    await closeUserArtixDB(userId);
+    dirtyTracker.clear();
+  } else {
+    setActiveUserScope(null);
+    dirtyTracker.clear();
   }
   await clearSensitiveBrowserCaches();
 }

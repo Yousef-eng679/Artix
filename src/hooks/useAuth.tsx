@@ -1,7 +1,10 @@
 import { useState, useEffect, createContext, useContext, ReactNode, useRef, useCallback } from 'react';
+import { QueryClientContext } from '@tanstack/react-query';
 import { User, Session } from '@supabase/supabase-js';
 import { supabase } from '@/integrations/supabase/client';
 import { clearSensitiveBrowserCaches } from '@/lib/sync/userSyncRuntime';
+import { setActiveUserScope } from '@/lib/local/db';
+import { dirtyTracker } from '@/lib/workspace/dirtyTracker';
 import {
   clearStoredSupabaseSession,
   isFatalAuthRevocationError,
@@ -27,6 +30,9 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
+  const queryClient = useContext(QueryClientContext);
+  const queryClientRef = useRef(queryClient);
+  queryClientRef.current = queryClient;
   const [user, setUser] = useState<User | null>(null);
   const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(true);
@@ -37,6 +43,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const isMountedRef = useRef(true);
   const isOfflineSessionRef = useRef(false);
   const explicitSignOutRef = useRef(false);
+  const lastUserIdRef = useRef<string | null>(null);
 
   const updateOfflineSession = useCallback((next: boolean) => {
     isOfflineSessionRef.current = next;
@@ -113,6 +120,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           }
 
           explicitSignOutRef.current = false;
+          lastUserIdRef.current = null;
+          setActiveUserScope(null);
+          queryClientRef.current?.clear();
+          dirtyTracker.clear();
           updateOfflineSession(false);
           setReauthRequired(false);
           setSession(null);
@@ -127,6 +138,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         }
 
         explicitSignOutRef.current = false;
+        const nextUserId = newSession?.user?.id ?? null;
+        if (lastUserIdRef.current !== null && lastUserIdRef.current !== nextUserId) {
+          queryClientRef.current?.clear();
+          dirtyTracker.clear();
+        }
+        lastUserIdRef.current = nextUserId;
+        setActiveUserScope(nextUserId);
         setSession(newSession);
         setUser(newSession?.user ?? null);
 
@@ -249,6 +267,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const signOut = async () => {
     explicitSignOutRef.current = true;
+    lastUserIdRef.current = null;
+    setActiveUserScope(null);
+    queryClientRef.current?.clear();
+    dirtyTracker.clear();
     if (refreshTimerRef.current) {
       clearTimeout(refreshTimerRef.current);
       refreshTimerRef.current = null;

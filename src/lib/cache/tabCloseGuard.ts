@@ -1,8 +1,11 @@
+import { clearDraft, setDraft } from './draftRecovery';
+
 /**
  * tabCloseGuard.ts
  * ────────────────
  * Flushes unsaved (dirty) document or canvas content synchronously into local
- * crash-recovery storage (`localStorage`) when the user closes or reloads the tab.
+ * user-scoped crash-recovery storage (`localStorage`) when the user closes or
+ * reloads the tab.
  *
  * Strictly offline-first (OF-14): NEVER issues network beacon or `fetch`
  * requests to server endpoints, keeping all unsaved drafts local.
@@ -20,7 +23,7 @@ export interface TabCloseGuard {
 }
 
 export function createTabCloseGuard(
-  onFlushLocal?: ((entityId: string, content: string) => void) | string
+  onFlushLocal?: ((entityId: string, content: string) => void) | string,
 ): TabCloseGuard {
   const dirtyDocs = new Map<string, string>();
   const flushCallback = typeof onFlushLocal === 'function' ? onFlushLocal : undefined;
@@ -31,23 +34,11 @@ export function createTabCloseGuard(
 
   function markClean(entityId: string): void {
     dirtyDocs.delete(entityId);
-    try {
-      if (typeof localStorage !== 'undefined') {
-        localStorage.removeItem(`artix.draft.${entityId}`);
-      }
-    } catch {
-      // Ignore storage errors
-    }
+    clearDraft(entityId);
   }
 
   function flushOne(entityId: string, content: string): void {
-    try {
-      if (typeof localStorage !== 'undefined') {
-        localStorage.setItem(`artix.draft.${entityId}`, content);
-      }
-    } catch {
-      // Best-effort local draft persistence during unload
-    }
+    setDraft(entityId, content);
 
     if (flushCallback) {
       try {

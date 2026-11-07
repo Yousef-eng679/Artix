@@ -36,6 +36,7 @@ export class TabCoordinator {
   private syncRequestListeners = new Set<() => void>();
   private leadershipChangeListeners = new Set<(isLeader: boolean) => void>();
   private recentEvents = new Map<string, number>();
+  private destroyed = false;
 
   constructor(channelName?: string, userScope = 'default') {
     this.userScope = userScope;
@@ -52,6 +53,10 @@ export class TabCoordinator {
 
   isLeaderTab(): boolean {
     return this.isLeader;
+  }
+
+  isCoordinatorDestroyed(): boolean {
+    return this.destroyed;
   }
 
   /**
@@ -281,6 +286,7 @@ export class TabCoordinator {
    * Cleans up channel and releases leader lock.
    */
   destroy(): void {
+    this.destroyed = true;
     if (this.lockAbortController) {
       this.lockAbortController.abort();
       this.lockAbortController = null;
@@ -312,11 +318,20 @@ const userCoordinators = new Map<string, TabCoordinator>();
 export function getTabCoordinator(userId?: string | null): TabCoordinator {
   const scope = userId ? getUserScopeHash(userId) : 'default';
   let coordinator = userCoordinators.get(scope);
-  if (!coordinator) {
+  if (!coordinator || coordinator.isCoordinatorDestroyed()) {
     coordinator = new TabCoordinator(undefined, scope);
     userCoordinators.set(scope, coordinator);
   }
   return coordinator;
+}
+
+export function evictTabCoordinator(userId?: string | null): void {
+  const scope = userId ? getUserScopeHash(userId) : 'default';
+  const existing = userCoordinators.get(scope);
+  if (existing) {
+    existing.destroy();
+    userCoordinators.delete(scope);
+  }
 }
 
 export function resetTabCoordinatorsForTesting(): void {

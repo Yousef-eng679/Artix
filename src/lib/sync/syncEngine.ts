@@ -901,7 +901,7 @@ const syncEngineInstances = new Map<string, SyncEngine>();
 export function getSyncEngine(userId?: string | null): SyncEngine {
   const scope = userId ? getUserScopeHash(userId) : 'default';
   let engine = syncEngineInstances.get(scope);
-  if (!engine) {
+  if (!engine || (engine as any).isDestroyed) {
     const userDb = userId ? getUserArtixDB(userId) : undefined;
     engine = new SyncEngine({
       userId: userId ?? undefined,
@@ -913,4 +913,20 @@ export function getSyncEngine(userId?: string | null): SyncEngine {
     syncEngineInstances.set(scope, engine);
   }
   return engine;
+}
+
+export function evictSyncEngine(userId?: string | null): void {
+  const scope = userId ? getUserScopeHash(userId) : 'default';
+  const existing = syncEngineInstances.get(scope);
+  if (existing) {
+    existing.destroy();
+    syncEngineInstances.delete(scope);
+  }
+}
+
+export function resetSyncEnginesForTesting(): void {
+  for (const engine of syncEngineInstances.values()) {
+    engine.destroy();
+  }
+  syncEngineInstances.clear();
 }

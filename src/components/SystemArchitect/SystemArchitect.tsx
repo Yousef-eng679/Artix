@@ -29,7 +29,7 @@ import dagre from '@dagrejs/dagre';
 import { createDebouncedSaver, type DebouncedSaver } from '@/lib/cache/debouncedSave';
 import { createTabCloseGuard, type TabCloseGuard } from '@/lib/cache/tabCloseGuard';
 import { createSaveQueue, type SaveQueue } from '@/lib/cache/saveQueue';
-import { getRecoverableBoardDraft } from '@/lib/cache/draftRecovery';
+import { clearDraft, getRecoverableBoardDraft } from '@/lib/cache/draftRecovery';
 import { dirtyTracker } from '@/lib/workspace/dirtyTracker';
 import { StaleBufferError } from '@/lib/local/errors';
 import { Button } from '@/components/ui/button';
@@ -206,7 +206,7 @@ export function SystemArchitect({
         try {
           setSaveStatus('saving');
           await queueRef.current!.enqueue({ id: design.id, content });
-          guardRef.current!.markClean(design.id);
+          guardRef.current!.markClean(`design-${design.id}`);
           dirtyTracker.markClean(design.id);
           setSaveStatus('saved');
           setTimeout(() => setSaveStatus('idle'), 2000);
@@ -253,17 +253,13 @@ export function SystemArchitect({
       if (saverRef.current?.hasPending()) {
         saverRef.current.cancel();
       }
-      try {
-        localStorage.removeItem(`artix.draft.design-${design.id}`);
-      } catch {
-        // ignore
-      }
-      guardRef.current?.markClean(design.id);
+      clearDraft(`design-${design.id}`);
+      guardRef.current?.markClean(`design-${design.id}`);
       dirtyTracker.markClean(design.id);
       return;
     }
 
-    guardRef.current!.markDirty(design.id, serialized);
+    guardRef.current!.markDirty(`design-${design.id}`, serialized);
     dirtyTracker.markDirty(design.id);
     saverRef.current!.save(serialized);
   }, [nodes, edges, strokes, design.id, isDragging]);
@@ -341,12 +337,8 @@ export function SystemArchitect({
   const handleLoadRemote = useCallback(() => {
     const target = staleRef.current || latestPropDesignRef.current;
     saverRef.current?.cancel();
-    try {
-      localStorage.removeItem(`artix.draft.design-${design.id}`);
-    } catch {
-      // ignore
-    }
-    guardRef.current?.markClean(design.id);
+    clearDraft(`design-${design.id}`);
+    guardRef.current?.markClean(`design-${design.id}`);
     dirtyTracker.markClean(design.id);
 
     const incomingSerialized = serializeBoardCanonical(target.board_state);
@@ -389,12 +381,8 @@ export function SystemArchitect({
         name: designNameRef.current,
         serializedBoard: serialized,
       };
-      try {
-        localStorage.removeItem(`artix.draft.design-${design.id}`);
-      } catch {
-        // ignore
-      }
-      guardRef.current?.markClean(design.id);
+      clearDraft(`design-${design.id}`);
+      guardRef.current?.markClean(`design-${design.id}`);
       dirtyTracker.markClean(design.id);
       setSaveStatus('saved');
       setTimeout(() => setSaveStatus('idle'), 2000);
@@ -620,7 +608,8 @@ export function SystemArchitect({
         name: designNameRef.current,
         serializedBoard: serialized,
       };
-      guardRef.current?.markClean(design.id);
+      clearDraft(`design-${design.id}`);
+      guardRef.current?.markClean(`design-${design.id}`);
       dirtyTracker.markClean(design.id);
       setSaveStatus('saved');
       toast.success('Design saved');

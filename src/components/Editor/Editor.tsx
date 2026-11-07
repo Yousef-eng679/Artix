@@ -6,7 +6,7 @@ import { EditorToolbar } from './EditorToolbar';
 import { MarkdownPreview } from './MarkdownPreview';
 import { DocumentFormat, getLanguageConfig } from './languageMap';
 import { useAutoSave } from '@/lib/autosave';
-import { getRecoverableDraft } from '@/lib/cache/draftRecovery';
+import { clearDraft, getRecoverableDraft } from '@/lib/cache/draftRecovery';
 import { dirtyTracker } from '@/lib/workspace/dirtyTracker';
 import { StaleBufferError } from '@/lib/local/errors';
 import { motion } from 'framer-motion';
@@ -219,11 +219,7 @@ export function Editor({ document, onSave, onSaveAsCopy, onBack, projectId }: Ed
   const handleLoadRemote = useCallback(() => {
     const target = staleRef.current || latestPropDocRef.current;
     cancelSave();
-    try {
-      localStorage.removeItem(`artix.draft.${document.id}`);
-    } catch {
-      // ignore storage errors
-    }
+    clearDraft(document.id);
     dirtyTracker.markClean(document.id);
 
     contentRef.current = target.content;

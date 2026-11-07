@@ -1,8 +1,17 @@
 import { useSyncExternalStore } from 'react';
 import { ResourceKind } from '@/types/workspace';
 import { getDraft } from '@/lib/cache/draftRecovery';
+import { getActiveUserScope, getUserScopeHash } from '@/lib/local/db';
 
 type Listener = () => void;
+
+function getScopedDirtyKey(resourceId: string): string {
+  const scope = getActiveUserScope()?.trim();
+  if (scope) {
+    return `${getUserScopeHash(scope)}:${resourceId}`;
+  }
+  return resourceId;
+}
 
 class DirtyTracker {
   private dirtyIds = new Set<string>();
@@ -10,26 +19,29 @@ class DirtyTracker {
 
   markDirty(resourceId: string): void {
     if (!resourceId) return;
-    if (!this.dirtyIds.has(resourceId)) {
-      this.dirtyIds.add(resourceId);
+    const key = getScopedDirtyKey(resourceId);
+    if (!this.dirtyIds.has(key)) {
+      this.dirtyIds.add(key);
       this.notify();
     }
   }
 
   markClean(resourceId: string): void {
     if (!resourceId) return;
-    if (this.dirtyIds.has(resourceId)) {
-      this.dirtyIds.delete(resourceId);
+    const key = getScopedDirtyKey(resourceId);
+    if (this.dirtyIds.has(key)) {
+      this.dirtyIds.delete(key);
       this.notify();
     }
   }
 
   isDirty(resourceId: string, kind?: ResourceKind): boolean {
     if (!resourceId) return false;
-    if (this.dirtyIds.has(resourceId)) {
+    const key = getScopedDirtyKey(resourceId);
+    if (this.dirtyIds.has(key)) {
       return true;
     }
-    // Check localStorage draft
+    // Check user-scoped localStorage draft
     if (kind === 'design') {
       const draft = getDraft(`design-${resourceId}`);
       return Boolean(draft && draft.trim().length > 0);

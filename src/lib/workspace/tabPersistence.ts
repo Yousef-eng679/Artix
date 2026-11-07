@@ -1,8 +1,13 @@
 import { WorkspaceTab } from '@/types/workspace';
+import { getActiveUserScope, getUserScopeHash } from '@/lib/local/db';
 
 export const TAB_STORAGE_KEY_PREFIX = 'artix.workspace.tabs.';
 
-export function getTabStorageKey(projectId: string): string {
+export function getTabStorageKey(projectId: string, userId?: string | null): string {
+  const scopeUser = (userId !== undefined ? userId : getActiveUserScope())?.trim();
+  if (scopeUser) {
+    return `${TAB_STORAGE_KEY_PREFIX}${getUserScopeHash(scopeUser)}.${projectId}`;
+  }
   return `${TAB_STORAGE_KEY_PREFIX}${projectId}`;
 }
 
@@ -21,14 +26,14 @@ function isValidTab(item: unknown): item is WorkspaceTab {
 }
 
 /**
- * Loads persisted workspace tabs for a given project.
+ * Loads persisted workspace tabs for a given project (scoped by active user when present).
  * Returns null if no tabs are persisted or if data is corrupt.
  */
-export function loadWorkspaceTabs(projectId: string): WorkspaceTab[] | null {
+export function loadWorkspaceTabs(projectId: string, userId?: string | null): WorkspaceTab[] | null {
   if (!projectId) return null;
 
   try {
-    const raw = localStorage.getItem(getTabStorageKey(projectId));
+    const raw = localStorage.getItem(getTabStorageKey(projectId, userId));
     if (!raw) return null;
 
     const parsed: unknown = JSON.parse(raw);
@@ -45,10 +50,14 @@ export function loadWorkspaceTabs(projectId: string): WorkspaceTab[] | null {
 }
 
 /**
- * Persists open workspace tabs for a given project.
+ * Persists open workspace tabs for a given project (scoped by active user when present).
  * Silently catches quota/storage exceptions so UI never crashes.
  */
-export function saveWorkspaceTabs(projectId: string, tabs: WorkspaceTab[]): void {
+export function saveWorkspaceTabs(
+  projectId: string,
+  tabs: WorkspaceTab[],
+  userId?: string | null,
+): void {
   if (!projectId) return;
 
   try {
@@ -59,7 +68,7 @@ export function saveWorkspaceTabs(projectId: string, tabs: WorkspaceTab[]): void
         resourceId: t.resourceId,
       })),
     );
-    localStorage.setItem(getTabStorageKey(projectId), serialized);
+    localStorage.setItem(getTabStorageKey(projectId, userId), serialized);
   } catch (err) {
     console.warn(`[tabPersistence] Failed to save tabs for project ${projectId}:`, err);
   }
@@ -68,11 +77,11 @@ export function saveWorkspaceTabs(projectId: string, tabs: WorkspaceTab[]): void
 /**
  * Clears persisted workspace tabs for a given project.
  */
-export function clearWorkspaceTabs(projectId: string): void {
+export function clearWorkspaceTabs(projectId: string, userId?: string | null): void {
   if (!projectId) return;
 
   try {
-    localStorage.removeItem(getTabStorageKey(projectId));
+    localStorage.removeItem(getTabStorageKey(projectId, userId));
   } catch (err) {
     console.warn(`[tabPersistence] Failed to clear tabs for project ${projectId}:`, err);
   }
