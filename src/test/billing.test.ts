@@ -47,8 +47,8 @@ describe('Stripe Billing & Plan Limits Configuration', () => {
     expect(PLAN_PRICES.annual.amount).toBe(72);
   });
 
-  it('should specify a 7-day grace period for past due subscriptions', () => {
-    expect(GRACE_PERIOD_DAYS).toBe(7);
+  it('should specify strict fail-closed 0-day grace period for past due subscriptions (Decision A1)', () => {
+    expect(GRACE_PERIOD_DAYS).toBe(0);
   });
 
   describe('Audit F-002: Server-Side Stripe Price Allowlist & Webhook Entitlement Policy', () => {
@@ -269,8 +269,13 @@ describe('Stripe Billing & Plan Limits Configuration', () => {
         path.resolve(process.cwd(), 'supabase/functions/stripe-webhook/index.ts'),
         'utf8'
       );
+      const policyFn = fs.readFileSync(
+        path.resolve(process.cwd(), 'supabase/functions/_shared/billingPolicy.ts'),
+        'utf8'
+      );
       expect(webhookFn).toContain('validateSubscriptionEntitlement');
-      expect(webhookFn).toContain("onConflict: 'stripe_event_id', ignoreDuplicates: true");
+      expect(webhookFn).toContain('reconcileStripeWebhookEvent');
+      expect(policyFn).toContain('reconcile_stripe_subscription');
       expect(webhookFn).toContain('status: 500');
     });
   });

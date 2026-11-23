@@ -1,5 +1,7 @@
 # Security Policy & Threat Model — Artix
 
+> **Documentation Version**: v2.5.0 — Productionized Billing, Strict CAS & True Offline-First Architecture
+
 This document details the security architecture, data isolation guarantees, threat model, and cryptographic implementations of the Artix platform.
 
 ---
@@ -10,23 +12,25 @@ Artix operates with a strict partition between two categories of user data:
 
 | Data Category | Examples | Storage Location | Custody & Access |
 |:---|:---|:---|:---|
-| **Account & Workspace Data** | User profiles, projects, documents, system architecture boards, subscription status | Supabase Cloud (PostgreSQL) | Multi-tenant database guarded by PostgreSQL Row Level Security (RLS). Encrypted at rest (AES-256). |
+| **Account & Workspace Data** | User profiles, `projects`, `workspace_folders`, `documents`, `system_designs`, AI generation logs, `subscriptions`, `manual_grants`, `sync_changes`, `processed_mutations` | Supabase Cloud (PostgreSQL 17) + User-Scoped Client IndexedDB (`ArtixDB_v2_<hash>`, schema v3) & `localStorage` (`getUserScopeHash`) | Multi-tenant cloud database guarded by PostgreSQL Row Level Security (RLS) and encrypted at rest (AES-256). Client IndexedDB and draft/tab `localStorage` keys are strictly partitioned per user ID hash, with legacy browser caches purged via `clearSensitiveBrowserCaches()` on boot, account switch, and sign-out. |
 | **User AI Credentials (BYOK)** | OpenAI, Anthropic, Google Gemini, Groq, OpenRouter API keys | Client Browser (`localStorage` & RAM) | **Zero-Knowledge / Client-Side Only.** Keys are stored solely on the user's device and are never transmitted to Artix servers or Supabase. |
 
 ---
 
 ## 2. Account Data Protections
 
-### A. Row Level Security (RLS)
-All application tables (`projects`, `documents`, `system_designs`, `subscriptions`, `stripe_events`) have PostgreSQL Row Level Security enabled.
-- Every read, insert, update, and delete operation is scoped to `auth.uid() = user_id`.
-- Users can never query or modify records belonging to other tenants.
-- Database foreign keys enforce `ON DELETE CASCADE` referencing `auth.users(id)`.
+### A. Row Level Security (RLS) & Function Privilege Hardening
+All **14** `public` schema tables (`projects`, `documents`, `system_designs`, `workspace_folders`, `profiles`, `prd_generations`, `vibe_generations`, `agentic_workflows`, `subscriptions`, `stripe_events`, `manual_grants`, `processed_mutations`, `sync_changes`, and `sync_retention_state`) have PostgreSQL Row Level Security enabled:
+- Every client read, insert, update, and delete operation on user-owned tables is scoped to `auth.uid() = user_id`; users can never query or modify records belonging to other tenants.
+- `public.stripe_events` and `public.sync_retention_state` have RLS enabled with zero `anon` or `authenticated` policies (accessible exclusively to `service_role` and internal database maintenance routines).
+- `public.manual_grants` permits `authenticated` `SELECT` on the caller's own row (`auth.uid() = user_id`) while restricting all writes to `service_role`.
+- `public.apply_sync_mutation` executes as `SECURITY INVOKER` so all sync mutations inherit caller RLS, while `SECURITY DEFINER` trigger functions (`check_plan_tier_limit`, `record_sync_change`, `handle_new_user`) enforce pinned `SET search_path = public` and `REVOKE ALL ... FROM PUBLIC, anon, authenticated`.
+- Database foreign keys enforce `ON DELETE CASCADE` referencing `auth.users(id)`, and `check_plan_tier_limit()` serializes per-user quota checks via `pg_advisory_xact_lock` across workspace entities and monthly AI generation tables.
 
-### B. Payment, Price Allowlist & Webhook Cryptographic Verification
+### B. Payment, Price Allowlist & Atomic Webhook Reconciliation
 - Checkout session creation (`/functions/v1/create-checkout-session`) validates requested plans against an authoritative server-owned Stripe Price ID allowlist (`supabase/functions/_shared/billingPolicy.ts`) before calling Stripe.
-- Stripe billing webhooks (`/functions/v1/stripe-webhook`) verify the cryptographic `Stripe-Signature` header via `constructEventAsync` AND validate the purchased subscription's price ID, interval, and status before granting `pro` entitlement.
-- Webhook idempotency is enforced via conflict-safe `public.stripe_events` upserts after state writes succeed.
+- Stripe billing webhooks (`/functions/v1/stripe-webhook`) verify the cryptographic `Stripe-Signature` header via `constructEventAsync`, perform a live `stripe.subscriptions.retrieve()` lookup, and evaluate `validateSubscriptionEntitlement()` under a strict **fail-closed** policy: `past_due`, `unpaid`, `canceled`, `incomplete`, `incomplete_expired`, and `paused` all resolve to `plan_tier = 'free'`; only `active` or `trialing` subscriptions matching an allowlisted Pro price ID and billing interval grant `'pro'` (unless an active `public.manual_grants` row overrides).
+- Both `public.subscriptions` (guarded by monotonic `stripe_event_created_at` and `reconciliation_version` under a per-user `pg_advisory_xact_lock`) and `public.stripe_events` are committed atomically in a **single PostgreSQL RPC transaction** (`public.reconcile_stripe_subscription`, restricted to `service_role`). Any Stripe API or database error returns `HTTP 500` so Stripe retries webhook delivery.
 
 ### C. Origin Whitelist & Open Redirect Defense (Task §1.5)
 - Edge Functions (`create-checkout-session`, `create-portal-session`) validate `origin` and `return_url` against an allowed origin whitelist via `isOriginAllowed()`.
@@ -71,10 +75,10 @@ Artix features a Bring-Your-Own-Key (BYOK) model allowing users to connect their
 ### Cryptographic Implementation Specifications ([`src/lib/ai/crypto.ts`](./src/lib/ai/crypto.ts))
 - **Cipher:** `AES-256-GCM` authenticated symmetric encryption.
 - **Key Derivation Function:** `PBKDF2` with `SHA-256`.
-- **Iteration Count:** **250,000 rounds** (`PBKDF2_ITERATIONS = 250_000`).
+- **Iteration Count:** **600,000 rounds** for all `v: 2` saves (`PBKDF2_ITERATIONS_V2 = 600_000`), with backward-compatible decryption for legacy `v: 1` blobs (**250,000 rounds**, `PBKDF2_ITERATIONS_V1 = 250_000`).
 - **Salt Length:** 16 cryptographically secure random bytes (`crypto.getRandomValues`).
 - **IV Length:** 12 cryptographically secure random bytes per encryption.
-- **Envelope Format:** Versioned JSON `{ v: 1, salt: "<b64>", iv: "<b64>", ct: "<b64>" }`.
+- **Envelope Format:** Versioned JSON `{ v: 2, salt: "<b64>", iv: "<b64>", ct: "<b64>" }` (legacy `{ v: 1, ... }` transparently upgraded on next save).
 
 ### State Breakdown & Security Guarantees:
 1. **State 1: Unencrypted/Default:**

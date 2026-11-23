@@ -1,65 +1,65 @@
 # Testing Architecture & Verification Protocols
 
 > **Status**: `IMPLEMENTED`  
-> **Test Suite Count**: **81 test files passed (100%)**, **566 total tests green**
+> **Version**: `v2.5.0`  
+> **Test Suite Counts**: **107 Vitest files / 698 unit & fault-injection tests passing**, **6/6 PostgreSQL concurrency & RLS tests passing**, **18 Playwright Chromium E2E specs passing** (`2` live-endpoint checks skipped under dummy env)
 
 ---
 
-## 1. Testing Philosophy
+## 1. 4-Layer Verification Architecture
 
-In a local-first distributed system, testing individual functions in isolation is insufficient. The primary source of failure is **distributed asynchronous edge cases**: race conditions, network timeouts, offline edits, concurrent CAS mismatches, and multi-tab leadership changes.
+In a local-first distributed workspace with Stripe entitlements and offline PWA caching, isolated unit tests alone cannot prove end-to-end correctness. Artix enforces a **4-layer verification matrix** in `.github/workflows/ci.yml` (`lint`, `typecheck`, `test`, `postgres-concurrency`, `build`, `e2e`):
 
-Artix employs a multi-tiered testing strategy:
-1. **Unit Tests**: Pure algorithms (diff3, FNV-1a hash, outbox compaction algebra, error taxonomy).
-2. **Repository Integration Tests**: Atomic 3-table Dexie transactions on in-memory `fake-indexeddb`.
-3. **Component Interaction Tests**: Testing-library renders with React Query and Context providers.
-4. **Distributed Failure Matrix (`correctnessMatrix.test.ts`)**: 10 rigorous network and multi-tab simulation scenarios.
+1. **Layer 1 — Unit, Repository, Crypto & Component Suite (`npm run test`)**  
+   Executes pure algorithm suites (`diff3` 3-way merge, FNV-1a scoping, outbox compaction algebra, `errorTaxonomy`, `billingPolicy`, `PBKDF2` `v: 2` / `v: 1` compatibility, `sanitizeMarkdownUrl`), multi-table Dexie repository transactions on `fake-indexeddb`, React component/hook suites, and static architectural boundary guards (`src/test/architecture/networkBoundary.test.ts`).
+2. **Layer 2 — Controllable Fake-Server Distributed Fault Injection (`npm run test`)**  
+   Deterministic multi-client / multi-tab fault-injection harnesses (`src/test/sync/controllableFakeServerFaultInjection.test.ts` and `src/test/sync/correctnessMatrix.test.ts`) simulating dropped responses after server commit, duplicate replays, mid-flight crashes & Web Lock lease steals, per-entity causal barriers, HTTP `429` `Retry-After` backoff, and `sync_changes` retention-floor re-snapshots.
+3. **Layer 3 — Real PostgreSQL 17 Concurrency, CAS, Billing & RLS (`npm run test:pg`)**  
+   `src/test/postgres/backendConcurrencyAndRls.pg.test.ts` (`6/6` passing) boots a clean schema by applying all **25** SQL migrations in `supabase/migrations/` and executes concurrent barriers against real `postgres:17-alpine` via `pg.Pool` when `DATABASE_URL` is provided in CI, or embedded `@electric-sql/pglite` locally with zero external dependencies.
+4. **Layer 4 — Production PWA Playwright E2E (`npm run test:e2e`)**  
+   `playwright.config.ts` builds and serves the real production bundle (`npm run build && npm run preview` on `http://localhost:8080` with `serviceWorkers: 'allow'`), executing `tests/e2e/{auth,features,security,offlineColdStartAndSyncMatrix}.spec.ts` (`18` Chromium specs passing; `2` live-Supabase checks skipped when running against the hermetic dummy env).
 
 ---
 
 ## 2. Test Execution Commands
 
 ```bash
-# Run full Vitest test suite (all 81 test files)
-npx vitest run
+# Layer 1 & Layer 2: Full Vitest suite (107 files / 698 tests)
+npm run test
 
-# Run specific test file in watch mode
-npx vitest src/test/sync/correctnessMatrix.test.ts
+# Run a targeted fault-injection or sync matrix file
+npx vitest run src/test/sync/controllableFakeServerFaultInjection.test.ts
+npx vitest run src/test/sync/correctnessMatrix.test.ts
 
-# Run with coverage report
-npx vitest run --coverage
+# Layer 3: Real PostgreSQL / PGlite SQL migration, concurrency, CAS, billing & RLS suite (6/6 tests)
+npm run test:pg
 
-# Type-check without compiling
-npx tsc --noEmit
+# Layer 4: Production build + Workbox PWA + Playwright Chromium E2E suite
+npm run test:e2e
 
-# Lint check
+# Static analysis & TypeScript checks
 npm run lint
+npx tsc --noEmit
 ```
 
 ---
 
-## 3. Test Infrastructure & Mocking Guidelines (`src/test/setup.ts`)
+## 3. Test Infrastructure Guidelines (`src/test/setup.ts`)
 
-- **In-Memory IndexedDB**: Tests use `fake-indexeddb` to provide realistic, isolated IndexedDB databases in Node.js without disk pollution:
-  ```typescript
-  import 'fake-indexeddb/auto';
-  ```
-- **Web Locks Mock**: When running in Node.js, `TabCoordinator` falls back gracefully to single-process mode, with explicit `setLeaderForTesting(boolean)` helpers.
-- **Supabase Mocking**: Tests mock Supabase REST builders (`from('table').select().eq()`) using spy functions, accurately simulating HTTP 200, 409 Conflict, and network timeout exceptions.
+- **Isolated In-Memory IndexedDB**: `fake-indexeddb/auto` backs `ArtixDB` (`version(3)`) in Node.js without disk leakage between test cases.
+- **Hermetic Edge Function Guard**: `FunctionsClient.prototype.invoke` is intercepted in `src/test/setup.ts` so unit tests never leak live OS DNS/HTTP requests.
+- **Dual-Backend SQL Harness (`backendConcurrencyAndRls.pg.test.ts`)**: Uses `pg.Pool` with multi-connection barriers when `DATABASE_URL` is configured (CI `postgres:17-alpine` service container), and transparently falls back to `@electric-sql/pglite` for instant local developer runs.
 
 ---
 
-## 4. The 10 Distributed Failure Matrix Scenarios (`correctnessMatrix.test.ts`)
+## 4. Key Distributed & Backend Invariants Verified
 
-| Scenario | Modeled Failure Mode | Invariant Verified |
+| Verification Area | Scenarios Covered | Core Invariant Proven |
 |---|---|---|
-| **Scenario A** | Offline Create -> Edit -> Complete Database Restart | Local durability and revision monotonicity across browser restarts. |
-| **Scenario B** | Network Drop After Server Commit (Lost Response) | Idempotent retry using `mutationId` against `processed_mutations`. |
-| **Scenario C** | Concurrent Device Edits (Stale Baseline Version) | Server CAS mismatch detection, HTTP 409 throwing, outbox blocking, and 3-way conflict capture. |
-| **Scenario D** | Local User Edit During In-Flight Network Push | Revision-safe acknowledgment: acknowledging revision $N$ does not clobber pending revision $N+1$. |
-| **Scenario E** | Remote Stale Snapshot Arrives During Local Edit | Pending-state protection: remote change rejected from overwriting local unpushed draft. |
-| **Scenario F** | Entity Deleted Remotely on Server | Reconnecting client pulls `operation: 'delete'`, marks entity `REMOTE_CONFIRMED_DELETE` locally without outbox push loop. |
-| **Scenario G** | Leader Tab Crashes Mid-Push | Standby tab immediately claims expired lease and safely resumes synchronization. |
-| **Scenario H** | User Logout Followed by Immediate Different User Login | Complete database teardown, zero cross-user cache leakage, isolated user database opened. |
-| **Scenario I** | Total Supabase Realtime Outage | Cursor-based change feed pull guarantees 100% convergence without Realtime. |
-| **Scenario J** | Duplicate Change Event Delivery | Monotonic sequence cursor filters out previously processed events. |
+| **Idempotent Atomic CAS (`apply_sync_mutation`)** | Lost HTTP response after server commit; concurrent stale `p_base_version`; missing/invalid CAS baseline (`22023`) | Duplicate `mutationId` returns cached outcome without double-incrementing `version`; stale updates return structured `version_mismatch` / `remote_deleted` / `already_exists` conflicts. |
+| **Self-Echo & Revision Safety** | Local edit $N+1$ typed while push $N$ is in flight; subsequent `sync_changes` pull carrying own `mutation_id` | Push acknowledgement updates `serverVersion` while keeping `syncState = 'pending'`; `PullEngine` suppresses self-echoes via `lastAckedMutationId`. |
+| **Causal Barrier & Offline Project Graph** | Offline `create project` -> `create folder` -> `create document` + `create design` -> reconnect | `OutboxRepository.getPending({ readyOnly: true })` + topological ordering pushes parent `project` and `folder` before dependent children without FK violations. |
+| **Lease Fencing & Tab Crash Recovery** | Tab A crashes mid-push; Tab B acquires Web Lock / recovers stale lease; delayed Tab A promise resolves | `leaseToken` fencing prevents a stale tab from mutating `outbox` or `sync_metadata` after losing ownership. |
+| **Change-Feed Pruning & Re-Snapshot** | `prune_sync_changes()` advances `min_retained_sequence` past an offline client's `server_cursor` | `PullEngine.syncPull()` detects `cursor < minRetainedSequence` via `get_sync_feed_bounds()` and runs `resnapshotAll()` without resurrecting pending local deletes or clobbering dirty drafts. |
+| **Billing Reconciliation & Quota Triggers** | Out-of-order Stripe webhooks (`payment_failed` vs `invoice.paid`), duplicate `stripe_event_id`, `past_due` status, concurrent Free-tier inserts | `reconcile_stripe_subscription()` serializes updates, enforces `GRACE_PERIOD_DAYS = 0` (`past_due` -> `'free'`), honors `manual_grants`, and `check_plan_tier_limit()` enforces `3` projects / `10` docs / `3` designs / `5` monthly AI runs on Free (`100` projects on Pro). |
+| **PWA Offline Cold-Start Continuity** | Hard reload (`page.reload()`) with `context.setOffline(true)` and an expired cached JWT | Service Worker serves precached shell + bundled Monaco + local fonts (`0` external CDN requests), `recoverOfflineSessionFromStorage()` restores user workspace access, and edits queue cleanly until reconnect. |

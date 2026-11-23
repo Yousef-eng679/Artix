@@ -8,6 +8,8 @@ import { ExecutiveDashboard } from '@/components/ExecutiveDashboard';
 import { APIUsageView } from '@/components/APIUsageView';
 import { CreateProjectModal } from '@/components/CreateProjectModal';
 import { UpgradePrompt } from '@/components/UpgradePrompt';
+import { SyncStatusBanner } from '@/components/SyncStatusBanner';
+import { ConflictResolutionCenter } from '@/components/ConflictResolutionModal';
 import { useAuth } from '@/hooks/useAuth';
 import { useProjects, Project } from '@/hooks/useProjects';
 import { useRecentActivity } from '@/hooks/useRecentActivity';
@@ -138,6 +140,8 @@ const Dashboard = () => {
 
 
       <div className="flex-1 flex flex-col h-screen overflow-y-auto">
+        <ConflictResolutionCenter />
+        <SyncStatusBanner />
         {/* Mobile top bar */}
         <header className="md:hidden sticky top-0 z-30 h-14 flex items-center justify-between px-4 border-b border-border/50 bg-background/80 backdrop-blur-xl">
           <div className="flex items-center gap-2">

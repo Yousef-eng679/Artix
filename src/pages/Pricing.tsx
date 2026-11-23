@@ -11,7 +11,7 @@ import { toast } from 'sonner';
 
 export default function Pricing() {
   const { user } = useAuth();
-  const { planTier, isLoading: subLoading } = useSubscription();
+  const { isPro, isLoading: subLoading } = useSubscription();
   const navigate = useNavigate();
   const [loadingPriceId, setLoadingPriceId] = useState<string | null>(null);
 
@@ -90,9 +90,9 @@ export default function Pricing() {
             <Button
               variant="outline"
               className="w-full h-12 text-lg"
-              disabled={planTier === 'free'}
+              disabled={!isPro}
             >
-              {planTier === 'free' ? 'Current Plan' : 'Free Plan'}
+              {!isPro ? 'Current Plan' : 'Free Plan'}
             </Button>
           </motion.div>
 
@@ -127,7 +127,7 @@ export default function Pricing() {
             </div>
 
             <div className="space-y-4 relative">
-              {planTier === 'pro' ? (
+              {isPro ? (
                 <Button className="w-full h-12 text-lg" disabled>
                   Current Plan
                 </Button>

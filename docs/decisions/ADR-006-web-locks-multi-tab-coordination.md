@@ -24,7 +24,9 @@ We decided to use the native browser **Web Locks API** (`navigator.locks`) for s
 - The first tab to open requests an exclusive lock named `artix_sync_leader_lock_<userScope>` and holds it open indefinitely.
 - Subsequent tabs queue on the lock request and remain in a Standby role.
 - Standby tabs write freely to IndexedDB and send `REQUEST_SYNC` to the leader.
-- When the leader tab closes or crashes, the browser kernel automatically and immediately grants the lock to the next standby tab with **zero latency**.
+-When the leader tab closes or crashes, the browser kernel automatically and immediately grants the lock to the next standby tab with **zero latency**.
+- At the storage layer, every claimed outbox lease stamps a UUID `leaseToken` (30,000ms TTL) verified inside atomic `[outbox, sync_metadata]` ack/fail transactions so any late completion from a stalled tab is fenced out.
+- Post-commit remote pulls invoke `coordinator.notifyRemoteChange(...)` carrying the persisted `localRevision`, and account switches invoke `evictTabCoordinator(userId)` to release locks and close the `BroadcastChannel`.
 
 ---
 
@@ -53,5 +55,5 @@ We decided to use the native browser **Web Locks API** (`navigator.locks`) for s
 
 ## Current Implementation
 
-- `src/lib/sync/tabCoordinator.ts`
-- Verified in `src/test/sync/tabCoordinator.test.ts` and `src/test/sync/correctnessMatrix.test.ts` (Scenario G).
+- `src/lib/sync/tabCoordinator.ts`, `src/lib/repositories/outboxRepository.ts`, `src/lib/sync/syncEngine.ts`
+- Verified in `src/test/sync/tabCoordinator.test.ts`, `src/test/sync/atomicPushAckAndLeaseTokenFencing.test.ts`, `src/test/sync/pullUiReactivityAndCrossTab.test.tsx`, and `src/test/sync/correctnessMatrix.test.ts` (Scenario G).

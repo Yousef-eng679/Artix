@@ -16,98 +16,96 @@ Artix eliminates resurrection via `TombstoneManager` (`src/lib/sync/tombstoneMan
 
 ---
 
-## 2. Tombstone State Machine
+## 2. Tombstone State Machine (`TombstoneLifecycleState`)
+
+Defined in `src/lib/sync/tombstoneManager.ts` (`'ACTIVE' | 'LOCAL_PENDING_DELETE' | 'REMOTE_CONFIRMED_DELETE' | 'REMOTE_DELETE_CONFLICT' | 'PURGED_TOMBSTONE'`):
 
 ```text
                User Deletes Entity Locally
                             │
                             ▼
-               ┌────────────────────────┐
-               │  LOCAL_PENDING_DELETE  │ ──► isDeleted: true in IndexedDB
-               └────────────┬───────────┘     Delete queued in outbox
+               ┌─────────────────────────┐
+               │  LOCAL_PENDING_DELETE   │ ──► isDeleted: true in IndexedDB
+               └────────────┬────────────┘     syncState: 'deleted_pending', delete queued in outbox
                             │
                             │ (Server Acknowledges CAS Delete)
                             ▼
-               ┌────────────────────────┐
-               │     DELETED_SYNCED     │ ──► Retained in IndexedDB
-               └────────────┬───────────┘     Prevents remote resurrection
+               ┌─────────────────────────┐
+               │ REMOTE_CONFIRMED_DELETE │ ──► Retained in IndexedDB (syncState: 'deleted_synced')
+               └────────────┬────────────┘     Prevents remote resurrection
                             │
-                            │ (Age > 30 Days & Network Healthy)
+                            │ (Age > 30 Days & Zero Outbox/Conflict Dependencies)
                             ▼
-               ┌────────────────────────┐
-               │    PURGED (Cleaned)    │ ──► Permanent physical row deletion
-               └────────────────────────┘
+               ┌─────────────────────────┐
+               │    PURGED_TOMBSTONE     │ ──► Permanent physical row deletion from IndexedDB
+               └─────────────────────────┘
 
           Remote Delete Received via Pull Change Feed
                             │
-                            ▼
-               ┌────────────────────────┐
-               │ REMOTE_CONFIRMED_DELETE│ ──► isDeleted: true
-               └────────────────────────┘     NO outbox delete mutation enqueued!
+              ┌─────────────┴─────────────┐
+              │ No Local Pending Edits    │ Local Pending Edits Exist
+              ▼                           ▼
+┌─────────────────────────┐ ┌─────────────────────────┐
+│ REMOTE_CONFIRMED_DELETE │ │  REMOTE_DELETE_CONFLICT │
+│ isDeleted: true         │ │ ConflictRecord saved    │
+│ syncState:              │ │ (reason:                │
+│   'deleted_synced'      │ │  'remote_deleted')      │
+│ NO outbox entry queued  │ │ Outbox entry blocked    │
+└─────────────────────────┘ └─────────────────────────┘
 ```
 
 ---
 
 ## 3. Formal Tombstone Invariants
 
-### Invariant 1: Local Deletion Integrity
-When a user deletes a document, design, or folder:
-- The local row is NOT immediately wiped from disk.
-- It is updated with `isDeleted = true`, `deletedAt = now()`, and incremented `localRevision`.
-- The outbox mutation is enqueued with `operation = 'delete'` and the `baseServerVersion`.
+### Invariant 1: Local Deletion Integrity Across All 4 Entity Types
+When a user deletes a project, workspace folder, document, or system design:
+- The local row is NOT immediately wiped from disk; it is updated with `isDeleted = true` and incremented `localRevision`.
+- The outbox mutation is enqueued with `operation = 'delete'` and the current `baseServerVersion`.
+- Deleting a project (`ProjectRepository.delete`) cascades local soft-delete (`isDeleted: true`) across all child `workspace_folders`, `documents`, and `system_designs` and purges their non-in-flight outbox entries in a 6-table atomic Dexie transaction.
 
 ### Invariant 2: Non-Resurrection Guard
 When `PullEngine` receives a remote change for an entity ID that is marked `isDeleted: true` locally:
-- If the remote change has an older or concurrent version, `PullEngine` rejects re-inserting the entity.
-- The local tombstone suppresses the remote change, preventing the document from popping back into the sidebar.
+- If the local delete is still pending push (`LOCAL_PENDING_DELETE`), `PullEngine` records a conflict rather than resurrecting the entity.
+- If the entity is already `REMOTE_CONFIRMED_DELETE` (`deleted_synced`) and the incoming event has an older or equal version, the tombstone suppresses the stale event.
 
 ### Invariant 3: Remote Confirmed Deletes Do Not Echo
-When a remote change feed delivers `operation: 'delete'`:
-- `TombstoneManager.markRemoteDelete(type, id, userId)` sets `isDeleted = true` and `syncState = 'deleted_synced'`.
-- It does **NOT** insert an entry into the outbox. Deleting a locally confirmed remote delete would cause an infinite reflection loop.
+When `PullEngine.pullBatch()` receives `operation: 'delete'` from `public.sync_changes` and no local edits are pending:
+- It applies `isDeleted = true` and `syncState = 'deleted_synced'` directly inside the atomic pull transaction.
+- It does **NOT** insert an entry into `db.outbox`. If local unpushed edits exist, it transitions to `REMOTE_DELETE_CONFLICT` (`reason: 'remote_deleted'`).
 
 ---
 
-## 4. Safe Garbage Collection & Purging (`purgeExpiredTombstones`)
+## 4. Safe Garbage Collection & Purging (`TombstoneManager.purgeTombstones`)
 
-Tombstones cannot accumulate indefinitely in IndexedDB without wasting client storage. `TombstoneManager` executes safe background garbage collection:
+Tombstones cannot accumulate indefinitely in IndexedDB without wasting client storage. `tombstoneManager.purgeTombstones(userId, retentionMs)` executes safe garbage collection inside a **6-table atomic Dexie transaction** across all 4 synced entity tables:
 
 ```typescript
-export async function purgeExpiredTombstones(
-  db: ArtixDB, 
-  maxAgeMs = 30 * 24 * 60 * 60 * 1000 // 30 Days
-): Promise<number> {
-  const cutoff = new Date(Date.now() - maxAgeMs).toISOString();
-
-  // Find confirmed deleted entities older than 30 days:
-  const expiredDocs = await db.documents
-    .where('isDeleted')
-    .equals(1)
-    .filter((d) => !!d.deletedAt && d.deletedAt < cutoff)
-    .toArray();
-
-  let purgedCount = 0;
-  for (const doc of expiredDocs) {
-    // Safety check: ensure NO pending outbox mutation remains for this entity
-    const pendingOutbox = await db.outbox
-      .where('[userId+entityType+entityId]')
-      .equals([doc.userId, 'document', doc.id])
-      .first();
-
-    if (!pendingOutbox) {
-      // Safe to physically delete from IndexedDB
-      await db.documents.delete(doc.id);
-      await db.sync_metadata.delete(`document:${doc.id}`);
-      purgedCount++;
-    }
+// Inside TombstoneManager.purgeTombstones(userId, retentionMs = 30 * 24 * 60 * 60 * 1000):
+await this.db.transaction(
+  'rw',
+  [
+    this.db.projects,
+    this.db.documents,
+    this.db.system_designs,
+    this.db.workspace_folders,
+    this.db.outbox,
+    this.db.sync_metadata,
+  ],
+  async () => {
+    // Scans projects, documents, system_designs, and workspace_folders where:
+    //   row.userId === userId && row.isDeleted === true
+    // Skips any entity that:
+    //   - has pending, in_flight, or blocked outbox entries, OR
+    //   - has syncState !== 'deleted_synced' (e.g. 'conflict' or 'deleted_pending'), OR
+    //   - was deleted within the 30-day retention window
+    // Otherwise physically deletes the entity row and its sync_metadata row.
   }
-
-  return purgedCount;
-}
+);
 ```
 
 ### Safety Pre-Conditions for Physical Purging
 A tombstone is physically deleted only if:
-1. `deletedAt` is older than 30 days ($T_{\text{tombstone}} > 30\text{d}$).
-2. The entity's sync status is `deleted_synced` (confirmed on cloud).
-3. There are zero pending or in-flight outbox entries referencing the entity.
+1. The deletion timestamp is older than 30 days ($T_{\text{tombstone}} > 30\text{d}$).
+2. The entity's sync status in `sync_metadata` is `'deleted_synced'` (never `'conflict'` or `'deleted_pending'`).
+3. There are zero `pending`, `in_flight`, or `blocked` outbox entries referencing the entity.

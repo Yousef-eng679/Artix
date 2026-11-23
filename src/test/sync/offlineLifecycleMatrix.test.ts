@@ -8,7 +8,6 @@ import { SystemDesignRepository } from '@/lib/repositories/systemDesignRepositor
 import { OutboxRepository } from '@/lib/repositories/outboxRepository';
 import { SyncMetadataRepository } from '@/lib/repositories/syncMetadataRepository';
 import { ConflictRepository } from '@/lib/repositories/conflictRepository';
-import { PullEngine } from '@/lib/sync/pullEngine';
 import {
   openUserRuntime,
   closeUserRuntime,
@@ -81,7 +80,7 @@ describe('Phase 9: End-to-End Offline Lifecycle & Network Simulation Matrix', ()
 
       const mockSupabase = {
         from: (table: string) => ({
-          upsert: (payload: any) => {
+          insert: (payload: any) => {
             pushedOperations.push(`${table}:create:${payload.id}`);
             return {
               select: () => ({
@@ -92,7 +91,7 @@ describe('Phase 9: End-to-End Offline Lifecycle & Network Simulation Matrix', ()
               }),
             };
           },
-          update: (payload: any) => ({
+          update: () => ({
             eq: () => ({
               eq: () => ({
                 select: () => ({
@@ -164,8 +163,8 @@ describe('Phase 9: End-to-End Offline Lifecycle & Network Simulation Matrix', ()
       // First doc succeeds, second doc times out
       let doc1Pushed = false;
       const mockSupabase = {
-        from: (table: string) => ({
-          upsert: (payload: any) => {
+        from: () => ({
+          insert: (payload: any) => {
             if (payload.id === doc1.id) {
               doc1Pushed = true;
               return {
@@ -217,7 +216,7 @@ describe('Phase 9: End-to-End Offline Lifecycle & Network Simulation Matrix', ()
       // Simulate recovery: network connection stabilizes
       const mockStableSupabase = {
         from: () => ({
-          upsert: () => ({
+          insert: () => ({
             select: () => ({
               single: () => Promise.resolve({
                 data: { version: 1, updated_at: '2026-09-28T12:10:00Z' },

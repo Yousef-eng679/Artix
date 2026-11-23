@@ -1,10 +1,12 @@
+import { clearDraft, setDraft } from './draftRecovery';
+
 /**
  * debouncedSave.ts
  * ────────────────
  * Two-tier debounced saver for the Artix caching strategy.
  *
- * Tier 1 — Immediately writes the latest content to localStorage as a draft
- *          cache (`artix.draft.{docId}`) so content survives tab crashes.
+ * Tier 1 — Immediately writes the latest content to localStorage as a user-scoped
+ *          draft cache (`artix.draft.{userHash}.{docId}`) so content survives tab crashes.
  * Tier 2 — Fires the real DB save callback only after `delay` ms of
  *          inactivity, deduplicating rapid keystrokes into a single write.
  *
@@ -33,21 +35,13 @@ export function createDebouncedSaver(
 
   function writeDraftToLocalStorage(content: string): void {
     if (documentId) {
-      try {
-        localStorage.setItem(`artix.draft.${documentId}`, content);
-      } catch {
-        // localStorage full or unavailable — silently ignore
-      }
+      setDraft(documentId, content);
     }
   }
 
   function clearDraftFromLocalStorage(): void {
     if (documentId) {
-      try {
-        localStorage.removeItem(`artix.draft.${documentId}`);
-      } catch {
-        // ignore
-      }
+      clearDraft(documentId);
     }
   }
 
@@ -55,11 +49,13 @@ export function createDebouncedSaver(
     lastSavedContent = content;
     pendingContent = null;
     timerId = null;
-    saveFn(content).then(() => {
-      clearDraftFromLocalStorage();
-    }).catch(() => {
-      // Save failed — draft stays in localStorage for crash recovery
-    });
+    saveFn(content)
+      .then(() => {
+        clearDraftFromLocalStorage();
+      })
+      .catch(() => {
+        // Save failed — draft stays in localStorage for crash recovery
+      });
   }
 
   function save(content: string): void {

@@ -1,4 +1,5 @@
 import { OutboxEntry } from '@/lib/local/types';
+import { MissingCasBaselineError } from '@/lib/local/errors';
 import { PushResult } from './types';
 import { withTimeout } from '../transportTimeout';
 
@@ -25,30 +26,60 @@ function isMissingRpcError(error: any): boolean {
 }
 
 /**
- * Primary atomic push path (Audit F-003).
+ * Validates that an `update` or `delete` outbox mutation carries a strictly
+ * positive integer CAS `baseServerVersion` (Audit Gap C-02).
+ *
+ * Fails closed BEFORE any RPC or table call so missing or malformed baselines
+ * (`null`, `""`, `"0"`, `"-1"`, `"abc"`, `"1.5"`, `"1abc"`) can never silently
+ * bypass optimistic concurrency checks.
+ */
+export function requireValidCasBaseVersion(entry: OutboxEntry): number {
+  const raw = entry.baseServerVersion;
+  if (typeof raw !== 'string' || !/^[1-9]\d*$/.test(raw)) {
+    throw new MissingCasBaselineError(entry.entityType, entry.entityId, entry.operation, raw);
+  }
+  const parsed = Number(raw);
+  if (!Number.isSafeInteger(parsed) || parsed < 1) {
+    throw new MissingCasBaselineError(entry.entityType, entry.entityId, entry.operation, raw);
+  }
+  return parsed;
+}
+
+/**
+ * Primary atomic push path (Audit F-003, C-01, C-02, S-03, S-04).
  *
  * Dispatches `public.apply_sync_mutation` on PostgreSQL so the idempotency
- * check, entity create/update/delete (with CAS version guard), `sync_changes`
- * trigger insert, and `processed_mutations` ledger write execute inside a
- * single database transaction.
+ * check, entity create/update/delete (with strict CAS version guard),
+ * `sync_changes` trigger insert, and `processed_mutations` ledger write execute
+ * inside a single database transaction.
  *
- * Returns `{ handled: false, result: null }` only when `supabase.rpc` is absent
- * (lightweight unit-test `.from()` mocks) or when the migration has not yet been
- * applied on the target Supabase instance (`PGRST202`), allowing a safe rollout
- * fallback.
+ * Returns `{ handled: false, result: null }` ONLY when `supabase.rpc` is not a
+ * function (lightweight `.from()`-only unit test mocks). When `supabase.rpc` is
+ * present, missing RPC errors (`PGRST202` / `42883`) fail closed with a
+ * non-retryable `SCHEMA_ERROR` rather than degrading to non-atomic writes.
  */
 export async function executeAtomicMutation(
   entry: OutboxEntry,
   supabase: any
 ): Promise<AtomicMutationDispatchResult> {
-  const mutationId = entry.mutationId || entry.id;
-  if (!mutationId || typeof supabase?.rpc !== 'function') {
+  const baseVersion =
+    entry.operation === 'update' || entry.operation === 'delete'
+      ? requireValidCasBaseVersion(entry)
+      : null;
+
+  if (typeof supabase?.rpc !== 'function') {
     return { handled: false, result: null };
   }
 
-  const parsedBase = entry.baseServerVersion ? parseInt(entry.baseServerVersion, 10) : null;
-  const baseVersion =
-    parsedBase !== null && !Number.isNaN(parsedBase) && parsedBase > 0 ? parsedBase : null;
+  const mutationId = entry.mutationId || entry.id;
+  if (!mutationId) {
+    const invalidErr: any = new Error(
+      `Missing mutationId for ${entry.entityType} '${entry.entityId}' ${entry.operation}`
+    );
+    invalidErr.code = 'VALIDATION_FAILED';
+    invalidErr.status = 422;
+    throw invalidErr;
+  }
 
   const { data, error } = await withTimeout<any>(
     supabase.rpc('apply_sync_mutation', {
@@ -65,10 +96,12 @@ export async function executeAtomicMutation(
 
   if (error) {
     if (isMissingRpcError(error)) {
-      console.warn(
-        '[idempotency] apply_sync_mutation RPC not found on server; falling back to legacy table push path.'
+      const schemaErr: any = new Error(
+        `Required atomic sync RPC public.apply_sync_mutation is missing on server (${error.code || 'PGRST202'}): ${error.message || 'schema mismatch'}`
       );
-      return { handled: false, result: null };
+      schemaErr.code = 'SCHEMA_ERROR';
+      schemaErr.originalCode = error.code;
+      throw schemaErr;
     }
     if (error.code === 'P0002' && error.status === undefined) {
       (error as any).status = 404;
@@ -79,11 +112,19 @@ export async function executeAtomicMutation(
   }
 
   if (data?.status === 'conflict') {
+    const reason =
+      data.reason ?? (entry.operation === 'create' ? 'already_exists' : 'version_mismatch');
     const conflictErr = new Error(
-      `Conflict detected: ${entry.entityType} '${entry.entityId}' was modified remotely (base version ${entry.baseServerVersion ?? 'create'} mismatched)`
+      `Conflict detected (${reason}): ${entry.entityType} '${entry.entityId}' was modified remotely (base version ${entry.baseServerVersion ?? 'create'} mismatched)`
     );
     (conflictErr as any).status = 409;
     (conflictErr as any).code = 'CONFLICT';
+    (conflictErr as any).conflictReason = reason;
+    (conflictErr as any).remoteVersion =
+      data.current_version !== undefined && data.current_version !== null
+        ? String(data.current_version)
+        : null;
+    (conflictErr as any).remoteSnapshot = data.current_row ?? null;
     throw conflictErr;
   }
 
@@ -102,8 +143,8 @@ export async function executeAtomicMutation(
 }
 
 /**
- * Degraded fallback idempotency lookup used only when `apply_sync_mutation` RPC
- * is unavailable (e.g. unit-test `.from()` mocks or pre-migration rollout).
+ * Unit-test `.from()`-only mock idempotency lookup used exclusively when
+ * `supabase.rpc` is absent on lightweight test stubs.
  */
 export async function checkIdempotency(entry: OutboxEntry, supabase: any): Promise<PushResult | null> {
   const mutationId = entry.mutationId || entry.id;
@@ -131,16 +172,15 @@ export async function checkIdempotency(entry: OutboxEntry, supabase: any): Promi
       };
     }
   } catch {
-    // If table or mock doesn't support processed_mutations check, continue fallback push
+    // If table or mock doesn't support processed_mutations check, continue test-mock push
   }
 
   return null;
 }
 
 /**
- * Degraded fallback ledger write used only when `apply_sync_mutation` RPC is
- * unavailable. Inspects PostgREST `{ error }` responses rather than silently
- * discarding them (Audit F-003).
+ * Unit-test `.from()`-only mock ledger write. Inspects PostgREST `{ error }`
+ * responses rather than silently discarding them (Audit F-003).
  */
 export async function recordIdempotency(
   entry: OutboxEntry,

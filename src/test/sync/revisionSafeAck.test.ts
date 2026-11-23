@@ -100,7 +100,7 @@ describe('Phase C3: Revision-Safe Acknowledgements', () => {
         }
         if (table === 'documents') {
           return {
-            upsert: (payload: any) => ({
+            insert: (payload: any) => ({
               select: () => ({
                 single: () => {
                   pushCount++;

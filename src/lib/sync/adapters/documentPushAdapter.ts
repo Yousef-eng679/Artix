@@ -1,16 +1,34 @@
 import { OutboxEntry } from '@/lib/local/types';
+import { UnresolvedConflictMarkersError } from '@/lib/local/errors';
 import { EntityPushAdapter, PushResult } from './types';
 import { withTimeout } from '../transportTimeout';
-import { checkIdempotency, executeAtomicMutation, recordIdempotency } from './idempotency';
+import { ConflictResolver } from '../conflictResolver';
+import {
+  checkIdempotency,
+  executeAtomicMutation,
+  recordIdempotency,
+  requireValidCasBaseVersion,
+} from './idempotency';
 
 export class DocumentPushAdapter implements EntityPushAdapter {
   async push(entry: OutboxEntry, supabase: any): Promise<PushResult | null> {
-    // Primary atomic server path (Audit F-003): single PostgreSQL transaction
-    // covering idempotency check, CAS entity write, and ledger insert.
+    if (entry.operation === 'create' || entry.operation === 'update') {
+      const content = (entry.payload as Record<string, unknown> | null)?.content;
+      if (
+        typeof content === 'string' &&
+        ConflictResolver.hasUnresolvedConflictMarkers(content)
+      ) {
+        throw new UnresolvedConflictMarkersError(entry.entityId);
+      }
+    }
+
+    // Primary atomic server path (Audit F-003, C-01, C-02, S-04):
+    // Validates CAS baseline fail-closed and executes inside a single PostgreSQL
+    // transaction via public.apply_sync_mutation whenever supabase.rpc exists.
     const atomic = await executeAtomicMutation(entry, supabase);
     if (atomic.handled) return atomic.result;
 
-    // Degraded fallback path (used only by .from()-only test mocks or pre-migration rollout)
+    // Lightweight .from()-only unit-test mock path (never reached on real Supabase clients)
     const cached = await checkIdempotency(entry, supabase);
     if (cached) return cached;
 
@@ -21,7 +39,7 @@ export class DocumentPushAdapter implements EntityPushAdapter {
       const { data, error } = await withTimeout(
         supabase
           .from('documents')
-          .upsert({
+          .insert({
             id: entityId,
             user_id: userId,
             project_id: projectId,
@@ -45,6 +63,8 @@ export class DocumentPushAdapter implements EntityPushAdapter {
     }
 
     if (operation === 'update') {
+      const baseVer = requireValidCasBaseVersion(entry);
+
       const updateData: Record<string, any> = {
         updated_at: new Date().toISOString(),
       };
@@ -54,18 +74,11 @@ export class DocumentPushAdapter implements EntityPushAdapter {
       if (body.folderId !== undefined) updateData.folder_id = body.folderId;
       if (body.folder_id !== undefined) updateData.folder_id = body.folder_id;
 
-      let query = supabase
+      const query = supabase
         .from('documents')
         .update(updateData)
-        .eq('id', entityId);
-
-      // CAS: verify remote row has not been incremented by another device
-      if (entry.baseServerVersion) {
-        const baseVer = parseInt(entry.baseServerVersion, 10);
-        if (!isNaN(baseVer) && baseVer > 0) {
-          query = query.eq('version', baseVer);
-        }
-      }
+        .eq('id', entityId)
+        .eq('version', baseVer);
 
       const selectBuilder = query.select('version, updated_at');
       const executeQuery = typeof selectBuilder.maybeSingle === 'function'
@@ -76,7 +89,7 @@ export class DocumentPushAdapter implements EntityPushAdapter {
 
       if (error) throw error;
 
-      if (!data && entry.baseServerVersion) {
+      if (!data) {
         const conflictErr = new Error(
           `Conflict detected: document '${entityId}' was modified remotely (base version ${entry.baseServerVersion} mismatched)`
         );
@@ -94,18 +107,19 @@ export class DocumentPushAdapter implements EntityPushAdapter {
     }
 
     if (operation === 'delete') {
-      let query = supabase.from('documents').delete().eq('id', entityId);
-      if (entry.baseServerVersion) {
-        const baseVer = parseInt(entry.baseServerVersion, 10);
-        if (!isNaN(baseVer) && baseVer > 0) {
-          query = query.eq('version', baseVer);
-        }
-      }
+      const baseVer = requireValidCasBaseVersion(entry);
+
+      const query = supabase
+        .from('documents')
+        .delete()
+        .eq('id', entityId)
+        .eq('version', baseVer);
+
       const selectBuilder = typeof query.select === 'function' ? query.select('id') : query;
       const { data, error } = await withTimeout(selectBuilder);
       if (error) throw error;
 
-      if (entry.baseServerVersion && (data === null || (Array.isArray(data) && data.length === 0))) {
+      if (data === null || (Array.isArray(data) && data.length === 0)) {
         try {
           const checkQuery = supabase.from('documents').select('version').eq('id', entityId);
           const executeCheck = typeof checkQuery?.maybeSingle === 'function'

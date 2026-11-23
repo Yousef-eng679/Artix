@@ -1,7 +1,7 @@
 # Artix — Local-First Engineering Workspace & Specification Engine
 
-> **Engineering Status**: Production-Ready Post-C12 Synchronized Architecture  
-> **Verification**: 81 Test Files Passed (566/566 Tests Green) | TypeScript Strict Clean | ESLint 0 Errors
+> **Engineering Status**: v2.5.0 — Productionized Billing, Strict CAS & True Offline-First Architecture  
+> **Verification**: 107 Vitest Files (698/698 Tests) | Real PostgreSQL 17 Concurrency & RLS Suite (6/6) | Playwright Production PWA E2E (18 Chromium specs) | TypeScript 0 Errors | ESLint 0 Errors
 
 Artix is a local-first software engineering workspace designed for technical leads, system architects, and developers. It unifies multi-format technical specifications, visual system design, and context-injected AI prompt engineering into an authoritative, offline-first client application powered by Dexie IndexedDB and synchronized with Supabase PostgreSQL.
 
@@ -19,7 +19,8 @@ Artix is a local-first software engineering workspace designed for technical lea
 │                                                                             │
 │   ┌───────────────────┐     ┌───────────────────┐    ┌──────────────────┐   │
 │   │   Entity State    │     │   Durable Outbox  │    │  Sync Metadata   │   │
-│   │ Documents/Designs │     │ Mutations / Leases│    │ Revisions/Status │   │
+│   │ Projects/Folders/ │     │ Mutations / Leases│    │ Revisions/Status │   │
+│   │ Documents/Designs │     │ Causal Barrier    │    │ Cursor/Hydration │   │
 │   └───────────────────┘     └───────────────────┘    └──────────────────┘   │
 └──────────────────────────────────────┬──────────────────────────────────────┘
                                        │ Asynchronous Push / Pull
@@ -28,8 +29,8 @@ Artix is a local-first software engineering workspace designed for technical lea
 │                      CLOUD REPLICATION ENGINE (Supabase)                    │
 │                                                                             │
 │   ┌───────────────────┐     ┌───────────────────┐    ┌──────────────────┐   │
-│   │ PostgreSQL Tables │     │ CAS Concurrency   │    │  `sync_changes`  │   │
-│   │ Documents/Designs │     │ Version Invariant │    │ Cursor Feed Log  │   │
+│   │ PostgreSQL Tables │     │ apply_sync_mutation│   │  `sync_changes`  │   │
+│   │ 4 Synced Entities │     │ Atomic CAS RPC    │    │ Cursor Feed Log  │   │
 │   └───────────────────┘     └───────────────────┘    └──────────────────┘   │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -82,17 +83,17 @@ Project (UUID)
 
 | Subsystem | Status | Description |
 |---|---|---|
-| **Document Forge** | `IMPLEMENTED` | Monaco-powered editor with syntax highlighting, Markdown preview toggle, AST-escaped Markdown + strict URI protocol filtering, and multi-format export (PDF/HTML/MD). |
-| **System Architect** | `IMPLEMENTED` | Drag-and-drop architectural canvas powered by React Flow with custom microservice, gateway, database, queue, and cache nodes. |
-| **Local-First Engine** | `IMPLEMENTED` | User-scoped Dexie IndexedDB (`ArtixDB_v2_<hash>`) with atomic 3-table transaction writes and zero-latency local reads. |
-| **Distributed Outbox** | `IMPLEMENTED` | Transactional mutation queue with monotonic version tracking, DAG topological dependency ordering, and restore algebra. |
-| **Server CAS Concurrency**| `IMPLEMENTED` | Optimistic concurrency control via PostgreSQL version check triggers and `processed_mutations` idempotency ledger. |
-| **Durable Change Feed** | `IMPLEMENTED` | Cursor-based change log (`public.sync_changes`) with leading-edge Realtime wakeup and automatic reconnection catchup. |
-| **Multi-Tab Coordinator** | `IMPLEMENTED` | Web Locks API single-leader execution with instant zero-latency failover and cross-tab duplicate suppression. |
-| **AI Intelligence Suite** | `IMPLEMENTED` | Multi-mode PRD generator (Agile, Technical Spec, Lean MVP, Custom) and Vibe Coding prompt compiler with 2-pass refinement. |
-| **BYOK Security** | `IMPLEMENTED` | Client-side BYOK storage (default `obf:` Base64 obfuscation + opt-in PBKDF2 250k iterations / AES-GCM 256-bit passphrase vault) supporting OpenAI, Anthropic, Gemini, Groq, and Ollama. |
-| **Stripe Billing & Limits**| `IMPLEMENTED` | Supabase Edge Functions with webhook signature verification, portal management, and PostgreSQL trigger tier limit enforcement. |
-| **PWA & Offline Worker** | `IMPLEMENTED` | Workbox service worker precaching full application bundles and static assets for zero-network launches. |
+| **Document Forge** | `IMPLEMENTED` | Locally bundled Monaco (`monaco-editor` 0.57 + local worker, zero CDN) with Markdown preview toggle, AST-escaped Markdown + strict URI protocol filtering, stale-buffer overwrite protection (`StaleBufferError`), and multi-format export (native free; PDF/HTML Pro). |
+| **System Architect** | `IMPLEMENTED` | React Flow canvas with System and Algorithm node catalogs, persisted inline labels and custom colors, `crypto.randomUUID()` node IDs, dagre auto-layout, freehand strokes, and stale-buffer protection. |
+| **Local-First Engine** | `IMPLEMENTED` | User-scoped Dexie IndexedDB (`ArtixDB_v2_<hash>`, schema v3, 8 tables including `projects`) with atomic multi-table transactions and zero-latency local reads, readable offline even with an expired JWT. |
+| **Distributed Outbox** | `IMPLEMENTED` | Transactional mutation queue across 4 synced entities with immutable `dispatched` flag, `leaseToken` fencing (30s TTL), per-entity causal barrier, DAG topological ordering, and 7-case compaction algebra. |
+| **Server CAS Concurrency**| `IMPLEMENTED` | Single-transaction `public.apply_sync_mutation` RPC: advisory lock + `processed_mutations` idempotency + strict `version = p_base_version` CAS + `sync_changes` with `mutation_id`. |
+| **Durable Change Feed** | `IMPLEMENTED` | Commit-ordered `public.sync_changes` with self-echo recognition, cold `bootstrapHydrateAll()`, and `resnapshotAll()` when the cursor falls below the `sync_retention_state` retention floor. |
+| **Multi-Tab Coordinator** | `IMPLEMENTED` | Web Locks API single-leader execution with instant failover, post-commit cross-tab notifications carrying real `localRevision`, and per-user coordinator eviction. |
+| **AI Intelligence Suite** | `IMPLEMENTED` | Multi-mode PRD generator, Vibe Coding prompt compiler, Agentic Workflow and Architecture generators with streaming 2-pass refinement and primary/backup provider failover. |
+| **BYOK Security** | `IMPLEMENTED` | Client-side BYOK storage (default `obf:` Base64 obfuscation + opt-in PBKDF2 600k iterations `v: 2` / AES-GCM 256-bit passphrase vault with `v: 1` 250k backward compatibility) supporting OpenAI, Anthropic, Gemini, Groq, OpenRouter, and Ollama. |
+| **Stripe Billing & Limits**| `IMPLEMENTED` | Atomic `reconcile_stripe_subscription` RPC, strict `past_due` → `free` fail-closed policy, RLS-protected `manual_grants`, serialized `check_plan_tier_limit()` (incl. monthly AI cap), and offline entitlement/quota caching. |
+| **PWA & Offline Worker** | `IMPLEMENTED` | Workbox precache with `clientsClaim` + `skipWaiting`, self-hosted `@fontsource` fonts, `navigator.storage.persist()`, and offline cold start with an expired JWT. |
 
 ---
 
@@ -109,13 +110,13 @@ Artix follows a strict **unidirectional data flow** where the UI interacts exclu
                             ▼
 ┌────────────────────────────────────────────────────────┐
 │             Local Repositories & Contexts              │
-│ (DocumentRepository, SystemDesignRepo, FolderRepo, etc)│
+│ (ProjectRepo, DocumentRepo, SystemDesignRepo, FolderRepo)│
 └───────────────────────────┬────────────────────────────┘
                             │ Atomic Dexie Transaction
                             ▼
 ┌────────────────────────────────────────────────────────┐
 │                 Client IndexedDB Layer                 │
-│         [entities]  [outbox]  [sync_metadata]          │
+│ [entities] [outbox] [sync_metadata] [conflicts] [meta] │
 └───────────────▲──────────────────────────┬─────────────┘
                 │                          │
         Pull    │                          │ Push
@@ -127,11 +128,11 @@ Artix follows a strict **unidirectional data flow** where the UI interacts exclu
 └───────────────▲──────────┘    └──────────┬─────────────┘
                 │                          │
                 └───────────┬──────────────┘
-                            │ REST / Postgres Triggers
+                            │ apply_sync_mutation RPC / sync_changes
                             ▼
 ┌────────────────────────────────────────────────────────┐
 │                  Supabase Cloud Engine                 │
-│   PostgreSQL | sync_changes | processed_mutations      │
+│ PostgreSQL 17 | sync_changes | processed_mutations     │
 └────────────────────────────────────────────────────────┘
 ```
 
@@ -140,13 +141,13 @@ Artix follows a strict **unidirectional data flow** where the UI interacts exclu
 ## 6. Technology Stack
 
 - **Core Framework**: React 18 with TypeScript (Strict mode enabled, zero `any` assertions in critical pathways)
-- **Bundler & PWA**: Vite 5 with `vite-plugin-pwa` (Workbox caching)
-- **Local Database**: Dexie.js v4 (IndexedDB abstraction with compound indices and live queries)
-- **Styling & UI**: Tailwind CSS, Shadcn UI, Radix Primitives, Lucide Icons, Framer Motion
-- **Editor Engine**: Monaco Editor (`@monaco-editor/react`)
-- **Canvas Engine**: React Flow (`@xyflow/react`)
-- **Cloud Backend**: Supabase (PostgreSQL 15, Row Level Security, Edge Functions in Deno)
-- **Testing**: Vitest, `@testing-library/react`, `fake-indexeddb`
+- **Bundler & PWA**: Vite 5.4 with `vite-plugin-pwa` 1.2 (Workbox `clientsClaim` + `skipWaiting`, 5 MiB precache limit)
+- **Local Database**: Dexie.js v4.4 (`ArtixDB` schema v3, 8 tables, compound indices and live queries)
+- **Styling & UI**: Tailwind CSS, Shadcn UI, Radix Primitives, Lucide Icons, Framer Motion, self-hosted `@fontsource/inter` + `@fontsource/jetbrains-mono`
+- **Editor Engine**: `monaco-editor` 0.57 + `@monaco-editor/react` 4.7 (locally bundled worker, zero CDN)
+- **Canvas Engine**: React Flow (`@xyflow/react`) + `@dagrejs/dagre` auto-layout
+- **Cloud Backend**: Supabase (PostgreSQL 17, Row Level Security, Edge Functions in Deno)
+- **Testing**: Vitest, `@testing-library/react`, `fake-indexeddb`, `pg` + `@electric-sql/pglite` (real PostgreSQL suite), `@playwright/test` 1.64
 
 ---
 
@@ -183,7 +184,7 @@ await db.transaction('rw', [db.documents, db.outbox, db.sync_metadata], async ()
 **Guarantees**:
 - **0ms Mutation Latency**: Local writes succeed in memory/disk without waiting for server response.
 - **Offline Durability**: Edits survive browser closures, machine reboots, and prolonged offline sessions (Scenario A verified).
-- **Pure Local Reads**: UI hooks (`useDocuments`, `useSystemDesigns`, `useWorkspaceFolders`) query IndexedDB directly; no remote network calls occur on render paths.
+- **Pure Local Reads**: UI hooks (`useDocuments`, `useSystemDesigns`, `useWorkspaceFolders`) query IndexedDB directly; `useProjects` reads the local `ProjectRepository` once hydrated (online pre-hydration fallback only). No remote network calls occur on render paths for synced entities.
 
 ---
 
@@ -220,23 +221,30 @@ The outbox manages in-flight cloud mutations using strict lifecycle states:
    └─────┬─────┘
          │
          ├─── (CAS Mismatch / Conflict) ───► [ BLOCKED ] (3-Way Conflict Saved)
+         ├─── (Tier Limit / Validation / Retries Exhausted) ─► [ BLOCKED ] (Retry via SyncStatusBanner)
          │
          └─── (200 OK / Verified) ─────────► [ DRAINED ] (Deleted from Outbox)
 ```
 
+Once an entry is claimed it is stamped `dispatched: true` with a fresh `leaseToken`; dispatched entries are never compacted or mutated again, and push acknowledgements/failures are fenced by that token.
+
 ### Topological Dependency Ordering
-Entities are pushed in topological DAG dependency order (`src/lib/sync/dependencyOrder.ts`):
-1. Parent workspace folders are created on the server before child folders.
-2. Parent folders are created before the documents or designs contained within them.
-3. Documents and designs are deleted before their parent folders are deleted.
+Entities are pushed in topological DAG dependency order (`src/lib/sync/dependencyOrder.ts`, Kahn's algorithm with FIFO tie-breaking):
+1. Projects are created on the server before any of their folders, documents, or designs.
+2. Parent workspace folders are created before child folders, and folders before the documents or designs contained within them.
+3. Documents and designs are deleted before their parent folders; projects are deleted last.
+
+A per-entity **causal barrier** holds back later entries for an entity while an earlier entry is `in_flight`, `blocked`, or waiting on `nextRetryAt`.
 
 ### Outbox Compaction Algebra
-When a user performs rapid offline mutations on the same entity, the outbox compacts redundant operations:
+When a user performs rapid offline mutations on the same entity, the outbox compacts into the latest **undispatched** `pending` entry only:
 - `CREATE + UPDATE -> CREATE` (with merged payload)
 - `UPDATE + UPDATE -> UPDATE` (with merged payload, preserving original `baseServerVersion`)
 - `CREATE + DELETE -> NOOP` (purged from outbox)
 - `UPDATE + DELETE -> DELETE` (preserves baseline version for server CAS)
-- `DELETE + CREATE -> UPDATE` (Restore case)
+- `DELETE + DELETE -> DELETE`
+- `DELETE + UPDATE -> UPDATE` (Restore case)
+- `DELETE + CREATE -> CREATE`
 
 ---
 
@@ -244,23 +252,26 @@ When a user performs rapid offline mutations on the same entity, the outbox comp
 
 To eliminate silent Lost Updates, Artix implements server-enforced **Compare-and-Swap (CAS)** concurrency:
 
-1. Every document, system design, and folder maintains an integer `version` in PostgreSQL.
+1. Every project, workspace folder, document, and system design maintains an integer `version` in PostgreSQL.
 2. PostgreSQL triggers automatically increment `version` and update `updated_at` on every update:
    ```sql
    NEW.version = OLD.version + 1;
    NEW.updated_at = now();
    ```
-3. Push adapters execute updates with an optimistic CAS predicate:
+3. Push adapters never write tables directly. They call a single-transaction RPC via `executeAtomicMutation()` (`src/lib/sync/adapters/idempotency.ts`):
    ```typescript
-   const { data, error } = await supabase
-     .from('documents')
-     .update({ ...payload, version: baseVersion + 1 })
-     .eq('id', entityId)
-     .eq('version', baseVersion) // CAS Guard
-     .select('id, version, updated_at')
-     .maybeSingle();
+   const { data, error } = await supabase.rpc('apply_sync_mutation', {
+     p_mutation_id: entry.mutationId,
+     p_user_id: userId,
+     p_entity_type: 'document',
+     p_entity_id: entityId,
+     p_operation: 'update',
+     p_payload: payload,
+     p_base_version: Number(entry.baseServerVersion), // required >= 1 for update/delete
+   });
    ```
-4. If another device modified the row in the interim, the query returns zero rows. The adapter detects the mismatch and raises an HTTP `409 CONFLICT`, halting the outbox entry from retrying and initiating three-way merge resolution.
+   Inside one PostgreSQL transaction the RPC takes an advisory lock on the mutation ID, short-circuits if `processed_mutations` already holds it, runs `UPDATE ... WHERE version = p_base_version`, records the `sync_changes` row with `mutation_id`, and writes the ledger row.
+4. If another device modified the row in the interim, the RPC returns `{ status: 'conflict', reason: 'version_mismatch' | 'remote_deleted' | 'already_exists', current_row }`. The engine parks the outbox entry as `blocked` and records a 3-way conflict. Updates/deletes without a valid baseline fail closed client-side (`MissingCasBaselineError`) after a pre-push reconciler attempts to heal legacy entries.
 
 ---
 
@@ -268,12 +279,11 @@ To eliminate silent Lost Updates, Artix implements server-enforced **Compare-and
 
 Remote synchronization does not poll full entity tables. Instead, it streams from an append-only change feed:
 
-1. A PostgreSQL trigger `record_sync_change()` captures all `INSERT`, `UPDATE`, and `DELETE` operations across documents, designs, and folders into `public.sync_changes`.
-2. Each client stores a durable `last_synced_sequence` cursor in `sync_metadata`.
-3. `PullEngine` queries new rows where `sequence > last_synced_sequence` filtered by `user_id`.
-4. **Pending-State Guard**: Before applying a remote update to a local entity, `PullEngine` inspects the outbox:
-   - If an active outbox entry exists with local uncommitted edits, the remote update is rejected from immediate overwrite, recorded as a 3-way conflict, and marked `conflict`.
-5. The local cursor advances in IndexedDB only *after* all changes in the batch are safely committed.
+1. A PostgreSQL trigger `record_sync_change()` captures all `INSERT`, `UPDATE`, and `DELETE` operations across projects, folders, documents, and designs into `public.sync_changes`. A per-user advisory lock makes `sequence` order equal commit order, and the root entity of each RPC mutation carries its `mutation_id`.
+2. Each client stores a durable cursor in `database_meta` under the key `server_cursor`.
+3. `PullEngine.syncPull()` chooses one of three modes: `bootstrapHydrateAll()` on a never-hydrated device, `resnapshotAll()` when the cursor is below `min_retained_sequence` (from `get_sync_feed_bounds()`), or incremental `pullAll()` (batches of 50).
+4. **Self-Echo & Pending-State Guards**: Changes whose `mutation_id` matches the client's own push are treated as acknowledgements and never overwrite newer local edits. If an active outbox entry exists with other local uncommitted edits, the remote update is recorded as a 3-way conflict instead of overwriting.
+5. The local cursor advances in the same Dexie transaction as the batch's entity updates, and listeners are notified only after that transaction commits.
 
 ---
 
@@ -281,22 +291,26 @@ Remote synchronization does not poll full entity tables. Instead, it streams fro
 
 When concurrent edits occur on the same entity across different clients:
 
-1. The push adapter raises a `409 CONFLICT`.
+1. The push RPC returns a structured conflict (`version_mismatch`, `remote_deleted`, or `already_exists`).
 2. The `SyncEngine` marks the outbox entry as `blocked` to stop automated retry floods.
 3. The entity's sync status in `sync_metadata` is updated to `conflict`.
 4. A structured 3-way conflict record is stored in `ConflictRepository`:
    ```typescript
    interface ConflictRecord {
      id: string;
-     entityType: 'document' | 'system_design' | 'workspace_folder';
+     entityType: 'project' | 'document' | 'system_design' | 'workspace_folder';
      entityId: string;
-     baseContent: string;   // Common ancestor snapshot
-     localContent: string;  // User's offline draft
-     remoteContent: string; // Server's conflicting snapshot
-     detectedAt: string;
+     userId: string;
+     basePayload: Record<string, any> | null;  // Common ancestor snapshot
+     localPayload: Record<string, any>;        // User's offline draft
+     remotePayload: Record<string, any> | null;// Server's conflicting snapshot
+     reason?: 'version_mismatch' | 'remote_deleted' | 'already_exists' | string | null;
+     remoteVersion?: string | null;
+     detectedAt: number;                       // epoch ms
+     resolvedAt?: number | null;
    }
    ```
-5. For technical markdown documents, Artix provides automatic 3-way line diffing (`diff3`), auto-merging non-overlapping changes and flagging overlapping blocks with standard Git conflict markers (`<<<<<<< LOCAL`, `=======`, `>>>>>>> REMOTE`).
+5. The `ConflictResolutionCenter` UI offers **Keep mine**, **Accept remote**, **Save as copy**, and (for documents) **Merge**. Merging uses an LCS-aligned 3-way `diff3` that auto-merges non-overlapping changes and flags overlapping blocks with `<<<<<<< LOCAL`, `=======`, `>>>>>>> REMOTE`. Content with unresolved markers cannot be saved or pushed (`UnresolvedConflictMarkersError`).
 
 ---
 
@@ -307,7 +321,7 @@ Users frequently open multiple tabs of the same workspace. Artix enforces **Sing
 - **Web Locks API Election**: All tabs request an exclusive lock (`navigator.locks.request('artix_sync_leader_lock_<hash>')`). The browser kernel grants leadership to exactly one tab.
 - **Standby Tabs**: Standby tabs read and write locally to IndexedDB without restrictions. When a mutation occurs, they notify the leader over `BroadcastChannel` with `REQUEST_SYNC`.
 - **Zero-Latency Failover**: If the leader tab is closed or crashes mid-push, the browser instantly releases the Web Lock to the next standby tab, which claims the leadership role, reclaims expired leases, and drains the outbox without latency.
-- **Broadcast Deduplication**: Cross-tab change broadcasts are filtered through a 3000ms signature cache to prevent infinite notification loops.
+- **Broadcast Deduplication**: Cross-tab change broadcasts are filtered through a 3000ms signature cache to prevent infinite notification loops. Changes applied by `PullEngine` are announced only after their Dexie transaction commits, carrying the real `localRevision` so open editors can detect stale buffers.
 
 ---
 
@@ -321,9 +335,10 @@ User Sign-In ──► Open User DB (ArtixDB_v2_<hash>) ──► Recover Crashe
 User Sign-Out ◄── Close User DB ◄── Abort In-Flight Sync ◄── Stop Realtime ◄───────────┘
 ```
 
-- **User Isolation**: Each user account receives a completely isolated database namespace (`ArtixDB_v2_<hash>`).
-- **Account Switch Safety**: Switching from User A to User B immediately terminates A's runtime, tears down Realtime subscriptions, closes database handles, and initializes B's workspace from scratch with zero memory or disk leaks (Scenario H verified).
-- **React Context Binding**: `UserSyncRuntimeProvider` wraps the React component tree, exposing typed runtime status (`initializing | running | migrating | blocked | quota_exceeded | degraded | stopped`).
+- **User Isolation**: Each user account receives a completely isolated database namespace (`ArtixDB_v2_<hash>`), and `localStorage` draft/tab keys are scoped by the same user hash.
+- **Account Switch Safety**: Switching from User A to User B terminates A's runtime, tears down Realtime, evicts A's `SyncEngine` and `TabCoordinator`, closes database handles, clears the TanStack `QueryClient` and dirty tracker, and purges sensitive browser caches before initializing B (Scenario H verified).
+- **Offline Cold Start**: Booting offline with an expired JWT restores the cached identity (`src/lib/auth/offlineSession.ts`), opens the local database, and pauses cloud sync until the session can be refreshed online.
+- **React Context Binding**: `UserSyncRuntimeProvider` wraps the React component tree, exposing typed runtime state (`uninitialized | starting | running | degraded | errored | stopped`) plus `isHydrated` and `isCloudSyncPaused`.
 
 ---
 
@@ -331,7 +346,7 @@ User Sign-Out ◄── Close User DB ◄── Abort In-Flight Sync ◄── S
 
 Supabase Realtime WebSocket channels are utilized exclusively as a **latency optimization and wakeup signal**:
 
-- When a remote change is broadcast, `RealtimeSyncManager` debounces bursts (150ms) and invokes `PullEngine`.
+- When a remote change is broadcast, `RealtimeSyncManager` debounces bursts (50ms leading + trailing edge) and, on the leader tab only, invokes a pull.
 - **Realtime is NOT a correctness boundary**: If the WebSocket connection drops, encounters timeouts (`CHANNEL_ERROR`), or is blocked by network proxies, the system remains 100% correct.
 - Upon reconnection, `RealtimeSyncManager` triggers a cursor-based catch-up pull, fetching all missed changes from `public.sync_changes`.
 
@@ -339,27 +354,35 @@ Supabase Realtime WebSocket channels are utilized exclusively as a **latency opt
 
 ## 16. Data Model
 
-### IndexedDB Local Schema (`ArtixDB`)
+### IndexedDB Local Schema (`ArtixDB`, Dexie schema v3)
 ```typescript
+projects:          'id, userId, updatedAt, name, localRevision, isDeleted'
 documents:         'id, [userId+projectId], userId, projectId, folderId, localRevision, updatedAt, isDeleted'
 system_designs:    'id, [userId+projectId], userId, projectId, folderId, localRevision, updatedAt, isDeleted'
 workspace_folders: 'id, [userId+projectId], userId, projectId, parentFolderId, name, localRevision, updatedAt, isDeleted'
 outbox:            'id, [userId+entityType+entityId], userId, state, createdAt, localRevision'
 sync_metadata:     'id, [userId+entityType], userId, entityId, syncState, localRevision, lastSyncedAt'
 conflicts:         'id, [userId+entityType+entityId], detectedAt'
-database_meta:     'key, updatedAt'
+database_meta:     'key, updatedAt'   // server_cursor, hydration_complete, legacy_migration, cached_subscription, cached_ai_generations
 ```
 
 ### PostgreSQL Cloud Schema (Supabase)
 ```sql
--- Core Entity Tables
+-- Core Synced Entity Tables
+public.projects          (id UUID PRIMARY KEY, user_id UUID, name TEXT, version INT DEFAULT 1, deleted_at TIMESTAMPTZ)
 public.documents         (id UUID PRIMARY KEY, user_id UUID, project_id UUID, folder_id UUID, title TEXT, content TEXT, version INT DEFAULT 1, deleted_at TIMESTAMPTZ)
 public.system_designs    (id UUID PRIMARY KEY, user_id UUID, project_id UUID, folder_id UUID, name TEXT, board_state JSONB, version INT DEFAULT 1, deleted_at TIMESTAMPTZ)
 public.workspace_folders (id UUID PRIMARY KEY, user_id UUID, project_id UUID, parent_folder_id UUID, name TEXT, version INT DEFAULT 1, deleted_at TIMESTAMPTZ)
 
--- Replication & Idempotency Logs
-public.sync_changes        (sequence BIGINT IDENTITY PRIMARY KEY, user_id UUID, entity_type TEXT, entity_id TEXT, operation TEXT, entity_version BIGINT, payload JSONB, changed_at TIMESTAMPTZ)
-public.processed_mutations (mutation_id UUID PRIMARY KEY, user_id UUID, entity_type TEXT, entity_id UUID, version BIGINT, updated_at TIMESTAMPTZ, processed_at TIMESTAMPTZ)
+-- Replication, Idempotency & Retention
+public.sync_changes         (sequence BIGINT IDENTITY PRIMARY KEY, user_id UUID, entity_type TEXT, entity_id TEXT, operation TEXT, entity_version BIGINT, mutation_id UUID NULL, payload JSONB, changed_at TIMESTAMPTZ)
+public.processed_mutations  (mutation_id UUID PRIMARY KEY, user_id UUID, entity_type TEXT, entity_id UUID, version BIGINT, updated_at TIMESTAMPTZ, processed_at TIMESTAMPTZ)
+public.sync_retention_state (id SMALLINT PRIMARY KEY DEFAULT 1, min_retained_sequence BIGINT, last_pruned_at TIMESTAMPTZ, updated_at TIMESTAMPTZ)
+
+-- Billing & Entitlements
+public.subscriptions  (..., plan_tier TEXT, status TEXT, billing_cycle TEXT, current_period_end TIMESTAMPTZ, reconciliation_version BIGINT, last_stripe_event_created BIGINT)
+public.stripe_events  (id UUID, stripe_event_id TEXT UNIQUE, event_type TEXT, processed_at TIMESTAMPTZ)
+public.manual_grants  (id UUID, user_id UUID UNIQUE, plan_tier TEXT, reason TEXT, granted_by TEXT, starts_at, expires_at, revoked_at TIMESTAMPTZ)
 ```
 
 ---
@@ -368,31 +391,30 @@ public.processed_mutations (mutation_id UUID PRIMARY KEY, user_id UUID, entity_t
 
 Artix includes a multi-provider prompt generation and context compiler engine:
 
-- **Provider Abstraction (`src/lib/ai/`)**: Supports OpenAI (GPT-4o), Anthropic (Claude 3.5 Sonnet), Google Gemini (Gemini 1.5 Pro/Flash), Groq, OpenRouter, and local Ollama endpoints.
-- **Streaming Pipeline (`streaming.ts`)**: Server-Sent Events (SSE) reader parsing chunked delta responses with connection timeout guards.
+- **Provider Abstraction (`src/lib/ai/`)**: Supports OpenAI (GPT-4o), Anthropic (Claude 3.5 Sonnet), Google Gemini (Gemini 1.5 Pro/Flash), Groq, OpenRouter, and local Ollama endpoints, with automatic failover from `settings.primary` to `settings.backup` in `src/lib/ai/registry.ts`.
+- **Streaming Pipeline (`streaming.ts`)**: Server-Sent Events (SSE) reader parsing chunked delta responses.
 - **2-Pass Reflection Engine (`refine.ts`)**: Prompts pass through an automatic critique pass that removes hand-waving filler words ("ensure scalability", "TBD") and expands edge cases, concrete database schemas, and explicit file paths.
-- **Prompt Compilers**: Specialized generators for Sprint PRDs (`PRDGenerator.tsx`), Vibe Coding Prompts (`VibeCoding.tsx`), and Agentic Workflows (`AgenticWorkflow.tsx`).
+- **Prompt Compilers**: Specialized generators for Sprint PRDs (`src/components/AI/PRDGeneratorDialog.tsx`), Vibe Coding Prompts (`VibeCodingDialog.tsx`), Agentic Workflows (`AgenticWorkflowDialog.tsx`), and System/Algorithm Architecture graphs (`ArchitectureGeneratorDialog.tsx`).
 
 ---
 
 ## 18. Editor & Canvas Subsystems
 
 - **Document Forge (`src/components/Editor/`)**:
-  - Monaco Editor integration with language auto-detection (Markdown, TypeScript, JSON, SQL, XML, YAML).
-  - Synchronized Markdown preview with split-pane slider and persistent user layout preferences.
-  - Tab close confirmation dialog preventing data loss if changes are pending.
+  - Locally bundled Monaco Editor (`monacoSetup.ts`, `monaco-editor` 0.57 + local worker) supporting Markdown, XML, and Plain Text formats with zero CDN dependency.
+  - Synchronized Markdown preview with persistent user toggle (`artix.editor.showPreview`) and stale-buffer overwrite protection (`StaleBufferError` + banner when remote edits arrive while dirty).
+  - Multi-format export (`src/lib/documentExport.ts`: native `.md`/`.xml`/`.txt` for all tiers; `.html` and `.pdf` for Pro).
 - **System Architect (`src/components/SystemArchitect/`)**:
-  - Node graph canvas built on React Flow.
-  - Custom SVG node renderers for cloud infrastructure (API Gateways, Microservices, Relational DBs, Caches, Event Buses).
-  - Orthogonal and Bezier edge routing with label annotations.
-  - High-resolution export to PNG, SVG, and portable JSON.
+  - Node graph canvas built on React Flow (`ArchitectNode.tsx`) with System Mode (7 infrastructure templates) and Algorithm Mode (17 data-structure/algorithm templates).
+  - Collision-free `crypto.randomUUID()` node/edge IDs, persisted inline labels and custom colors, freehand stroke overlay (`DrawingCanvas.tsx`), and `dagre` auto-layout.
+  - Drag-aware 1000ms debounced persistence and stale-buffer overwrite protection (`StaleBufferError`).
 
 ---
 
 ## 19. Security Model
 
-1. **Row Level Security (RLS)**: Every PostgreSQL table in Supabase enforces RLS policies. Client queries can only select, insert, update, or delete rows where `auth.uid() = user_id`.
-2. **BYOK Client Key Protection**: Third-party AI API keys entered by the user stay strictly client-side. By default they are stored in `localStorage` with `obf:` Base64 obfuscation (`src/lib/ai/storage.ts`); when the optional passphrase vault is enabled, keys are encrypted at rest using PBKDF2 (250,000 iterations, SHA-256) and AES-GCM 256-bit (`src/lib/ai/crypto.ts`).
+1. **Row Level Security (RLS)**: All 14 PostgreSQL tables in `public` enforce RLS policies. Client queries can only access rows where `auth.uid() = user_id` (while `stripe_events` and `sync_retention_state` writes are restricted to `service_role`, and `manual_grants` allows `authenticated` `SELECT` of own row only).
+2. **BYOK Client Key Protection**: Third-party AI API keys entered by the user stay strictly client-side. By default they are stored in `localStorage` with `obf:` Base64 obfuscation (`src/lib/ai/storage.ts`); when the optional passphrase vault is enabled, keys are encrypted at rest using PBKDF2 (600,000 iterations for `v: 2`, SHA-256; legacy `v: 1` 250,000 iterations supported for decryption) and AES-GCM 256-bit (`src/lib/ai/crypto.ts`).
 3. **Markdown AST Escaping & URL Protocol Filtering**: `MarkdownPreview.tsx` renders Markdown via `react-markdown` without `rehype-raw` (so raw inline HTML/scripts render as inert text) and enforces an explicit `sanitizeMarkdownUrl` protocol allowlist (`http:`, `https:`, `mailto:`, relative links), verified in `src/test/security.test.ts`.
 4. **Content Security Policy (CSP)**: HTTP headers restrict script, style, and iframe sources to trusted origins.
 
@@ -400,49 +422,50 @@ Artix includes a multi-provider prompt generation and context compiler engine:
 
 ## 20. Billing, Auth & PWA
 
-- **Authentication**: Managed via Supabase Auth with PKCE flow, supporting email/password and Google OAuth.
+- **Authentication**: Managed via Supabase Auth with PKCE flow, supporting email/password and Google OAuth, pre-signup email/MX validation (`validate-email`), and offline cold-start session continuity (`src/lib/auth/offlineSession.ts`) when a cached JWT expires offline.
 - **Stripe Billing**:
-  - Tier subscriptions (`free`, `pro`) managed via Supabase Edge Functions (`create-checkout-session`, `create-portal-session`, `stripe-webhook`).
-  - Webhook signatures are verified cryptographically using Stripe SDK before processing events.
-  - Database triggers enforce resource limits based on subscription tier (`enforce_tier_limits_trigger.sql`).
-- **Progressive Web App**: Configured via Vite PWA, precaching offline application assets with automated service worker updates.
+  - Tier subscriptions (`free`, `pro` at \$8/mo or \$72/yr) managed via Supabase Edge Functions (`create-checkout-session`, `create-portal-session`, `stripe-webhook`) with authoritative price allowlisting (`_shared/billingPolicy.ts`).
+  - `stripe-webhook` verifies `Stripe-Signature`, retrieves the live subscription from Stripe, enforces strict fail-closed `past_due -> free` (`GRACE_PERIOD_DAYS = 0`), and executes the single-transaction `public.reconcile_stripe_subscription` RPC.
+  - Administrative Pro overrides are stored in RLS-protected `public.manual_grants` and evaluated via `public.user_has_active_pro_entitlement`.
+  - Database triggers serialize and enforce resource limits per user (`check_plan_tier_limit()`: 3 projects / 10 documents / 3 system designs / 5 AI generations per month on Free; 100 projects and unlimited documents/designs/AI on Pro), while offline clients read cached entitlement and count local Dexie entities.
+- **Progressive Web App**: Configured via Vite PWA (`clientsClaim: true`, `skipWaiting: true`, 5 MiB precache budget, self-hosted `@fontsource/inter` and `@fontsource/jetbrains-mono`, and `navigator.storage.persist()`).
 
 ---
 
 ## 21. Testing Strategy
 
-The repository maintains strict verification standards with an automated test suite spanning **81 test files and 566 tests**:
+The repository enforces a **4-layer verification pyramid** in CI (`.github/workflows/ci.yml`):
 
 ```text
-Unit & Subsystem Tests (71 Files)
-├── Local Repositories & Dexie Storage
-├── Workspace Tabs & Navigation Shell
-├── Push Adapters & Error Taxonomy
-├── Monaco Editor & Markdown XSS Sanitization
-└── AI Streaming & Crypto Storage
+Layer 1: Unit, Repository & Component Suite (Vitest + fake-indexeddb)
+├── 107 Vitest Test Files (698 Passing Assertions)
+├── Local Repositories, Outbox Algebra & Dexie v3 Schema
+├── Workspace Tabs, Editor/Canvas Stale-Buffer Guards & XSS Sanitization
+└── Architecture Network Boundary Guards (networkBoundary.test.ts)
 
-Distributed Protocol & Correctness Tests (10 Files)
-├── casBaselinePropagation.test.ts
-├── concurrencyCAS.test.ts
-├── conflictResolver.test.ts
-├── idempotentMutation.test.ts
-├── leaderWorkerCorrectness.test.ts
-├── leaseRecovery.test.ts
-├── multiTabRuntime.test.ts
-├── outboxMutationAlgebra.test.ts
-├── pullEngine.test.ts
-└── correctnessMatrix.test.ts (Scenarios A through J)
+Layer 2: Controllable Fake-Server Distributed Fault Injection (40 Sync Suites)
+├── controllableFakeServerFaultInjection.test.ts
+├── correctnessMatrix.test.ts (Scenarios A through J)
+├── atomicPushAckAndLeaseTokenFencing.test.ts & dispatchedSelfEchoAndCausalBarrier.test.ts
+├── bootstrapHydrationAndRetentionFloor.test.tsx & pullCursorCommitOrder.test.ts
+└── multiDeviceConflictResolution.test.tsx & multiAccountEvictionAndStorageScope.test.tsx
+
+Layer 3: Real PostgreSQL 17 Concurrency, CAS, Billing & RLS (`npm run test:pg`)
+└── src/test/postgres/backendConcurrencyAndRls.pg.test.ts (6/6 Passing on PostgreSQL 17 & PGlite)
+
+Layer 4: Production PWA + Workbox Service Worker Cold-Start E2E (`npm run test:e2e`)
+└── tests/e2e/{auth,features,security,offlineColdStartAndSyncMatrix}.spec.ts (18 Chromium Specs)
 ```
 
 ### Distributed Failure Matrix (`correctnessMatrix.test.ts`)
 - **Scenario A**: Local durability (offline create -> edit -> reload/restart)
-- **Scenario B**: Ambiguous remote result (lost response -> idempotent retry)
-- **Scenario C**: Concurrent edits (version mismatch -> 409 CAS conflict -> outbox blocked)
-- **Scenario D**: Local edit during push (revision safety -> ack $N$ preserves $N+1$)
+- **Scenario B**: Ambiguous remote result (lost response -> idempotent `apply_sync_mutation` retry)
+- **Scenario C**: Concurrent edits (version mismatch -> CAS conflict -> outbox blocked)
+- **Scenario D**: Local edit during push (immutable `dispatched` flag + self-echo `mutation_id` guard preserves $N+1$)
 - **Scenario E**: Remote stale snapshot (stale server change rejected -> local pending preserved)
-- **Scenario F**: Remote delete (offline client reconnects -> soft-delete confirmed)
-- **Scenario G**: Leader crash mid-push (immediate orphaned lease recovery to standby)
-- **Scenario H**: Account switch (User A stopped -> User B started -> zero data leakage)
+- **Scenario F**: Remote delete (offline client reconnects -> soft-delete or `remote_deleted` conflict)
+- **Scenario G**: Leader crash mid-push (immediate orphaned lease recovery + `leaseToken` fencing)
+- **Scenario H**: Account switch (User A stopped -> caches/QueryClient/coordinators evicted -> User B started)
 - **Scenario I**: Realtime failure (cursor-based pull converges without realtime)
 - **Scenario J**: Duplicate event deduplication (cursor filter prevents repeated mutations)
 
@@ -451,8 +474,8 @@ Distributed Protocol & Correctness Tests (10 Files)
 ## 22. Repository Structure
 
 ```text
-c:\Fenix-main\
-├── docs/                      # Canonical Technical Documentation System
+Artix/
+├── docs/                      # Canonical Technical Documentation System (v2.5.0)
 │   ├── architecture/          # System architecture, data models, lifecycle
 │   ├── algorithms/            # Sync, outbox, CAS, pull, push, conflict algorithms
 │   ├── subsystems/            # Editor, canvas, AI, auth, billing, PWA guides
@@ -460,26 +483,31 @@ c:\Fenix-main\
 │   ├── engineering/           # Development guidelines, testing, migrations
 │   ├── decisions/             # Architectural Decision Records (ADRs 001–007)
 │   ├── reference/             # API reference, DB schema, network inventory, registry
+│   ├── audits/                # Repository audit reports and historical remediation records
 │   └── archive/               # Historical plans and superseded design notes
 ├── prd/                       # Product Requirements & Specifications
 │   ├── ARTIX_PRODUCT_REQUIREMENTS_DOCUMENT.md
 │   ├── TECHNICAL_SPECIFICATIONS.md
 │   └── VIBE_CODING_PLAYBOOK.md
 ├── src/
-│   ├── components/            # React UI components (Editor, Canvas, Tabs, Dialogs)
+│   ├── components/            # React UI components (Editor, SystemArchitect, AI, ConflictModal)
 │   ├── contexts/              # UserSyncRuntimeContext and provider
-│   ├── hooks/                 # React hooks (useDocuments, useWorkspaceTabs, etc.)
+│   ├── hooks/                 # React hooks (useProjects, useDocuments, useWorkspaceTabs, etc.)
 │   ├── lib/
-│   │   ├── ai/                # AI providers, crypto, streaming, prompt generation
-│   │   ├── local/             # Dexie database, entity types, user scoping
-│   │   ├── repositories/      # Local repository abstraction (atomic mutations)
-│   │   ├── sync/              # SyncEngine, PullEngine, TabCoordinator, Adapters
-│   │   └── workspace/         # Tab persistence, resource adapters, DAG grouping
-│   ├── pages/                 # Route pages (ProjectWorkspace, Dashboard, Pricing)
-│   └── test/                  # 81 Vitest test suites (566 tests)
-└── supabase/
-    ├── functions/             # Stripe Edge Functions (Deno)
-    └── migrations/            # Versioned SQL migrations (CAS, Change Feed, Ledger)
+│   │   ├── ai/                # AI providers, crypto (v2 600k PBKDF2), streaming, prompts
+│   │   ├── auth/              # Offline expired-JWT session continuity (offlineSession.ts)
+│   │   ├── cache/             # Local draft recovery, debounced save, tabCloseGuard
+│   │   ├── local/             # Dexie ArtixDB v3 (8 tables), entity types, user scoping
+│   │   ├── repositories/      # Project, Document, SystemDesign, Folder, Outbox, Conflict repos
+│   │   ├── sync/              # SyncEngine, PullEngine, TabCoordinator, Adapters, ErrorTaxonomy
+│   │   └── workspace/         # User-scoped tab persistence, resource adapters, DAG grouping
+│   ├── pages/                 # Route pages (Dashboard, ProjectWorkspace, Pricing, Settings, Auth)
+│   └── test/                  # 107 Vitest suites + Layer 3 PostgreSQL concurrency/RLS suite
+├── supabase/
+│   ├── functions/             # Deno Edge Functions (stripe-webhook, checkout, portal, validate-email)
+│   └── migrations/            # 25 SQL migrations (Expand/Contract CAS, Change Feed, Billing, RLS)
+└── tests/
+    └── e2e/                   # 4 Playwright E2E & production PWA cold-start spec suites
 ```
 
 ---
@@ -488,15 +516,16 @@ c:\Fenix-main\
 
 | Capability / Module | Implementation Status | Verification Notes |
 |---|---|---|
-| IndexedDB Authority | `IMPLEMENTED` | User-scoped Dexie instances with atomic transactions. |
-| CAS Concurrency | `IMPLEMENTED` | Optimistic PostgreSQL version predicates & triggers. |
-| Durable Outbox | `IMPLEMENTED` | Topological DAG ordering, compaction algebra, crash recovery. |
-| Pull Change Feed | `IMPLEMENTED` | Sequence cursors querying `public.sync_changes`. |
-| Single-Leader Tabs | `IMPLEMENTED` | Native Web Locks API leader election. |
-| Realtime Wakeup | `IMPLEMENTED` | Supabase Realtime channel with 150ms debouncing. |
-| Tombstone Lifecycle | `IMPLEMENTED` | Soft-delete state machine with 30-day garbage collection. |
-| AI Prompt Engine | `IMPLEMENTED` | Multi-mode PRD generator and Vibe prompt compiler. |
-| Multi-Tab Editor | `IMPLEMENTED` | Persistent workspace tabs with dirty state detection. |
+| IndexedDB Authority (`ArtixDB` v3) | `IMPLEMENTED` | User-scoped 8-table Dexie instances (incl. `projects`) with atomic transactions. |
+| Atomic Server CAS (`apply_sync_mutation`) | `IMPLEMENTED` | Single-transaction advisory lock, `processed_mutations`, and `version = p_base_version`. |
+| Durable Outbox & Causal Barrier | `IMPLEMENTED` | Topological DAG ordering, 7-case compaction, `dispatched` flag, `leaseToken` fencing. |
+| Pull Change Feed & Retention Floor | `IMPLEMENTED` | Commit-ordered `sync_changes`, `mutation_id` self-echo, `bootstrapHydrateAll`, `resnapshotAll`. |
+| Single-Leader Tabs | `IMPLEMENTED` | Native Web Locks API leader election + post-commit cross-tab `localRevision` broadcasts. |
+| Realtime Wakeup | `IMPLEMENTED` | Supabase Realtime channel with 50ms leading+trailing debouncing on leader tab. |
+| Tombstone Lifecycle | `IMPLEMENTED` | Soft-delete state machine across 4 entity tables with 30-day garbage collection. |
+| AI Prompt Engine | `IMPLEMENTED` | PRD, Vibe, Agentic, and Architecture generators with 2-pass refinement & failover. |
+| Multi-Tab Editor & Stale-Buffer Guard | `IMPLEMENTED` | Locally bundled Monaco, user-scoped tab persistence, and `StaleBufferError` banners. |
+| Atomic Billing & Offline Entitlements | `IMPLEMENTED` | `reconcile_stripe_subscription` RPC, strict `past_due -> free`, `manual_grants`, Dexie cache. |
 | GitHub Sync | `PLANNED` | Bi-directional git commit export and PR creation. |
 | Excalidraw Engine | `PLANNED` | Hybrid integration with React Flow canvas. |
 | Collaborative CRDTs | `PROPOSED` | Fine-grained character-level Yjs collaborative editing. |
@@ -554,8 +583,8 @@ The canonical documentation is organized into focused, authoritative guides unde
 ## Quickstart & Development
 
 ### Prerequisites
-- Node.js >= 18.0.0
-- npm >= 9.0.0
+- Node.js >= 20.0.0 (Node 20 LTS used in CI)
+- npm >= 10.0.0
 
 ### Installation & Run
 ```bash
@@ -566,14 +595,20 @@ cd Artix
 # Install dependencies
 npm install
 
-# Start local development server
+# Start local development server (http://localhost:8080)
 npm run dev
 
-# Run comprehensive test suite (81 test files, 566 tests)
+# Run Layer 1 & 2 Vitest unit/integration + fault-injection suite (107 files, 698 tests)
 npm test
+
+# Run Layer 3 PostgreSQL concurrency, CAS, billing & RLS suite (6/6 tests)
+npm run test:pg
 
 # Build production bundle
 npm run build
+
+# Run Layer 4 Playwright production PWA E2E suite (builds & previews with active Workbox SW)
+npm run test:e2e
 ```
 
 ---

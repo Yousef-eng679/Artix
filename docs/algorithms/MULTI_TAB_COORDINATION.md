@@ -1,7 +1,7 @@
 # Multi-Tab Coordination & Web Locks Leader Protocol
 
 > **Status**: `IMPLEMENTED`  
-> **Verified Against**: `src/lib/sync/tabCoordinator.ts`, `src/test/sync/tabCoordinator.test.ts`, `src/test/sync/leaderWorkerCorrectness.test.ts`
+> **Verified Against**: `src/lib/sync/tabCoordinator.ts`, `src/test/sync/tabCoordinator.test.ts`, `src/test/sync/leaderWorkerCorrectness.test.ts`, `src/test/sync/pullUiReactivityAndCrossTab.test.tsx`, `src/test/sync/multiAccountEvictionAndStorageScope.test.tsx`
 
 ---
 
@@ -54,25 +54,35 @@ export type CrossTabMessage =
 export interface CrossTabChangeEvent {
   type: 'ENTITY_CHANGED';
   tabId: string;
-  entityType: 'document' | 'system_design' | 'workspace_folder';
+  entityType: 'project' | 'document' | 'system_design' | 'workspace_folder';
   entityId: string;
   operation: 'create' | 'update' | 'delete';
   localRevision: number;
+  timestamp: number;
 }
 
 export interface CrossTabSyncRequestEvent {
   type: 'REQUEST_SYNC';
   tabId: string;
+  userId?: string;
+  timestamp: number;
+}
+
+export interface CrossTabLeaderEvent {
+  type: 'LEADER_ELECTED';
+  tabId: string;
+  timestamp: number;
 }
 ```
 
-### Event Flow on Local Edit
+### Event Flow on Local Edit & Remote Pull
 1. User types in Tab B (Standby tab).
-2. Tab B writes change to local IndexedDB (`localRevision: 5`).
-3. Tab B broadcasts `ENTITY_CHANGED` via BroadcastChannel.
-4. Tab A (Leader tab) receives `ENTITY_CHANGED` and refreshes its in-memory view.
-5. Tab B sends `REQUEST_SYNC` to Tab A.
-6. Tab A wakes up `SyncEngine` and pushes Revision 5 to Supabase.
+2. Tab B writes the change to local IndexedDB (`localRevision: 5`).
+3. After the Dexie transaction commits, Tab B broadcasts `ENTITY_CHANGED` carrying the real `localRevision` (`5`) via `BroadcastChannel`.
+4. Tab A (Leader tab) receives `ENTITY_CHANGED`, invalidates its React Query cache, and updates open editors/canvases (clean buffers hot-reload; dirty buffers surface a stale-buffer banner).
+5. Tab B sends `REQUEST_SYNC` to Tab A, waking `SyncEngine` to push Revision 5 to Supabase.
+6. Conversely, when `PullEngine` commits a remote batch on the leader tab, it invokes `coordinator.notifyRemoteChange(...)` **post-commit** (`tabId: 'remote-pull'`) with each entity's persisted `localRevision`, notifying both local-tab listeners and peer standby tabs.
+7. Only the leader tab triggers pulls from `RealtimeSyncManager` wakeups (`if (coordinator.getIsLeader())`), and on account switch or sign-out `evictTabCoordinator(userId)` releases the Web Lock, closes the `BroadcastChannel`, and evicts the per-user singleton.
 
 ---
 
@@ -108,4 +118,4 @@ if (typeof navigator !== 'undefined' && navigator.locks && navigator.locks.reque
   this.isLeader = true;
 }
 ```
-For integration testing, `TabCoordinator` exposes `setLeaderForTesting(boolean)` to simulate failover scenarios programmatically.
+For integration testing, `TabCoordinator` exposes `setLeaderForTesting(boolean)` to simulate failover scenarios programmatically. Even if a tab stalls or runs in a fallback environment, storage-layer `leaseToken` fencing in `OutboxRepository` / `SyncEngine` prevents any stale leader from committing out-of-date push acknowledgements or error transitions.

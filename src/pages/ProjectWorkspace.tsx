@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { Loader2 } from 'lucide-react';
 import { useAuth } from '@/hooks/useAuth';
+import { useUserSyncRuntime } from '@/contexts/UserSyncRuntimeContext';
 import { useProjects } from '@/hooks/useProjects';
 import { useDocuments } from '@/hooks/useDocuments';
 import { useSystemDesigns, BoardState } from '@/hooks/useSystemDesigns';
@@ -9,7 +10,7 @@ import { useUsageLimits } from '@/hooks/useUsageLimits';
 import { useWorkspaceNavigation } from '@/hooks/useWorkspaceNavigation';
 import { useWorkspaceFolders } from '@/hooks/useWorkspaceFolders';
 import { toWorkspaceResources } from '@/lib/workspace/resourceAdapter';
-import { WorkspaceSelection, WorkspaceFolder, SidebarFilterKind } from '@/types/workspace';
+import { WorkspaceSelection, WorkspaceFolder, SidebarFilterKind, WorkspaceResource } from '@/types/workspace';
 import { ProjectWorkspaceLayout } from '@/components/ProjectWorkspace/ProjectWorkspaceLayout';
 import { ProjectWorkspaceSidebar } from '@/components/ProjectWorkspace/ProjectWorkspaceSidebar';
 import { ProjectOverview } from '@/components/ProjectWorkspace/ProjectOverview';
@@ -31,10 +32,13 @@ const ProjectWorkspace = () => {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const { user, loading: authLoading } = useAuth();
+  const runtimeContext = useUserSyncRuntime();
+  const isRuntimeReady = !runtimeContext || runtimeContext.isReady;
   const { projects, isLoading: projectsLoading } = useProjects();
   const {
     documents,
     isLoading: docsLoading,
+    isFetching: docsFetching,
     createDocument,
     updateDocument,
     deleteDocument,
@@ -42,6 +46,7 @@ const ProjectWorkspace = () => {
   const {
     designs,
     isLoading: designsLoading,
+    isFetching: designsFetching,
     createDesign,
     updateDesign,
     deleteDesign,
@@ -80,7 +85,23 @@ const ProjectWorkspace = () => {
     return toWorkspaceResources(documents, designs, id || '');
   }, [documents, designs, id]);
 
-  const isResourcesLoaded = !docsLoading && !designsLoading;
+  const isInitialOnlineHydrating = Boolean(
+    runtimeContext &&
+      runtimeContext.isReady &&
+      runtimeContext.isHydrated === false &&
+      typeof navigator !== 'undefined' &&
+      navigator.onLine !== false,
+  );
+  const isInitialRefetchPending =
+    (docsFetching && documents.length === 0) || (designsFetching && designs.length === 0);
+  const isResourcesLoaded =
+    !authLoading &&
+    Boolean(user) &&
+    isRuntimeReady &&
+    !isInitialOnlineHydrating &&
+    !docsLoading &&
+    !designsLoading &&
+    !isInitialRefetchPending;
   const {
     tabs,
     activeTabId,
@@ -154,7 +175,7 @@ const ProjectWorkspace = () => {
 
   // Canonicalization on missing resource or project boundary violation
   useEffect(() => {
-    if (docsLoading || designsLoading) return;
+    if (!isResourcesLoaded || docsFetching || designsFetching) return;
 
     if (rawDocId) {
       if (recentlyCreatedRef.current.has(rawDocId)) {
@@ -187,7 +208,7 @@ const ProjectWorkspace = () => {
         setSearchParams(nextParams, { replace: true });
       }
     }
-  }, [rawDocId, rawDesignId, docsLoading, designsLoading, documents, designs, searchParams, setSearchParams]);
+  }, [rawDocId, rawDesignId, isResourcesLoaded, documents, designs, searchParams, setSearchParams]);
 
   // Purely derived selection state (zero duplicate useState)
   const selection: WorkspaceSelection = useMemo(() => {
@@ -236,7 +257,7 @@ const ProjectWorkspace = () => {
   const executedActionRef = useRef<string | null>(null);
 
   useEffect(() => {
-    if (projectsLoading || docsLoading || designsLoading || !id) return;
+    if (projectsLoading || !isResourcesLoaded || !id) return;
 
     const action = searchParams.get('action');
     if (!action || executedActionRef.current === action) return;
@@ -267,16 +288,25 @@ const ProjectWorkspace = () => {
           toast.error('Failed to start vibe coding');
         });
     }
-  }, [projectsLoading, docsLoading, designsLoading, id, searchParams, setSearchParams, createDocument]);
+  }, [projectsLoading, isResourcesLoaded, id, searchParams, setSearchParams, createDocument]);
 
-  const handleSaveDesign = useCallback(async (boardState: BoardState) => {
-    if (!activeDesign?.id) return;
-    await updateDesign({ id: activeDesign.id, board_state: boardState });
-  }, [activeDesign?.id, updateDesign]);
+  const handleSaveDesign = useCallback(
+    async (boardState: BoardState, options?: { expectedLocalRevision?: number }) => {
+      if (!activeDesign?.id) return;
+      return await updateDesign({
+        id: activeDesign.id,
+        board_state: boardState,
+        ...(options?.expectedLocalRevision !== undefined
+          ? { expectedLocalRevision: options.expectedLocalRevision }
+          : {}),
+      });
+    },
+    [activeDesign?.id, updateDesign],
+  );
 
   const handleUpdateDesignName = useCallback(async (name: string) => {
     if (!activeDesign?.id) return;
-    await updateDesign({ id: activeDesign.id, name });
+    return await updateDesign({ id: activeDesign.id, name });
   }, [activeDesign?.id, updateDesign]);
 
   // Helper to detect duplicate resource names in the same folder / location
@@ -501,12 +531,18 @@ const ProjectWorkspace = () => {
     }
   };
 
-  const handleSaveDocument = async (updates: Partial<Document>) => {
+  const handleSaveDocument = async (
+    updates: Partial<Document> & { expectedLocalRevision?: number },
+  ) => {
     if (!updates.id) return;
     try {
-      await updateDocument(updates as Partial<Document> & { id: string });
-    } catch (error) {
-      toast.error('Failed to save document');
+      return await updateDocument(
+        updates as Partial<Document> & { id: string; expectedLocalRevision?: number },
+      );
+    } catch (error: any) {
+      if (error?.code !== 'STALE_BUFFER') {
+        toast.error('Failed to save document');
+      }
       throw error;
     }
   };
@@ -683,6 +719,17 @@ const ProjectWorkspace = () => {
             key={activeDocument.id}
             document={activeDocument}
             onSave={handleSaveDocument}
+            onSaveAsCopy={async ({ title, content, format }) => {
+              const copy = await createDocument({
+                projectId: id,
+                title,
+                content,
+                format,
+                folderId: activeDocument.folder_id ?? null,
+              });
+              recentlyCreatedRef.current.add(copy.id);
+              toast.success('Saved local edits as a copy');
+            }}
             onBack={openOverview}
             projectId={id}
           />
@@ -697,6 +744,17 @@ const ProjectWorkspace = () => {
             key={activeDesign.id}
             design={activeDesign}
             onSave={handleSaveDesign}
+            onSaveAsCopy={async ({ name, boardState }) => {
+              if (!id) return;
+              const copy = await createDesign({
+                name,
+                projectId: id,
+                folderId: activeDesign.folder_id ?? null,
+                boardState,
+              });
+              recentlyCreatedRef.current.add(copy.id);
+              toast.success('Saved local board edits as a copy');
+            }}
             onUpdateName={handleUpdateDesignName}
             onBack={openOverview}
             documents={documents.map((d) => ({ id: d.id, title: d.title, content: d.content || '' }))}

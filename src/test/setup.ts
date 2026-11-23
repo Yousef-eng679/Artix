@@ -3,19 +3,21 @@ import "fake-indexeddb/auto";
 import { vi } from "vitest";
 import { FunctionsClient } from "@supabase/functions-js";
 
-Object.defineProperty(window, "matchMedia", {
-  writable: true,
-  value: (query: string) => ({
-    matches: false,
-    media: query,
-    onchange: null,
-    addListener: () => {},
-    removeListener: () => {},
-    addEventListener: () => {},
-    removeEventListener: () => {},
-    dispatchEvent: () => {},
-  }),
-});
+if (typeof window !== "undefined") {
+  Object.defineProperty(window, "matchMedia", {
+    writable: true,
+    value: (query: string) => ({
+      matches: false,
+      media: query,
+      onchange: null,
+      addListener: () => {},
+      removeListener: () => {},
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      dispatchEvent: () => {},
+    }),
+  });
+}
 
 // Provide fallback mock env vars for testing environments without .env
 if (!process.env.VITE_SUPABASE_URL) {
@@ -32,4 +34,3 @@ vi.spyOn(FunctionsClient.prototype, "invoke").mockImplementation(async (function
   }
   return { data: null, error: null };
 });
-

@@ -21,11 +21,11 @@ export default function CheckoutSuccess() {
       try {
         const { data, error } = await supabase
           .from('subscriptions')
-          .select('plan_tier')
+          .select('plan_tier, status')
           .eq('user_id', user.id)
           .single();
 
-        if (!error && data?.plan_tier === 'pro') {
+        if (!error && data?.plan_tier === 'pro' && data?.status === 'active') {
           setStatus('success');
           setTimeout(() => {
             navigate('/dashboard', { replace: true });

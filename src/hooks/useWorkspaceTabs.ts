@@ -12,6 +12,8 @@ import {
   reconcileTabs as pureReconcileTabs,
 } from '@/lib/workspace/workspaceTabs';
 import { loadWorkspaceTabs, saveWorkspaceTabs } from '@/lib/workspace/tabPersistence';
+import { useUserSyncRuntime } from '@/contexts/UserSyncRuntimeContext';
+import { getActiveUserScope } from '@/lib/local/db';
 
 export interface UseWorkspaceTabsResult {
   tabs: WorkspaceTab[];
@@ -26,7 +28,7 @@ export interface UseWorkspaceTabsResult {
 
 /**
  * Hook to manage workspace tabs, synchronized with URL navigation,
- * project-scoped persistence, and resource lifecycle reconciliation.
+ * user+project-scoped persistence, and resource lifecycle reconciliation.
  */
 export function useWorkspaceTabs(
   projectId: string,
@@ -35,6 +37,8 @@ export function useWorkspaceTabs(
 ): UseWorkspaceTabsResult {
   const [searchParams] = useSearchParams();
   const { openDocument, openDesign, openOverview } = useWorkspaceNavigation();
+  const runtimeCtx = useUserSyncRuntime();
+  const activeUserScope = runtimeCtx?.runtime?.userId ?? getActiveUserScope();
 
   // Active tab ID derived directly from URL search params (Single Source of Truth)
   const rawDocId = searchParams.get('doc');
@@ -48,7 +52,7 @@ export function useWorkspaceTabs(
 
   // Tab list state - initialized from project persistence + current URL active resource
   const [tabs, setTabs] = useState<WorkspaceTab[]>(() => {
-    const persisted = loadWorkspaceTabs(projectId) ?? [];
+    const persisted = loadWorkspaceTabs(projectId, activeUserScope) ?? [];
     if (rawDocId) {
       const docTabId = makeTabId('document', rawDocId);
       if (!persisted.some((t) => t.id === docTabId)) {
@@ -63,15 +67,16 @@ export function useWorkspaceTabs(
     return persisted;
   });
 
-  // Track project changes to reload persisted tabs if project ID changes
-  const prevProjectIdRef = useRef(projectId);
+  // Track user/project scope changes to reload persisted tabs if project ID or user changes
+  const scopeKey = `${activeUserScope ?? ''}:${projectId}`;
+  const prevScopeKeyRef = useRef(scopeKey);
   useEffect(() => {
-    if (prevProjectIdRef.current !== projectId) {
-      prevProjectIdRef.current = projectId;
-      const loaded = loadWorkspaceTabs(projectId) ?? [];
+    if (prevScopeKeyRef.current !== scopeKey) {
+      prevScopeKeyRef.current = scopeKey;
+      const loaded = loadWorkspaceTabs(projectId, activeUserScope) ?? [];
       setTabs(loaded);
     }
-  }, [projectId]);
+  }, [scopeKey, projectId, activeUserScope]);
 
   // Synchronize deep-link: if URL changes to a resource not yet in tabs, add it
   useEffect(() => {
@@ -97,9 +102,9 @@ export function useWorkspaceTabs(
   // Persist tabs whenever tabs array changes
   useEffect(() => {
     if (projectId) {
-      saveWorkspaceTabs(projectId, tabs);
+      saveWorkspaceTabs(projectId, tabs, activeUserScope);
     }
-  }, [projectId, tabs]);
+  }, [projectId, tabs, activeUserScope]);
 
   // Reconcile tabs when resources list changes (e.g. resource deletion)
   // Only execute reconciliation when resources have finished loading

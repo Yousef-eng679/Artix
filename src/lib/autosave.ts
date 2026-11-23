@@ -2,12 +2,12 @@
  * autosave.ts
  * ───────────
  * React hook for debounced auto-save with:
- *  - Two-tier caching (localStorage draft → DB write)
- *  - Tab close protection (sendBeacon / keepalive flush)
+ *  - Two-tier local caching (localStorage crash draft -> Dexie repository write)
+ *  - Local-only tab close protection (beforeunload flush)
  *  - Dirty-state tracking for beforeunload
  *
- * The hook's public API is unchanged from the original:
- *   { status, triggerSave, cancelSave }
+ * The hook's public API is:
+ *   { status, triggerSave, cancelSave, getVersion }
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -19,23 +19,13 @@ import { dirtyTracker } from './workspace/dirtyTracker';
 export type SaveStatus = 'idle' | 'saving' | 'saved' | 'error';
 
 interface UseAutoSaveOptions {
-  /** Debounce delay in ms before firing the DB save. Default 1500. */
+  /** Debounce delay in ms before firing the local DB save. Default 1500. */
   delay?: number;
-  /** The save callback (writes to Supabase). */
+  /** The save callback (writes to local Dexie repository + Outbox). */
   onSave: (content: string) => Promise<void>;
-  /** Document ID — enables localStorage draft caching. */
+  /** Document ID — enables localStorage crash-draft caching. */
   documentId?: string;
 }
-
-/**
- * Endpoint used by the tab-close guard to flush dirty content.
- * In the current architecture the guard's sendBeacon call acts as a
- * best-effort fire-and-forget; the Supabase client SDK handles the
- * real persistence. We use a no-op endpoint here — the guard's main
- * value is the dirty-state tracking which triggers the save via
- * flushSync before the page unloads.
- */
-const SAVE_ENDPOINT = '/api/save';
 
 export function useAutoSave({ delay = 1500, onSave, documentId }: UseAutoSaveOptions) {
   const [status, setStatus] = useState<SaveStatus>('idle');
@@ -57,7 +47,7 @@ export function useAutoSave({ delay = 1500, onSave, documentId }: UseAutoSaveOpt
   const guardRef = useRef<TabCloseGuard | null>(null);
 
   useEffect(() => {
-    const guard = createTabCloseGuard(SAVE_ENDPOINT);
+    const guard = createTabCloseGuard();
     guardRef.current = guard;
 
     const queue = createSaveQueue(async (payload) => {
@@ -72,7 +62,7 @@ export function useAutoSave({ delay = 1500, onSave, documentId }: UseAutoSaveOpt
       try {
         setStatus('saving');
         await queue.enqueue({ id: documentId || 'current-doc', content });
-        // Mark clean — DB save succeeded
+        // Mark clean — local Dexie save succeeded
         if (documentId) {
           guard.markClean(documentId);
           dirtyTracker.markClean(documentId);
@@ -88,7 +78,7 @@ export function useAutoSave({ delay = 1500, onSave, documentId }: UseAutoSaveOpt
     const saver = createDebouncedSaver(wrappedSave, delay, documentId);
     saverRef.current = saver;
 
-    // Wire beforeunload to flush pending saves
+    // Wire beforeunload to flush pending saves locally
     const onBeforeUnload = () => {
       saver.flushSync();
       guard.handleBeforeUnload();
@@ -114,9 +104,12 @@ export function useAutoSave({ delay = 1500, onSave, documentId }: UseAutoSaveOpt
     [documentId],
   );
 
-  const cancelSave = useCallback(() => {
-    saverRef.current?.cancel();
-  }, []);
+  const cancelSave = useCallback(
+    () => {
+      saverRef.current?.cancel();
+    },
+    [],
+  );
 
   const getVersion = useCallback(
     (id?: string) => queueRef.current?.getVersion(id || documentId || 'current-doc'),

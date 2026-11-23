@@ -1,33 +1,33 @@
 # Artix Application & Session Lifecycle
 
 > **Status**: `IMPLEMENTED`  
-> **Verified Against**: `src/lib/sync/userSyncRuntime.ts`, `src/contexts/UserSyncRuntimeContext.tsx`, `src/test/sync/userSyncRuntimeLifecycle.test.tsx`
+> **Verified Against**: `src/lib/sync/userSyncRuntime.ts`, `src/contexts/UserSyncRuntimeContext.tsx`, `src/hooks/useAuth.tsx`, `src/lib/auth/offlineSession.ts`, `src/test/sync/userSyncRuntimeLifecycle.test.tsx`, `src/test/sync/offlineLifecycleMatrix.test.ts`, `src/test/sync/multiAccountEvictionAndStorageScope.test.tsx`
 
 ---
 
 ## 1. Overview
 
-Artix decouples browser session initialization from persistent data ownership. The synchronization runtime, local database instances, and cloud connections are strictly scoped to the authenticated user's session lifecycle.
+Artix decouples browser session initialization from persistent data ownership. The synchronization runtime, local database instances, and cloud connections are strictly scoped to the authenticated user's session lifecycle—and remain available offline even when a cached JWT has expired (`recoverOfflineSessionFromStorage`).
 
 ---
 
 ## 2. Complete Lifecycle Flow
 
 ```text
-Browser Launch
+Browser Launch (`src/main.tsx`: purges legacy `supabase-api-cache` via `clearSensitiveBrowserCaches`)
       │
       ▼
 ┌──────────────┐
 │  React App   │ ──► Auth Provider Mounts (`src/hooks/useAuth.tsx`)
 └──────┬───────┘
        │
-       ├─── No User / Logged Out
+       ├─── No User & No Stored Session
        │        │
        │        ▼
        │   Render Public Routes (/auth, /pricing)
        │   Zero Database Instances Active
        │
-       └─── User Authenticated (`user.id` present)
+       └─── User Authenticated (Live Session OR Offline Recovered Session)
                 │
                 ▼
        ┌────────────────────────────────────────────────────────┐
@@ -41,14 +41,15 @@ Browser Launch
        │         (`src/lib/sync/userSyncRuntime.ts`)            │
        └────────────────────────┬───────────────────────────────┘
                                 │
-                                ├── 1. Compute User Scope Hash (`getUserScopeHash`)
-                                ├── 2. Open User DB (`ArtixDB_v2_<hash>`)
-                                ├── 3. Execute Legacy DB Migrations (`migrateLegacyArtixDB`)
-                                ├── 4. Recover Crashed Outbox Leases
-                                ├── 5. Initialize Repositories (Document, Design, Folder, etc.)
-                                ├── 6. Instantiate Engines (SyncEngine, PullEngine, TabCoordinator)
-                                ├── 7. Acquire Web Lock Leadership (`acquireLeaderLock`)
-                                └── 8. Start Realtime Listener (`RealtimeSyncManager.start`)
+                                ├── 1. Request Durable Storage (`navigator.storage.persist()`)
+                                ├── 2. Open User DB (`ArtixDB_v2_<hash>`, schema v3, 8 tables)
+                                ├── 3. Execute Legacy DB Migration (`migrateLegacyArtixDB` + CAS heal)
+                                ├── 4. Recover Crashed Outbox Leases (`recoverStaleLeases`)
+                                ├── 5. Initialize Repositories (Project, Folder, Document, Design, Outbox, Conflict, Meta)
+                                ├── 6. Read `database_meta['hydration_complete']` (`isHydrated`)
+                                ├── 7. Instantiate Engines (SyncEngine, PullEngine, TabCoordinator)
+                                ├── 8. Acquire Web Lock Leadership (`acquireLeaderLock`)
+                                └── 9. Start Realtime Listener (`RealtimeSyncManager.start`, paused if offline JWT expired)
                                 │
                                 ▼
        ┌────────────────────────────────────────────────────────┐
@@ -61,43 +62,33 @@ Browser Launch
 
 ## 3. Detailed Lifecycle Transitions
 
-### 3.1 Startup & Authentication Initialization
-When a user signs in:
-1. `UserSyncRuntimeProvider` detects the transition from `user = null` to `user = { id: '...' }`.
-2. Provider sets runtime status to `initializing`.
-3. Calls `openUserRuntime(userId)`:
-   - Computes deterministic 32-bit FNV-1a hash of `userId`.
-   - Opens Dexie database named `ArtixDB_v2_<hash>`.
-   - If a legacy unpartitioned `ArtixDB` exists from older versions, atomically migrates records to the user-scoped database without data loss.
-4. **Crash Recovery**: Queries `outbox` table for any records stuck in `in_flight` state with expired leases (`leaseExpiresAt < Date.now()`). Reclaims them back to `state: 'pending'` and clears `leaseOwner`.
-5. Status transitions to `running`. The React tree is granted access to the active repositories.
+### 3.1 Startup, Offline Cold-Start & Authentication Initialization
+1. **Online Startup**: `useAuth` calls `supabase.auth.getSession()`. When `user.id` is present, `UserSyncRuntimeProvider` transitions runtime state to `'starting'` and invokes `openUserRuntime(userId)`.
+2. **Offline Expired-JWT Continuity (`src/lib/auth/offlineSession.ts`)**: If the user cold-starts the app offline (or token refresh fails due to network loss) after their cached JWT's `exp` timestamp has elapsed:
+   - `recoverOfflineSessionFromStorage()` parses the persisted Supabase session token (`sb-<host>-auth-token`) in `localStorage` and restores the user identity with `isOfflineSession = true`.
+   - `UserSyncRuntimeProvider` opens the user's `ArtixDB_v2_<hash>` database and pauses cloud traffic (`runtime.setCloudSyncPaused(true)`) so all local projects, folders, documents, and designs remain 100% readable and editable offline.
+   - When connectivity returns, `useAuth` attempts `supabase.auth.refreshSession()`. If the refresh succeeds, cloud sync unpauses and drains the outbox; if the server rejects the refresh with a fatal `4xx` (`invalid_grant`), `reauthRequired = true` surfaces the non-destructive `reauth-sync-banner` without wiping local IndexedDB drafts.
+3. **Database Initialization & Crash Recovery**:
+   - Requests `navigator.storage.persist()` and samples `navigator.storage.estimate()`.
+   - Opens `ArtixDB_v2_<hash>` (schema v3, 8 tables) and runs `migrateLegacyArtixDB` (including healing legacy null `baseServerVersion` values from `sync_metadata`).
+   - Reclaims any `in_flight` outbox entries whose 30-second lease has expired (`leaseExpiresAt < Date.now()`) back to `state: 'pending'`.
+   - Reads `database_meta['hydration_complete']` and exposes `isHydrated` so deep-linked routes (`/projects/:id?doc=:docId`) wait for initial hydration before reconciling workspace tabs.
 
 ### 3.2 Account Switching (User A -> User B)
-Artix guarantees **zero cross-tenant cache leakage**:
-1. When User A signs out and User B signs in:
-   ```typescript
-   // Inside openUserRuntime(newUserId):
-   if (activeRuntime && activeRuntime.userId !== newUserId) {
-     await activeRuntime.stop(); // Cleanly closes User A's runtime & DB
-     activeRuntime = null;
-   }
-   ```
-2. User A's Realtime channel is unsubscribed.
-3. User A's in-flight background sync tasks are aborted.
-4. User A's IndexedDB connection is closed and evicted from memory cache (`dbInstances.delete(...)`).
-5. User B's isolated database `ArtixDB_v2_<hash_B>` is initialized.
-6. Verified by Scenario H in `src/test/sync/correctnessMatrix.test.ts`.
+Artix guarantees **zero cross-tenant cache or storage leakage**:
+1. When User A signs out or switches to User B:
+   - `closeUserRuntime(userA)` stops Realtime subscriptions, aborts in-flight sync and retry timers, releases the Web Lock, closes the `BroadcastChannel` (`evictTabCoordinator(userA)`), evicts the `SyncEngine` singleton, and closes/evicts `ArtixDB_v2_<hash_A>` (`closeUserArtixDB(userA)`).
+   - `useAuth` clears the TanStack `queryClient.clear()` and `dirtyTracker.clearAll()`, and purges sensitive browser caches (`clearSensitiveBrowserCaches()`).
+   - All `localStorage` draft keys and workspace tab keys are partitioned by `getUserScopeHash(userId)` (`artix.workspace.tabs.<userHash>.<projectId>`).
+2. User B's isolated database `ArtixDB_v2_<hash_B>` is then mounted cleanly (verified by Scenario H in `correctnessMatrix.test.ts` and `multiAccountEvictionAndStorageScope.test.tsx`).
 
 ### 3.3 Sign-Out & Shutdown
 When a user signs out:
 1. `closeUserRuntime(userId)` is invoked.
-2. In-flight leases are voluntarily relinquished.
+2. In-flight timers, Realtime channels, `TabCoordinator`, and `SyncEngine` singletons are torn down and evicted.
 3. The Web Lock (`navigator.locks`) is aborted and released.
-4. The database connection is explicitly closed:
-   ```typescript
-   await db.close();
-   ```
-5. Status transitions to `stopped`.
+4. The Dexie database connection is closed and removed from `dbInstances`, `queryClient` and `dirtyTracker` are cleared, and `clearSensitiveBrowserCaches()` removes any legacy caches.
+5. Runtime state transitions to `'stopped'`.
 
 ---
 
@@ -133,16 +124,15 @@ this.on('versionchange', () => {
 
 ---
 
-## 5. Runtime Status Taxonomy (`RuntimeStatus`)
+## 5. Runtime State Taxonomy (`RuntimeState` & `RuntimeStatus`)
 
-Exposed to UI components via `useUserSyncRuntime().status`:
+Defined in `src/lib/sync/userSyncRuntime.ts` (`export type RuntimeState = 'uninitialized' | 'starting' | 'running' | 'degraded' | 'errored' | 'stopped'`) and exposed via `useUserSyncRuntime().runtimeStatus`:
 
-| Status | Meaning | UI Presentation |
+| `RuntimeState` | Meaning | Additional `RuntimeStatus` Telemetry |
 |---|---|---|
-| `initializing` | Opening Dexie database, validating schema, recovering leases. | Displays subtle spinner in workspace status bar. |
-| `running` | Fully operational; local storage and sync engine active. | Shows green "Online / Local Ready" status badge. |
-| `migrating` | Transferring legacy records to user-partitioned database. | Non-blocking background migration notice. |
-| `blocked` | Another tab is blocking a required schema upgrade. | Warns user: "Please close other Artix tabs to complete upgrade." |
-| `quota_exceeded` | Browser storage quota exceeded (`QuotaExceededError`). | Prompts user to clear local cache or free disk space. |
-| `degraded` | Database open but IndexedDB running in volatile fallback. | Warns that changes may not persist across restarts. |
-| `stopped` | User logged out; database closed and runtime halted. | Rendered in unauthenticated public view. |
+| `uninitialized` | Runtime instance created before `start()` is invoked. | `isReady: false`, `isHydrated: false` |
+| `starting` | Opening `ArtixDB_v2_<hash>`, requesting `storage.persist()`, running legacy migration, and recovering expired leases. | `isReady: false` |
+| `running` | Fully operational; local storage, repositories, and leader/standby sync coordination active. | `isReady: true`, `isHydrated`, `isCloudSyncPaused`, `storagePersisted`, `usageBytes`, `quotaBytes` |
+| `degraded` | Database open and local reads/writes active, but storage quota is unhealthy (`>90%`) or legacy migration encountered a non-fatal warning. | `isReady: true`, `error` / `migration` diagnostic |
+| `errored` | Fatal IndexedDB open error (`onStorageQuotaExceeded` or corrupted storage). | `isReady: false`, `error` |
+| `stopped` | User logged out or runtime torn down; database closed and background engines halted. | `isReady: false` |

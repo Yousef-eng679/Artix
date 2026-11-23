@@ -32,3 +32,47 @@ export class DuplicateNameError extends LocalStorageError {
     this.name = 'DuplicateNameError';
   }
 }
+
+export class StaleBufferError extends LocalStorageError {
+  constructor(
+    entityType: string,
+    id: string,
+    public readonly expectedLocalRevision: number,
+    public readonly actualLocalRevision: number,
+  ) {
+    super(
+      `${entityType} ${id} changed since it was loaded (expected localRevision ${expectedLocalRevision}, found ${actualLocalRevision})`,
+      'STALE_BUFFER',
+    );
+    this.name = 'StaleBufferError';
+  }
+}
+
+export class MissingCasBaselineError extends LocalStorageError {
+  public readonly status = 422;
+
+  constructor(
+    entityType: string,
+    id: string,
+    operation: string,
+    received: unknown,
+  ) {
+    super(
+      `Missing or invalid CAS baseServerVersion (${String(received)}) for ${entityType} '${id}' ${operation}`,
+      'INVALID_CAS_BASELINE',
+    );
+    this.name = 'MissingCasBaselineError';
+  }
+}
+
+export class UnresolvedConflictMarkersError extends LocalStorageError {
+  public readonly status = 422;
+
+  constructor(entityId: string) {
+    super(
+      `Document '${entityId}' still contains unresolved 3-way merge conflict markers (<<<<<<<, =======, >>>>>>>) and cannot be synced until resolved`,
+      'UNRESOLVED_CONFLICT_MARKERS',
+    );
+    this.name = 'UnresolvedConflictMarkersError';
+  }
+}

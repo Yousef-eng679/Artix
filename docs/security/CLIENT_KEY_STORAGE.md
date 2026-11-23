@@ -1,15 +1,15 @@
 # Client-Side BYOK Key Encryption & Storage Security
 
 > **Status**: `IMPLEMENTED`  
-> **Verified Against**: `src/lib/ai/crypto.ts`, `src/lib/ai/storage.ts`, `src/test/security.test.ts`
+> **Verified Against**: `src/lib/ai/crypto.ts`, `src/lib/ai/storage.ts`, `src/test/security.test.ts`, `src/test/sync/circularImportsDiff3AndCryptoV2.test.ts`
 
 ---
 
 ## 1. Overview
 
-Artix adopts a **Bring-Your-Own-Key (BYOK)** model for third-party AI frontier models (OpenAI, Anthropic, Google Gemini, Groq, OpenRouter). Users provide their private API keys directly. 
+Artix adopts a **Bring-Your-Own-Key (BYOK)** model for third-party AI frontier models (OpenAI, Anthropic, Google Gemini, Groq, OpenRouter). Users provide their private API keys directly.
 
-To eliminate the catastrophic risk of plaintext API key exposure in browser `localStorage`, Artix implements zero-knowledge, client-side cryptography.
+To protect API keys at rest when the passphrase vault is enabled, Artix implements zero-knowledge, client-side cryptography in `localStorage`.
 
 ---
 
@@ -24,8 +24,9 @@ User Passphrase
 ┌────────────────────────────────────────────────────────┐
 │           Key Derivation Function (PBKDF2)             │
 │                                                        │
-│  - Salt: 16 cryptographically random bytes (crypto.getRandomValues)
-│  - Iteration Count: 100,000 iterations                │
+│  - Salt: 16 cryptographically random bytes             │
+│  - Iteration Count: 600,000 iterations (v: 2 default)  │
+│    (250,000 iterations retained for legacy v: 1 read)  │
 │  - Digest Algorithm: SHA-256                           │
 │  - Derived Key Length: 256 bits                        │
 └───────────────────────────┬────────────────────────────┘
@@ -42,10 +43,10 @@ User Passphrase
                             ▼
 Encrypted Payload Serialized to localStorage:
 {
-  "ciphertext": "<base64>",
-  "iv": "<base64>",
+  "v": 2,
   "salt": "<base64>",
-  "version": 1
+  "iv": "<base64>",
+  "ct": "<base64>"
 }
 ```
 
@@ -53,16 +54,15 @@ Encrypted Payload Serialized to localStorage:
 
 ## 3. Storage Sanitization & Key Obfuscation (`storage.ts`)
 
-When encryption is disabled by the user or when the user switches passphrases:
-1. `sanitizeSettingsForStorage()` is invoked automatically.
-2. Raw API keys are masked or obfuscated in memory before writing to `localStorage`.
-3. The application never stores raw, unencrypted API keys in plaintext in `localStorage`.
-4. Keys are injected into memory only during active inference API calls, and headers are wiped immediately after the network socket closes.
+When passphrase encryption is not enabled by the user:
+1. `sanitizeSettingsForStorage()` encodes `primary.apiKey` with an `obf:` Base64 prefix (`obf:${btoa(key)}`) as a casual-inspection guard only (whereas Encrypted Mode AES-GCM encrypts the entire `AISettings` JSON payload including both `primary` and `backup` credentials).
+2. When passphrase encryption is enabled (`enableEncryption`), plaintext `localStorage` keys are removed and only `artix.ai.settings.enc.v1` persists.
+3. Invoking `lock()` (via `useAISettings().lock()`, `clearSettings()`, or page reload) increments `stateEpoch`—invalidating any queued in-flight async save operations via `OperationInvalidatedError`—and wipes `memoryCache` and `memoryPassphrase` from RAM.
 
 ---
 
 ## 4. Security Invariants
 
 - **Zero-Knowledge**: The Artix server and Supabase database never receive or store the user's AI API keys or encryption passphrases.
-- **Brute-Force Resistance**: 100,000 rounds of PBKDF2 with a 128-bit random salt render offline dictionary attacks computationally prohibitive.
-- **Tamper Evidence**: AES-GCM's 128-bit authentication tag guarantees that any modification of the ciphertext or IV in `localStorage` causes decryption to throw an authentication tag mismatch exception.
+- **Brute-Force Resistance**: 600,000 rounds of PBKDF2-SHA256 (`v: 2`) with a 128-bit random salt protect encrypted vaults against offline dictionary attacks, while `v: 1` (250,000 rounds) vaults remain decryptable and upgrade automatically on save.
+- **Tamper Evidence**: AES-GCM's 128-bit authentication tag guarantees that any modification of `ct` or `iv` in `localStorage` causes decryption to reject.

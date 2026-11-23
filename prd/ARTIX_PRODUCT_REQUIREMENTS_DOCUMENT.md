@@ -1,6 +1,6 @@
 # Artix — Product Requirements Document (PRD)
 
-Target Release: v1.5.0
+Target Release: v1.5.0 (Reconciled with v2.5.0 Local-First Architecture — see [`docs/README.md`](../docs/README.md) for Tier 2 Canonical Specifications)
 
 ---
 
@@ -37,8 +37,8 @@ Developers often switch between different apps — writing Markdown specs in one
 ### FR-1: Document Forge (Spec Editor)
 - **FR-1.1 Multi-Format Support**: Monaco editor instance supporting `.md` (Markdown), `.xml` (XML), and `.txt` (Plain Text).
 - **FR-1.2 Live Preview**: Synchronized split-pane HTML rendering for Markdown and XML documents.
-- **FR-1.3 Auto-Save Engine**: 4-tier data protection: 1000ms debounce → optimistic locking queue (`saveQueue.ts`) → `sendBeacon`/`keepalive` unload guard → `BroadcastChannel` multi-tab sync (`multiTabSync.ts`).
-- **FR-1.4 Multi-Format Export**: Export options for PDF, standalone HTML, and raw `.md` files.
+- **FR-1.3 Auto-Save & Local-First Engine**: 1000ms debounced persistence into user-scoped Dexie IndexedDB (`ArtixDB_v2_<hash>`) + `expectedLocalRevision` stale-buffer guard (`StaleBufferError`) + local-only `tabCloseGuard.ts` draft flush to user-scoped `localStorage` + `BroadcastChannel` multi-tab sync (`TabCoordinator`).
+- **FR-1.4 Multi-Format Export**: Export options for raw `.md`/`.xml`/`.txt` (all tiers) and standalone `.html` / print-ready `.pdf` (Pro tier).
 
 ### FR-2: System Architect (Visual Graph Engine)
 - **FR-2.1 Graph Canvas**: React Flow graph canvas with custom nodes for Microservices, Databases, Message Queues, API Gateways, and Caches.
@@ -53,14 +53,14 @@ Developers often switch between different apps — writing Markdown specs in one
 
 ### FR-4: Security and Key Storage
 - **FR-4.1 Key Obfuscation**: Stored keys automatically receive `obf:` prefix prior to `localStorage` write.
-- **FR-4.2 AES-256-GCM Encryption**: Optional `PBKDF2` passphrase-derived encryption (100,000 iterations), keeping decrypted keys in volatile JS memory during active sessions.
+- **FR-4.2 AES-256-GCM Encryption**: Optional `PBKDF2-SHA256` passphrase-derived encryption (600,000 iterations for `v: 2` saves; legacy `v: 1` 250,000 iterations supported for decryption), keeping decrypted keys in volatile JS memory during active sessions.
 - **FR-4.3 Reset Key Vault Recovery**: Allows users who lost their passphrase to reset the encrypted vault and enter fresh keys.
 - **FR-4.4 Backup Warnings**: UI alert notices and save toasts remind users to store external backups of their API keys since keys remain local to browser storage.
 
 ### FR-5: Authentication and Billing
 - **FR-5.1 Authentication**: 1-click Google OAuth (`signInWithGoogle`) and email/password authentication via Supabase Auth.
-- **FR-5.2 Free Tier Quotas**: Max 3 projects, 10 documents, 3 system designs (enforced by PostgreSQL trigger `enforce_tier_limits_trigger.sql`). Foreign key constraints `projects_user_id_fkey` and `system_designs_user_id_fkey` enforce `ON DELETE CASCADE` on `auth.users(id)`.
-- **FR-5.3 Pro Tier ($8/mo or $72/yr)**: Unlimited projects, documents, designs, and AI generations. Managed via Stripe Checkout and Customer Portal Edge Functions.
+- **FR-5.2 Free Tier Quotas**: Max 3 active projects, 10 documents, 3 system designs, and 5 AI generations/month (enforced by serialized PostgreSQL trigger `check_plan_tier_limit()` and offline Dexie counts). Foreign key constraints enforce `ON DELETE CASCADE` on `auth.users(id)`.
+- **FR-5.3 Pro Tier (\$8/mo or \$72/yr)**: Up to 100 active projects and unlimited documents, designs, and AI generations. Managed via Stripe Checkout, Customer Portal, and atomic `reconcile_stripe_subscription` webhook Edge Functions (strict `past_due -> free` fail-closed policy, `GRACE_PERIOD_DAYS = 0`), plus RLS-protected `public.manual_grants`.
 
 ---
 
@@ -71,4 +71,4 @@ Developers often switch between different apps — writing Markdown specs in one
 - **NFR-3 Routing Reliability**: Vercel SPA rewrite configuration in `vercel.json` (`/(.*)` -> `/index.html`) prevents edge `404 NOT_FOUND` errors on direct URL refreshes.
 - **NFR-4 Accessibility**: W3C semantic landmarks (`<main id="main-content">`) and explicit `aria-label` attributes on navigation buttons.
 - **NFR-5 Agentic Indexing**: `/public/llms.txt` and `/public/llms-full.txt` spec compliance for AI web search indexing.
-- **NFR-6 Testing Coverage**: 78 passing Vitest unit/integration tests across 11 files and Playwright E2E browser tests on Chromium, Firefox, and WebKit.
+- **NFR-6 Testing Coverage**: 107 passing Vitest unit/integration/fault-injection test files (698 tests), Layer 3 real PostgreSQL 17 / PGlite concurrency & RLS suite (6/6 tests), and Layer 4 Playwright production PWA E2E browser tests (18 Chromium specs).

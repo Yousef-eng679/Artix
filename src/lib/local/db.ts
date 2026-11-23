@@ -1,5 +1,6 @@
 import Dexie, { type EntityTable } from 'dexie';
 import {
+  LocalProject,
   LocalDocument,
   LocalSystemDesign,
   LocalWorkspaceFolder,
@@ -10,6 +11,7 @@ import {
 } from './types';
 
 export class ArtixDB extends Dexie {
+  projects!: EntityTable<LocalProject, 'id'>;
   documents!: EntityTable<LocalDocument, 'id'>;
   system_designs!: EntityTable<LocalSystemDesign, 'id'>;
   workspace_folders!: EntityTable<LocalWorkspaceFolder, 'id'>;
@@ -30,6 +32,42 @@ export class ArtixDB extends Dexie {
       conflicts: 'id, [userId+entityType+entityId], detectedAt',
       database_meta: 'key, updatedAt',
     });
+
+    this.version(2).stores({
+      projects: 'id, userId, updatedAt, name',
+      documents: 'id, [userId+projectId], userId, projectId, folderId, localRevision, updatedAt, isDeleted',
+      system_designs: 'id, [userId+projectId], userId, projectId, folderId, localRevision, updatedAt, isDeleted',
+      workspace_folders: 'id, [userId+projectId], userId, projectId, parentFolderId, name, localRevision, updatedAt, isDeleted',
+      outbox: 'id, [userId+entityType+entityId], userId, state, createdAt, localRevision',
+      sync_metadata: 'id, [userId+entityType], userId, entityId, syncState, localRevision, lastSyncedAt',
+      conflicts: 'id, [userId+entityType+entityId], detectedAt',
+      database_meta: 'key, updatedAt',
+    });
+
+    this.version(3)
+      .stores({
+        projects: 'id, userId, updatedAt, name, localRevision, isDeleted',
+        documents: 'id, [userId+projectId], userId, projectId, folderId, localRevision, updatedAt, isDeleted',
+        system_designs: 'id, [userId+projectId], userId, projectId, folderId, localRevision, updatedAt, isDeleted',
+        workspace_folders: 'id, [userId+projectId], userId, projectId, parentFolderId, name, localRevision, updatedAt, isDeleted',
+        outbox: 'id, [userId+entityType+entityId], userId, state, createdAt, localRevision',
+        sync_metadata: 'id, [userId+entityType], userId, entityId, syncState, localRevision, lastSyncedAt',
+        conflicts: 'id, [userId+entityType+entityId], detectedAt',
+        database_meta: 'key, updatedAt',
+      })
+      .upgrade(async (tx) => {
+        await tx
+          .table('projects')
+          .toCollection()
+          .modify((proj: Record<string, any>) => {
+            if (typeof proj.localRevision !== 'number') {
+              proj.localRevision = 1;
+            }
+            if (typeof proj.isDeleted !== 'boolean') {
+              proj.isDeleted = false;
+            }
+          });
+      });
 
     this.on('versionchange', () => {
       console.warn(`[ArtixDB] Database schema version change detected for ${dbName}. Closing connection to permit upgrade.`);
@@ -120,8 +158,14 @@ export async function closeArtixDB(dbName = 'ArtixDB'): Promise<void> {
  * Safely closes and evicts a user's database instance from the cache.
  */
 export async function closeUserArtixDB(userId?: string | null): Promise<void> {
-  const dbName = getUserDbName(userId);
+  const trimmed = userId?.trim() || null;
+  const dbName = getUserDbName(trimmed);
   await closeArtixDB(dbName);
+  if (trimmed && activeUserScope === trimmed) {
+    activeUserScope = null;
+  } else if (!trimmed) {
+    activeUserScope = null;
+  }
 }
 
 /**
@@ -213,10 +257,30 @@ export async function migrateLegacyArtixDB(targetDb: ArtixDB, userId: string): P
         return;
       }
 
+      const metadataVersions = new Map<string, string>();
+      for (const m of metadata) {
+        if (typeof m.serverVersion === 'string' && /^[1-9]\d*$/.test(m.serverVersion)) {
+          metadataVersions.set(`${m.entityType}:${m.entityId}`, m.serverVersion);
+        }
+      }
+
+      const healedOutbox = outbox.map((entry) => {
+        if (
+          (entry.operation === 'update' || entry.operation === 'delete') &&
+          !(typeof entry.baseServerVersion === 'string' && /^[1-9]\d*$/.test(entry.baseServerVersion))
+        ) {
+          const recoveredVersion = metadataVersions.get(`${entry.entityType}:${entry.entityId}`);
+          if (recoveredVersion) {
+            return { ...entry, baseServerVersion: recoveredVersion };
+          }
+        }
+        return entry;
+      });
+
       if (docs.length > 0) await targetDb.documents.bulkPut(docs);
       if (designs.length > 0) await targetDb.system_designs.bulkPut(designs);
       if (folders.length > 0) await targetDb.workspace_folders.bulkPut(folders);
-      if (outbox.length > 0) await targetDb.outbox.bulkPut(outbox);
+      if (healedOutbox.length > 0) await targetDb.outbox.bulkPut(healedOutbox);
       if (metadata.length > 0) await targetDb.sync_metadata.bulkPut(metadata);
 
       await targetDb.database_meta.put({

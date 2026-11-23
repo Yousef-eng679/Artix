@@ -7,11 +7,14 @@ export type SyncErrorCode =
   | 'FORBIDDEN'
   | 'NOT_FOUND'
   | 'VALIDATION_FAILED'
+  | 'UNRESOLVED_CONFLICT_MARKERS'
   | 'DUPLICATE_NAME'
   | 'CONFLICT'
   | 'SERVER_ERROR'
   | 'STORAGE_QUOTA'
   | 'SCHEMA_ERROR'
+  | 'RATE_LIMITED'
+  | 'TIER_LIMIT_EXCEEDED'
   | 'UNKNOWN';
 
 export interface ClassifiedSyncError {
@@ -20,8 +23,63 @@ export interface ClassifiedSyncError {
   message: string;
   retryable: boolean;
   status?: number;
+  /** Server-requested minimum delay before retrying (from `Retry-After`), capped at MAX_SYNC_BACKOFF_MS. */
+  retryAfterMs?: number;
   rawError?: unknown;
 }
+
+/** Hard ceiling for any scheduled sync retry delay (5 minutes). */
+export const MAX_SYNC_BACKOFF_MS = 300_000;
+
+function readHeader(headers: unknown, name: string): string | null {
+  if (!headers) return null;
+  if (typeof (headers as any).get === 'function') {
+    const v = (headers as any).get(name);
+    return v === null || v === undefined ? null : String(v);
+  }
+  if (typeof headers === 'object') {
+    const target = name.toLowerCase();
+    for (const [key, value] of Object.entries(headers as Record<string, unknown>)) {
+      if (key.toLowerCase() === target && value !== undefined && value !== null) {
+        return String(value);
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Parses an HTTP `Retry-After` value (delta-seconds or HTTP-date) into milliseconds,
+ * clamped to `[0, MAX_SYNC_BACKOFF_MS]`. Returns `undefined` when absent/unparseable.
+ */
+export function parseRetryAfterMs(value: string | null | undefined, now = Date.now()): number | undefined {
+  if (value === null || value === undefined) return undefined;
+  const trimmed = String(value).trim();
+  if (!trimmed) return undefined;
+
+  let ms: number | undefined;
+  if (/^\d+(\.\d+)?$/.test(trimmed)) {
+    ms = Math.round(Number(trimmed) * 1000);
+  } else {
+    const dateMs = Date.parse(trimmed);
+    if (!Number.isNaN(dateMs)) {
+      ms = dateMs - now;
+    }
+  }
+  if (ms === undefined || !Number.isFinite(ms)) return undefined;
+  return Math.min(MAX_SYNC_BACKOFF_MS, Math.max(0, ms));
+}
+
+function isLocalQuotaExceeded(err: any): boolean {
+  if (!err) return false;
+  if (err.name === 'QuotaExceededError') return true;
+  if (typeof DOMException !== 'undefined' && err instanceof DOMException && err.code === 22) return true;
+  // Dexie wraps IndexedDB failures and exposes the original DOMException as `inner`
+  if (err.inner && err.inner !== err) return isLocalQuotaExceeded(err.inner);
+  return false;
+}
+
+const TIER_LIMIT_PATTERN = /\btier\b[^.]*\blimit\b[^.]*\breached\b/i;
 
 /**
  * Classifies any runtime error, Supabase PostgREST error, or network timeout
@@ -42,6 +100,89 @@ export function classifySyncError(error: unknown): ClassifiedSyncError {
   const rawCode = String(err.code || '');
   const message = String(err.message || err.error_description || err.details || 'Sync error');
   const lowerMsg = message.toLowerCase();
+
+  // 0a. Local browser storage quota (IndexedDB / DOMException code 22).
+  // Matched strictly by error identity — never by a "quota" substring in server messages (OF-13).
+  if (isLocalQuotaExceeded(err)) {
+    return {
+      code: 'STORAGE_QUOTA',
+      category: 'STORAGE_QUOTA',
+      message: 'Local browser storage quota exceeded',
+      retryable: false,
+      rawError: error,
+    };
+  }
+
+  // 0b. HTTP 429 rate limiting -> retryable, honoring Retry-After
+  if (status === 429 || rawCode === '429') {
+    const retryAfterMs = parseRetryAfterMs(
+      readHeader(err.headers, 'retry-after') ??
+        (err.retryAfter !== undefined ? String(err.retryAfter) : null)
+    );
+    return {
+      code: 'RATE_LIMITED',
+      category: 'RATE_LIMITED',
+      message: 'Server rate limit reached; retrying later',
+      retryable: true,
+      status: 429,
+      ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
+      rawError: error,
+    };
+  }
+
+  // 0c. Server-side plan tier limit (public.check_plan_tier_limit) -> non-retryable, local data preserved
+  if (TIER_LIMIT_PATTERN.test(message)) {
+    return {
+      code: 'TIER_LIMIT_EXCEEDED',
+      category: 'TIER_LIMIT_EXCEEDED',
+      message,
+      retryable: false,
+      status: status ?? 403,
+      rawError: error,
+    };
+  }
+
+  // 0d. Unresolved 3-way conflict markers guard (TASK-22)
+  if (rawCode === 'UNRESOLVED_CONFLICT_MARKERS') {
+    return {
+      code: 'UNRESOLVED_CONFLICT_MARKERS',
+      category: 'UNRESOLVED_CONFLICT_MARKERS',
+      message: message || 'Document contains unresolved conflict markers',
+      retryable: false,
+      status: status || 422,
+      rawError: error,
+    };
+  }
+
+  // 0. Deterministic local validation / missing RPC schema errors (must not be masked when offline)
+  if (rawCode === 'INVALID_CAS_BASELINE' || rawCode === '22023') {
+    return {
+      code: 'VALIDATION_FAILED',
+      category: 'VALIDATION_FAILED',
+      message: message || 'Missing or invalid CAS baseServerVersion',
+      retryable: false,
+      status: status || 422,
+      rawError: error,
+    };
+  }
+
+  if (
+    rawCode === 'SCHEMA_ERROR' ||
+    rawCode === 'PGRST202' ||
+    rawCode === '42883' ||
+    rawCode === '42703' ||
+    lowerMsg.includes('column does not exist') ||
+    lowerMsg.includes('schema mismatch') ||
+    lowerMsg.includes('could not find the function')
+  ) {
+    return {
+      code: 'SCHEMA_ERROR',
+      category: 'SCHEMA_ERROR',
+      message: message || 'Database schema mismatch detected',
+      retryable: false,
+      rawError: error,
+    };
+  }
 
   // 1. Timeout detection
   if (
@@ -80,16 +221,7 @@ export function classifySyncError(error: unknown): ClassifiedSyncError {
     };
   }
 
-  // 3. Storage Quota Exceeded (IndexedDB local failure)
-  if (err.name === 'QuotaExceededError' || lowerMsg.includes('quota')) {
-    return {
-      code: 'STORAGE_QUOTA',
-      category: 'STORAGE_QUOTA',
-      message: 'Local browser storage quota exceeded',
-      retryable: false,
-      rawError: error,
-    };
-  }
+  // 3. (Local storage quota is classified up-front by error identity — see 0a.)
 
   // 4. Authentication / Token Expiration
   if (
@@ -183,18 +315,7 @@ export function classifySyncError(error: unknown): ClassifiedSyncError {
     };
   }
 
-  // 10. Database Schema Mismatch
-  if (rawCode === '42703' || lowerMsg.includes('column does not exist') || lowerMsg.includes('schema mismatch')) {
-    return {
-      code: 'SCHEMA_ERROR',
-      category: 'SCHEMA_ERROR',
-      message: 'Database schema mismatch detected',
-      retryable: false,
-      rawError: error,
-    };
-  }
-
-  // 11. Server 5xx Errors (Transient, retryable)
+  // 10. Server 5xx Errors (Transient, retryable)
   if (status && status >= 500 && status < 600) {
     return {
       code: 'SERVER_ERROR',
@@ -206,7 +327,7 @@ export function classifySyncError(error: unknown): ClassifiedSyncError {
     };
   }
 
-  // 12. Default / Unclassified
+  // 11. Default / Unclassified
   return {
     code: 'UNKNOWN',
     category: 'UNKNOWN',

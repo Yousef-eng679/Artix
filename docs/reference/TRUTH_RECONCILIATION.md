@@ -5,7 +5,7 @@
 
 ## 1. Executive Summary
 
-This audit reconciles contradictions and terminology drifts found between early architectural plans, intermediate review notes, and the verified **post-C12** implementation in `c:\Fenix-main`. 
+This audit reconciles contradictions and terminology drifts found between early architectural plans, intermediate review notes, and the verified **`v2.5.0`** implementation. 
 
 In accordance with Section 2 of the Artix Documentation Recovery Plan:
 > **Source-of-Truth Hierarchy:** Code + Database Migrations + Tests take absolute precedence over intermediate design notes or historical AI execution artifacts.
@@ -31,7 +31,8 @@ In accordance with Section 2 of the Artix Documentation Recovery Plan:
 ### Target B: Server Version Column Types
 - **Contradiction in Prior Documentation**: Protocol documents described all version numbers as 64-bit `BIGINT`, while some schema notes mentioned 32-bit `INTEGER`.
 - **Actual Migration Truth (`supabase/migrations/`)**:
-  - `20260928120000_server_concurrency_protocol.sql`:
+  - `20260928120000_server_concurrency_protocol.sql` & `20261101100000_expand_sync_protocol_and_projects.sql`:
+    - `projects.version`: `INTEGER NOT NULL DEFAULT 1`
     - `documents.version`: `INTEGER NOT NULL DEFAULT 1`
     - `system_designs.version`: `INTEGER NOT NULL DEFAULT 1`
     - `workspace_folders.version`: `INTEGER NOT NULL DEFAULT 1`
@@ -57,11 +58,14 @@ In accordance with Section 2 of the Artix Documentation Recovery Plan:
     - Local tombstones prevent resurrection if stale network changes arrive.
     - Purged after a 30-day retention window.
   - **Server-Side (Supabase PostgreSQL)**:
-    - Push adapters (`documentPushAdapter.ts`, `folderPushAdapter.ts`, `systemDesignPushAdapter.ts`) perform an **optimistic CAS DELETE**:
+    - All four push adapters (`projectPushAdapter.ts`, `documentPushAdapter.ts`, `folderPushAdapter.ts`, `systemDesignPushAdapter.ts`) invoke `public.apply_sync_mutation` (`20261020110000`, `20261101100000`, `20261101100100`), which executes a strict **CAS DELETE** requiring `p_base_version >= 1`:
       ```sql
-      DELETE FROM documents WHERE id = :id AND version = :baseServerVersion;
+      DELETE FROM public.documents AS d
+       WHERE d.id = p_entity_id
+         AND d.user_id = p_user_id
+         AND d.version = p_base_version;
       ```
-    - The PostgreSQL trigger `record_sync_change()` captures this `AFTER DELETE` and writes an audit row to `public.sync_changes` with `operation = 'delete'` and the final `entity_version`.
+    - The PostgreSQL trigger `record_sync_change()` captures this `AFTER DELETE` and writes a commit-ordered audit row to `public.sync_changes` with `operation = 'delete'`, the final `entity_version`, and root `mutation_id`.
   - **Remote Change Feed Pull**:
     - Other devices pulling `sync_changes` receive `operation = 'delete'` and mark their local entity as `REMOTE_CONFIRMED_DELETE` via `TombstoneManager` without re-queuing into the outbox.
 - **Documentation Standard**: Distinguish local soft-tombstones from server-side CAS table deletion and change-feed audit logging.
@@ -82,25 +86,24 @@ In accordance with Section 2 of the Artix Documentation Recovery Plan:
 
 ---
 
-### Target E: Idempotency & Exactly-Once Language
-- **Contradiction in Prior Documentation**: Certain review documents loosely claimed "database-level distributed exactly-once transactions".
-- **Actual Code Truth (`src/lib/sync/adapters/idempotency.ts`)**:
+### Target E: Single-Transaction Server Idempotency & CAS (`apply_sync_mutation`)
+- **Contradiction in Prior Documentation**: Early post-C12 notes described client push adapters issuing separate `SELECT processed_mutations`, entity `UPDATE`, and `INSERT processed_mutations` network calls (leaving a crash window between entity commit and ledger write, tracked as Audit F-003).
+- **Actual Code & Migration Truth (`src/lib/sync/adapters/idempotency.ts`, `20261020110000`, `20261101100000`, `20261101100100`)**:
   - The client generates a durable UUID v4 `mutationId` when the mutation is first enqueued.
-  - The push adapter checks `processed_mutations` for this `mutationId`. If found, it returns the prior acknowledgement without executing duplicate database modifications.
-  - If not found, it applies the mutation and then records the `mutationId` into `processed_mutations`.
-  - This is an **application-level idempotency ledger pattern**, not a distributed two-phase commit (2PC) or distributed transactional atomic lock.
-- **Documentation Standard**: Use rigorous terminology: "At-least-once transport with durable mutation identity ledger ensuring idempotent logical execution."
+  - Push adapters call `executeAtomicMutation()` -> `supabase.rpc('apply_sync_mutation', ...)`.
+  - Inside **one PostgreSQL transaction**, `public.apply_sync_mutation` acquires `pg_advisory_xact_lock(hashtextextended('artix.mutation:' || p_mutation_id::TEXT, 0))`, checks `public.processed_mutations`, sets transaction-local `artix.current_mutation_*` GUCs so `record_sync_change()` stamps `mutation_id` onto the root `sync_changes` row, executes the strict CAS mutation (`p_base_version >= 1`), and inserts the `processed_mutations` ledger row.
+- **Documentation Standard**: Always describe push execution as a single-transaction PostgreSQL RPC (`public.apply_sync_mutation`) combining ledger idempotency, strict CAS, and `sync_changes` mutation correlation.
 
 ---
 
-### Target F: Supabase Realtime Role
-- **Contradiction in Prior Documentation**: Early architecture notes described Realtime as the primary vehicle for synchronizing remote data.
-- **Actual Code Truth (`src/lib/sync/realtimeSync.ts`, `pullEngine.ts`)**:
-  - Supabase Realtime broadcast channels act purely as a **wake-up / acceleration trigger**.
-  - When an event is received, `RealtimeSyncManager` debounces (150ms) and invokes `syncEngine.triggerSync(userId, { reason: 'realtime' })`.
-  - The synchronization correctness boundary is governed strictly by the **durable change-feed cursor** in `PullEngine`, which range-queries `sync_changes` where `sequence > lastCursor`.
-  - If Realtime disconnects, drops packets, or is blocked by network firewalls, the system still converges with 100% correctness via pull (Scenario I verification).
-- **Documentation Standard**: Always document Realtime as an optional latency optimizer and wake-up signal; `PullEngine` change-feed cursor is the primary correctness authority.
+### Target F: Supabase Realtime Role & Retention-Floor Cursor Recovery
+- **Contradiction in Prior Documentation**: Early architecture notes described Realtime as the primary vehicle for synchronizing remote data and used a 150ms debounce figure.
+- **Actual Code Truth (`src/lib/sync/realtimeSync.ts`, `pullEngine.ts`, `20261101100200`)**:
+  - Supabase Realtime broadcast channels act purely as a **wake-up / acceleration trigger** on the leader tab.
+  - When an event is received, `RealtimeSyncManager` debounces with a **50ms** leading + trailing-edge window and invokes `syncEngine.triggerSync(userId)`.
+  - The synchronization correctness boundary is governed strictly by `PullEngine.syncPull()`, which queries `get_sync_feed_bounds()` (`sync_retention_state.min_retained_sequence`), runs `bootstrapHydrateAll()` on first login or `resnapshotAll()` if the cursor (`database_meta['server_cursor']`) fell behind pruned history, and range-queries `sync_changes` where `sequence > lastCursor` (`LIMIT 50`).
+  - Self-echoed changes matching `change.mutation_id` are acknowledged without overwriting newer local edits.
+- **Documentation Standard**: Always document Realtime as a 50ms-debounced optional wakeup signal; `PullEngine` (`server_cursor` + `get_sync_feed_bounds`) is the correctness authority.
 
 ---
 
@@ -111,5 +114,5 @@ In accordance with Section 2 of the Artix Documentation Recovery Plan:
   - This is a **local storage separation and lifecycle management mechanism**, not encryption or cryptographic isolation.
   - True cryptographic security is provided by:
     1. **Supabase RLS & JWTs**: PostgreSQL Row Level Security checks `auth.uid() = user_id` for all network requests.
-    2. **Client-Side Key Encryption (`src/lib/ai/crypto.ts`)**: User-supplied third-party AI keys (OpenAI, Anthropic, Gemini) are encrypted using PBKDF2 (100,000 iterations) and AES-GCM 256-bit with user passphrases in `localStorage`.
+    2. **Client-Side Key Encryption (`src/lib/ai/crypto.ts`)**: User-supplied third-party AI keys (OpenAI, Anthropic, Gemini) are encrypted using PBKDF2 (600,000 iterations v:2; legacy v:1 250,000) and AES-GCM 256-bit with user passphrases in `localStorage`.
 - **Documentation Standard**: Categorize `getUserScopeHash` as namespace separation, and accurately locate cryptographic boundaries at RLS and BYOK client encryption.

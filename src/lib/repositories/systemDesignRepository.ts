@@ -1,6 +1,6 @@
 import { ArtixDB, getArtixDB } from '../local/db';
 import { LocalSystemDesign, RemoteSystemDesignSnapshot } from '../local/types';
-import { EntityNotFoundError } from '../local/errors';
+import { EntityNotFoundError, StaleBufferError } from '../local/errors';
 import { BoardState } from '@/hooks/useSystemDesigns';
 import { OutboxRepository } from './outboxRepository';
 import { SyncMetadataRepository } from './syncMetadataRepository';
@@ -96,29 +96,48 @@ export class SystemDesignRepository {
         }
       }
 
+      const nextProjectId = snapshot.projectId;
+      const nextFolderId = snapshot.folderId !== undefined ? snapshot.folderId : (existing?.folderId ?? null);
+      const nextName = snapshot.name ?? existing?.name ?? 'New System Design';
+      const nextBoardState = snapshot.boardState || existing?.boardState || defaultBoardState;
+
+      const payloadChanged =
+        !existing ||
+        existing.isDeleted ||
+        existing.projectId !== nextProjectId ||
+        existing.folderId !== nextFolderId ||
+        existing.name !== nextName ||
+        JSON.stringify(existing.boardState) !== JSON.stringify(nextBoardState);
+
       const design: LocalSystemDesign = {
         id: snapshot.id,
         userId: snapshot.userId,
-        projectId: snapshot.projectId,
-        folderId: snapshot.folderId !== undefined ? snapshot.folderId : (existing?.folderId ?? null),
-        name: snapshot.name ?? existing?.name ?? 'New System Design',
-        boardState: snapshot.boardState || existing?.boardState || defaultBoardState,
+        projectId: nextProjectId,
+        folderId: nextFolderId,
+        name: nextName,
+        boardState: nextBoardState,
         createdAt: snapshot.createdAt || existing?.createdAt || now,
         updatedAt: snapshot.updatedAt || now,
-        localRevision: existing ? existing.localRevision : 1,
+        localRevision: !existing ? 1 : payloadChanged ? existing.localRevision + 1 : existing.localRevision,
         isDeleted: false,
         deletedAt: null,
       };
 
       await this.db.system_designs.put(design);
 
+      const existingMeta = await this.db.sync_metadata.get(`system_design:${design.id}`);
+      const resolvedServerVersion =
+        snapshot.serverVersion !== undefined && snapshot.serverVersion !== null
+          ? String(snapshot.serverVersion)
+          : (existingMeta?.serverVersion ?? null);
+
       await this.syncMetadataRepo.upsertInTx({
         entityType: 'system_design',
         entityId: design.id,
         userId: design.userId,
         syncState: 'synced',
-        serverVersion: snapshot.serverVersion ? String(snapshot.serverVersion) : null,
-        serverUpdatedAt: snapshot.updatedAt ?? null,
+        serverVersion: resolvedServerVersion,
+        serverUpdatedAt: snapshot.updatedAt ?? existingMeta?.serverUpdatedAt ?? null,
         localRevision: design.localRevision,
         lastSyncedAt: Date.now(),
         baseSnapshot: snapshot,
@@ -185,7 +204,11 @@ export class SystemDesignRepository {
     });
   }
 
-  async update(id: string, updates: UpdateSystemDesignDTO, options?: { skipOutbox?: boolean }): Promise<LocalSystemDesign> {
+  async update(
+    id: string,
+    updates: UpdateSystemDesignDTO,
+    options?: { skipOutbox?: boolean; expectedLocalRevision?: number }
+  ): Promise<LocalSystemDesign> {
     if (options?.skipOutbox) {
       const existing = await this.getByIdIncludeDeleted(id);
       if (!existing) throw new EntityNotFoundError('SystemDesign', id);
@@ -203,6 +226,18 @@ export class SystemDesignRepository {
       const existing = await this.db.system_designs.get(id);
       if (!existing || existing.isDeleted) {
         throw new EntityNotFoundError('SystemDesign', id);
+      }
+
+      if (
+        options?.expectedLocalRevision !== undefined &&
+        existing.localRevision !== options.expectedLocalRevision
+      ) {
+        throw new StaleBufferError(
+          'SystemDesign',
+          id,
+          options.expectedLocalRevision,
+          existing.localRevision,
+        );
       }
 
       // Filter out undefined fields to prevent accidental overwrites of existing metadata
@@ -253,10 +288,10 @@ export class SystemDesignRepository {
     });
   }
 
-  async delete(id: string, options?: { skipOutbox?: boolean }): Promise<void> {
-    await this.db.transaction('rw', [this.db.system_designs, this.db.outbox, this.db.sync_metadata], async () => {
+  async delete(id: string, options?: { skipOutbox?: boolean }): Promise<number | null> {
+    return await this.db.transaction('rw', [this.db.system_designs, this.db.outbox, this.db.sync_metadata], async () => {
       const existing = await this.db.system_designs.get(id);
-      if (!existing) return;
+      if (!existing) return null;
 
       const softDeleted: LocalSystemDesign = {
         ...existing,
@@ -294,6 +329,8 @@ export class SystemDesignRepository {
         syncState: options?.skipOutbox ? 'synced' : 'pending',
         localRevision: softDeleted.localRevision,
       });
+
+      return softDeleted.localRevision;
     });
   }
 
@@ -318,13 +355,32 @@ export class SystemDesignRepository {
 
       await this.db.system_designs.put(restored);
 
+      const existingMeta = await this.db.sync_metadata.get(`system_design:${id}`);
+      const existingOutbox = await this.db.outbox
+        .where('[userId+entityType+entityId]')
+        .equals([restored.userId, 'system_design', restored.id])
+        .toArray();
+      const hasPendingDelete = existingOutbox.some(
+        (e) => e.state === 'pending' && e.operation === 'delete'
+      );
+
+      const validServerVersion =
+        existingMeta?.serverVersion && /^[1-9]\d*$/.test(existingMeta.serverVersion)
+          ? existingMeta.serverVersion
+          : null;
+
+      const mustReCreate =
+        !validServerVersion ||
+        (existingMeta?.syncState === 'deleted_synced' && !hasPendingDelete);
+
       if (this.outboxRepo) {
         await this.outboxRepo.enqueueInTx({
           userId: restored.userId,
           projectId: restored.projectId,
           entityType: 'system_design',
           entityId: restored.id,
-          operation: 'update',
+          operation: mustReCreate ? 'create' : 'update',
+          baseServerVersion: mustReCreate ? null : validServerVersion,
           payload: {
             name: restored.name,
             boardState: restored.boardState,
@@ -339,6 +395,7 @@ export class SystemDesignRepository {
         entityId: restored.id,
         userId: restored.userId,
         syncState: 'pending',
+        serverVersion: mustReCreate ? null : validServerVersion,
         localRevision: restored.localRevision,
       });
 

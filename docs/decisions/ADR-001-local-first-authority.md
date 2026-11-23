@@ -3,7 +3,7 @@
 - **Status**: `ACCEPTED` / `IMPLEMENTED`
 - **Date**: 2026-09-21
 - **Deciders**: Architecture Team
-- **Related Files**: `src/lib/local/db.ts`, `src/lib/repositories/`, `src/hooks/useDocuments.tsx`
+- **Related Files**: `src/lib/local/db.ts`, `src/lib/repositories/`, `src/hooks/useProjects.tsx`, `src/hooks/useDocuments.tsx`, `src/lib/auth/offlineSession.ts`
 
 ---
 
@@ -53,6 +53,6 @@ We decided to transition Artix to a **Local-First Architecture** where:
 
 ## Current Implementation
 
-- `src/lib/local/db.ts`: User-scoped Dexie IndexedDB instances (`ArtixDB_v2_<hash>`).
-- Repositories in `src/lib/repositories/` perform atomic 3-table Dexie transactions.
-- Zero direct cloud read calls in UI hooks (`src/test/architecture/networkBoundary.test.ts`).
+- `src/lib/local/db.ts`: User-scoped Dexie IndexedDB instances (`ArtixDB_v2_<hash>`, schema v3 with 8 tables including all 4 workspace entity tables: `projects`, `workspace_folders`, `documents`, `system_designs`) plus `navigator.storage.persist()` durability requests.
+- Repositories in `src/lib/repositories/` perform atomic multi-table Dexie transactions (`ProjectRepository`, `FolderRepository`, `DocumentRepository`, `SystemDesignRepository`).
+- True offline cold-start continuity: locally bundled Monaco editor/worker (`src/components/Editor/monacoSetup.ts`), self-hosted `@fontsource` fonts, immediate Workbox `clientsClaim`, expired-JWT offline session recovery (`src/lib/auth/offlineSession.ts`), and zero direct cloud read calls in workspace resource hooks (`src/test/architecture/networkBoundary.test.ts`).

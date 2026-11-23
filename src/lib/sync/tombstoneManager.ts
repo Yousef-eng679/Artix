@@ -32,7 +32,9 @@ export class TombstoneManager {
   ): Promise<TombstoneLifecycleState> {
     let entity: { isDeleted?: boolean } | null = null;
 
-    if (entityType === 'document') {
+    if (entityType === 'project') {
+      entity = (await this.db.projects.get(entityId)) ?? null;
+    } else if (entityType === 'document') {
       entity = (await this.db.documents.get(entityId)) ?? null;
     } else if (entityType === 'system_design') {
       entity = (await this.db.system_designs.get(entityId)) ?? null;
@@ -80,6 +82,7 @@ export class TombstoneManager {
    */
   async purgeTombstones(userId: string, retentionMs: number = 30 * 24 * 60 * 60 * 1000): Promise<PurgeResult> {
     const cutoff = Date.now() - retentionMs;
+    let purgedProjects = 0;
     let purgedDocs = 0;
     let purgedDesigns = 0;
     let purgedFolders = 0;
@@ -87,6 +90,7 @@ export class TombstoneManager {
     await this.db.transaction(
       'rw',
       [
+        this.db.projects,
         this.db.documents,
         this.db.system_designs,
         this.db.workspace_folders,
@@ -94,6 +98,34 @@ export class TombstoneManager {
         this.db.sync_metadata,
       ],
       async () => {
+        // 0. Projects
+        const deletedProjects = await this.db.projects
+          .where('userId')
+          .equals(userId)
+          .filter((p) => p.isDeleted === true)
+          .toArray();
+
+        for (const proj of deletedProjects) {
+          const deletedAtTime = proj.deletedAt ? new Date(proj.deletedAt).getTime() : 0;
+          if (deletedAtTime > cutoff && retentionMs > 0) continue;
+
+          const outboxEntries = await this.db.outbox
+            .where('[userId+entityType+entityId]')
+            .equals([userId, 'project', proj.id])
+            .toArray();
+          const hasActiveOutbox = outboxEntries.some(
+            (e) => e.state === 'pending' || e.state === 'in_flight' || e.state === 'blocked'
+          );
+          if (hasActiveOutbox) continue;
+
+          const meta = await this.db.sync_metadata.get(`project:${proj.id}`);
+          if (meta?.syncState === 'conflict') continue;
+
+          await this.db.projects.delete(proj.id);
+          await this.db.sync_metadata.delete(`project:${proj.id}`);
+          purgedProjects++;
+        }
+
         // 1. Documents
         const deletedDocs = await this.db.documents
           .where('userId')
@@ -184,7 +216,7 @@ export class TombstoneManager {
       purgedDocuments: purgedDocs,
       purgedDesigns: purgedDesigns,
       purgedFolders: purgedFolders,
-      totalPurged: purgedDocs + purgedDesigns + purgedFolders,
+      totalPurged: purgedProjects + purgedDocs + purgedDesigns + purgedFolders,
     };
   }
 }

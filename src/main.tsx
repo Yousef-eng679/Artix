@@ -29,7 +29,16 @@ if (isPreviewHost || isInIframe) {
 // Audit F-004 + R9: Purge any legacy Workbox `supabase-api-cache` entries once at boot
 void clearSensitiveBrowserCaches();
 
-const queryClient = new QueryClient();
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      networkMode: "offlineFirst",
+    },
+    mutations: {
+      networkMode: "offlineFirst",
+    },
+  },
+});
 
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode>

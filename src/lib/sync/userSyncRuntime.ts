@@ -1,5 +1,13 @@
 import { supabase as defaultSupabaseClient } from '@/integrations/supabase/client';
-import { ArtixDB, getUserArtixDB, migrateLegacyArtixDB, MigrationResult } from '../local/db';
+import {
+  ArtixDB,
+  closeUserArtixDB,
+  getUserArtixDB,
+  migrateLegacyArtixDB,
+  MigrationResult,
+  setActiveUserScope,
+} from '../local/db';
+import { ProjectRepository } from '../repositories/projectRepository';
 import { DocumentRepository } from '../repositories/documentRepository';
 import { WorkspaceFolderRepository } from '../repositories/folderRepository';
 import { SystemDesignRepository } from '../repositories/systemDesignRepository';
@@ -7,9 +15,10 @@ import { OutboxRepository } from '../repositories/outboxRepository';
 import { SyncMetadataRepository } from '../repositories/syncMetadataRepository';
 import { ConflictRepository } from '../repositories/conflictRepository';
 import { PullEngine } from './pullEngine';
-import { SyncEngine } from './syncEngine';
-import { TabCoordinator, getTabCoordinator } from './tabCoordinator';
+import { SyncEngine, evictSyncEngine } from './syncEngine';
+import { TabCoordinator, evictTabCoordinator, getTabCoordinator } from './tabCoordinator';
 import { RealtimeSyncManager } from './realtimeSync';
+import { dirtyTracker } from '../workspace/dirtyTracker';
 
 export type RuntimeState = 'uninitialized' | 'starting' | 'running' | 'degraded' | 'errored' | 'stopped';
 
@@ -24,7 +33,12 @@ export interface RuntimeStatus {
   state: RuntimeState;
   userId: string;
   isStarted: boolean;
+  isHydrated: boolean;
   isDegraded: boolean;
+  isCloudSyncPaused?: boolean;
+  storagePersisted?: boolean | null;
+  usageBytes?: number | null;
+  quotaBytes?: number | null;
   error: RuntimeError | null;
   migration: MigrationResult | null;
 }
@@ -34,6 +48,42 @@ export interface UserSyncRuntimeOptions {
   db?: ArtixDB;
   tabCoordinator?: TabCoordinator;
   realtimeSync?: RealtimeSyncManager;
+  cloudSyncPaused?: boolean;
+}
+
+function createPausedPostgrestBuilder(): any {
+  const pausedResult = Promise.resolve({
+    data: null,
+    error: {
+      message: 'Failed to fetch: cloud sync paused until offline session refreshes',
+      code: 'OFFLINE_SESSION_PAUSED',
+    },
+  });
+  const builder: any = new Proxy(
+    {},
+    {
+      get(_target, prop) {
+        if (prop === 'then') return pausedResult.then.bind(pausedResult);
+        if (prop === 'catch') return pausedResult.catch.bind(pausedResult);
+        if (prop === 'finally') return pausedResult.finally.bind(pausedResult);
+        return () => builder;
+      },
+    },
+  );
+  return builder;
+}
+
+function wrapSupabaseWithCloudPauseGate(rawClient: any, isPaused: () => boolean): any {
+  if (!rawClient || typeof rawClient !== 'object') return rawClient;
+  return new Proxy(rawClient, {
+    get(target, prop, receiver) {
+      if (isPaused() && (prop === 'from' || prop === 'rpc')) {
+        return () => createPausedPostgrestBuilder();
+      }
+      const value = Reflect.get(target, prop, receiver);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
 }
 
 /**
@@ -43,6 +93,7 @@ export interface UserSyncRuntimeOptions {
 export class UserSyncRuntime {
   readonly userId: string;
   readonly db: ArtixDB;
+  readonly projectRepo: ProjectRepository;
   readonly documentRepo: DocumentRepository;
   readonly folderRepo: WorkspaceFolderRepository;
   readonly systemDesignRepo: SystemDesignRepository;
@@ -56,6 +107,11 @@ export class UserSyncRuntime {
 
   private supabase: any;
   private isStarted = false;
+  private isHydrated = false;
+  private cloudSyncPaused: boolean;
+  private storagePersisted: boolean | null = null;
+  private usageBytes: number | null = null;
+  private quotaBytes: number | null = null;
   private unsubCrossTab?: () => void;
   private state: RuntimeState = 'uninitialized';
   private runtimeError: RuntimeError | null = null;
@@ -68,29 +124,43 @@ export class UserSyncRuntime {
     }
 
     this.userId = userId;
-    this.supabase = options.supabaseClient || defaultSupabaseClient;
     this.db = options.db || getUserArtixDB(userId);
+    this.cloudSyncPaused = Boolean(options.cloudSyncPaused);
+    this.supabase = wrapSupabaseWithCloudPauseGate(
+      options.supabaseClient || defaultSupabaseClient,
+      () => this.cloudSyncPaused,
+    );
 
-    this.documentRepo = new DocumentRepository(this.db);
-    this.folderRepo = new WorkspaceFolderRepository(this.db);
-    this.systemDesignRepo = new SystemDesignRepository(this.db);
     this.outboxRepo = new OutboxRepository(this.db);
     this.syncMetadataRepo = new SyncMetadataRepository(this.db);
     this.conflictRepo = new ConflictRepository(this.db);
+    this.projectRepo = new ProjectRepository(this.db, this.outboxRepo, this.syncMetadataRepo);
+    this.documentRepo = new DocumentRepository(this.db, this.outboxRepo, this.syncMetadataRepo);
+    this.folderRepo = new WorkspaceFolderRepository(this.db, this.outboxRepo, this.syncMetadataRepo);
+    this.systemDesignRepo = new SystemDesignRepository(this.db, this.outboxRepo, this.syncMetadataRepo);
 
     this.tabCoordinator = options.tabCoordinator || getTabCoordinator(userId);
 
     this.pullEngine = new PullEngine({
       supabaseClient: this.supabase,
       db: this.db,
+      projectRepo: this.projectRepo,
       documentRepo: this.documentRepo,
       folderRepo: this.folderRepo,
       systemDesignRepo: this.systemDesignRepo,
       conflictRepo: this.conflictRepo,
       syncMetadataRepo: this.syncMetadataRepo,
+      tabCoordinator: this.tabCoordinator,
+      onHydrationChange: (hydrated) => {
+        if (this.isHydrated !== hydrated) {
+          this.isHydrated = hydrated;
+          this.notifyStatus();
+        }
+      },
     });
 
     this.syncEngine = new SyncEngine({
+      userId: this.userId,
       supabaseClient: this.supabase,
       outboxRepo: this.outboxRepo,
       syncMetadataRepo: this.syncMetadataRepo,
@@ -114,10 +184,46 @@ export class UserSyncRuntime {
       state: this.state,
       userId: this.userId,
       isStarted: this.isStarted,
+      isHydrated: this.isHydrated,
       isDegraded: this.state === 'degraded',
+      isCloudSyncPaused: this.cloudSyncPaused,
+      storagePersisted: this.storagePersisted,
+      usageBytes: this.usageBytes,
+      quotaBytes: this.quotaBytes,
       error: this.runtimeError,
       migration: this.migrationResult,
     };
+  }
+
+  /**
+   * Pauses or resumes cloud network activity (Realtime + SyncEngine) while keeping
+   * local Dexie repositories and cross-tab coordination active (e.g. during an
+   * offline expired-JWT session until online refresh succeeds).
+   */
+  setCloudSyncPaused(paused: boolean): void {
+    if (this.cloudSyncPaused === paused) return;
+    this.cloudSyncPaused = paused;
+
+    if (this.isStarted) {
+      if (paused) {
+        this.realtimeSync.stop();
+      } else {
+        this.realtimeSync.start(this.userId);
+        const hadInFlightSync = Boolean(
+          (this.syncEngine as unknown as { activeSyncPromise?: unknown }).activeSyncPromise,
+        );
+        this.syncEngine
+          .triggerSync(this.userId)
+          .then(() => (hadInFlightSync ? this.syncEngine.triggerSync(this.userId) : undefined))
+          .catch((err) => {
+            if (err?.name !== 'DatabaseClosedError') {
+              console.warn(`[UserSyncRuntime] Resumed sync error for user ${this.userId}:`, err);
+            }
+          });
+      }
+    }
+
+    this.notifyStatus();
   }
 
   /**
@@ -143,9 +249,9 @@ export class UserSyncRuntime {
   }
 
   /**
-   * Initializes the runtime: opens database, runs legacy migrations,
-   * reclaims in-flight crash leases, binds tab communication, starts realtime,
-   * and kicks off asynchronous synchronization.
+   * Initializes the runtime: opens database, requests persistent storage durability,
+   * runs legacy migrations, reclaims in-flight crash leases, binds tab communication,
+   * starts realtime, and kicks off asynchronous synchronization.
    */
   async start(): Promise<void> {
     if (this.isStarted) return;
@@ -173,6 +279,27 @@ export class UserSyncRuntime {
       }
     }
 
+    // 1b. Request persistent storage durability & inspect quota (best-effort, non-fatal)
+    if (typeof navigator !== 'undefined' && navigator.storage) {
+      try {
+        if (typeof navigator.storage.persist === 'function') {
+          this.storagePersisted = await navigator.storage.persist();
+        }
+      } catch (persistErr) {
+        console.warn('[UserSyncRuntime] navigator.storage.persist() failed:', persistErr);
+      }
+
+      try {
+        if (typeof navigator.storage.estimate === 'function') {
+          const estimate = await navigator.storage.estimate();
+          this.usageBytes = typeof estimate?.usage === 'number' ? estimate.usage : null;
+          this.quotaBytes = typeof estimate?.quota === 'number' ? estimate.quota : null;
+        }
+      } catch (estimateErr) {
+        console.warn('[UserSyncRuntime] navigator.storage.estimate() failed:', estimateErr);
+      }
+    }
+
     // 2. Run legacy database migrations if needed
     try {
       const migResult = await migrateLegacyArtixDB(this.db, this.userId);
@@ -196,6 +323,13 @@ export class UserSyncRuntime {
       };
     }
 
+    // 2b. Inspect initial local hydration status
+    try {
+      this.isHydrated = await this.pullEngine.isHydrated();
+    } catch {
+      this.isHydrated = false;
+    }
+
     // 3. Reclaim stale in-flight leases from crashed previous sessions
     try {
       await this.outboxRepo.recoverStaleLeases({
@@ -211,15 +345,17 @@ export class UserSyncRuntime {
       // Standby or leader tabs can react to peer tab changes
     });
 
-    // 5. Start realtime listener for wake-up acceleration
-    this.realtimeSync.start(this.userId);
+    if (!this.cloudSyncPaused) {
+      // 5. Start realtime listener for wake-up acceleration
+      this.realtimeSync.start(this.userId);
 
-    // 6. Start background synchronization
-    this.syncEngine.triggerSync(this.userId).catch((err) => {
-      if (err?.name !== 'DatabaseClosedError') {
-        console.warn(`[UserSyncRuntime] Initial sync error for user ${this.userId}:`, err);
-      }
-    });
+      // 6. Start background synchronization
+      this.syncEngine.triggerSync(this.userId).catch((err) => {
+        if (err?.name !== 'DatabaseClosedError') {
+          console.warn(`[UserSyncRuntime] Initial sync error for user ${this.userId}:`, err);
+        }
+      });
+    }
 
     this.isStarted = true;
     if (this.state !== 'degraded') {
@@ -233,7 +369,13 @@ export class UserSyncRuntime {
    * destroys listeners, and cleanly closes the user's IndexedDB connection.
    */
   async stop(): Promise<void> {
-    if (!this.isStarted && this.state === 'stopped') return;
+    if (!this.isStarted && this.state === 'stopped') {
+      evictSyncEngine(this.userId);
+      evictTabCoordinator(this.userId);
+      await closeUserArtixDB(this.userId);
+      dirtyTracker.clear();
+      return;
+    }
 
     if (this.unsubCrossTab) {
       this.unsubCrossTab();
@@ -242,11 +384,15 @@ export class UserSyncRuntime {
 
     this.realtimeSync.stop();
     this.syncEngine.destroy();
+    evictSyncEngine(this.userId);
     this.tabCoordinator.destroy();
+    evictTabCoordinator(this.userId);
 
     if (this.db.isOpen()) {
       this.db.close();
     }
+    await closeUserArtixDB(this.userId);
+    dirtyTracker.clear();
 
     this.isStarted = false;
     this.state = 'stopped';
@@ -308,6 +454,9 @@ export async function openUserRuntime(
 ): Promise<UserSyncRuntime> {
   if (activeRuntime) {
     if (activeRuntime.userId === userId && activeRuntime.isActive()) {
+      if (options.cloudSyncPaused !== undefined) {
+        activeRuntime.setCloudSyncPaused(options.cloudSyncPaused);
+      }
       return activeRuntime;
     }
     await activeRuntime.stop();
@@ -330,6 +479,14 @@ export async function closeUserRuntime(userId?: string): Promise<void> {
       await activeRuntime.stop();
       activeRuntime = null;
     }
+  } else if (userId) {
+    evictSyncEngine(userId);
+    evictTabCoordinator(userId);
+    await closeUserArtixDB(userId);
+    dirtyTracker.clear();
+  } else {
+    setActiveUserScope(null);
+    dirtyTracker.clear();
   }
   await clearSensitiveBrowserCaches();
 }

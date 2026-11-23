@@ -3,11 +3,12 @@ import { OutboxEntry } from '../local/types';
 /**
  * Sorts outbox mutations into strict dependency order using a topological sort.
  * Guarantees that:
- * 1. Root and parent folders are pushed before child folders referencing them.
- * 2. Folders are created before documents and designs referencing their folderId.
- * 3. Child entities are deleted before their parent folders are deleted.
- * 4. Mutations on the same entity preserve strictly sequential FIFO order by createdAt.
- * 5. Independent entries preserve chronological FIFO order.
+ * 1. Projects are created before folders, documents, and designs referencing their projectId.
+ * 2. Root and parent folders are pushed before child folders referencing them.
+ * 3. Folders are created before documents and designs referencing their folderId.
+ * 4. Child entities are deleted before their parent folders and parent projects are deleted.
+ * 5. Mutations on the same entity preserve strictly sequential FIFO order by createdAt.
+ * 6. Independent entries preserve chronological FIFO order.
  */
 export function orderOutboxByDependency(entries: OutboxEntry[]): OutboxEntry[] {
   if (entries.length <= 1) {
@@ -15,11 +16,19 @@ export function orderOutboxByDependency(entries: OutboxEntry[]): OutboxEntry[] {
   }
 
   // Map entityId -> OutboxEntry for quick dependency lookups
+  const projectCreates = new Map<string, OutboxEntry>();
+  const projectDeletes = new Map<string, OutboxEntry>();
   const folderCreates = new Map<string, OutboxEntry>();
   const folderDeletes = new Map<string, OutboxEntry>();
 
   for (const entry of entries) {
-    if (entry.entityType === 'workspace_folder') {
+    if (entry.entityType === 'project') {
+      if (entry.operation === 'create') {
+        projectCreates.set(entry.entityId, entry);
+      } else if (entry.operation === 'delete') {
+        projectDeletes.set(entry.entityId, entry);
+      }
+    } else if (entry.entityType === 'workspace_folder') {
       if (entry.operation === 'create') {
         folderCreates.set(entry.entityId, entry);
       } else if (entry.operation === 'delete') {
@@ -65,10 +74,27 @@ export function orderOutboxByDependency(entries: OutboxEntry[]): OutboxEntry[] {
     }
   }
 
-  // 2. Cross-entity folder dependencies
+  // 2. Cross-entity project & folder dependencies
   for (const entry of entries) {
     const payload = (entry.payload as Record<string, any>) || {};
-    const refFolderId = payload.folderId || payload.folder_id || payload.parentFolderId || payload.parent_folder_id;
+
+    if (entry.entityType !== 'project') {
+      const refProjectId = entry.projectId || payload.projectId || payload.project_id;
+      if (refProjectId) {
+        const projectCreate = projectCreates.get(refProjectId);
+        if (projectCreate && projectCreate.id !== entry.id) {
+          addDependency(projectCreate.id, entry.id);
+        }
+
+        const projectDelete = projectDeletes.get(refProjectId);
+        if (projectDelete && projectDelete.id !== entry.id && entry.operation === 'delete') {
+          addDependency(entry.id, projectDelete.id);
+        }
+      }
+    }
+
+    const refFolderId =
+      payload.folderId || payload.folder_id || payload.parentFolderId || payload.parent_folder_id;
 
     if (refFolderId) {
       // If the referenced folder is also being created in this batch, the folder create MUST precede this entry

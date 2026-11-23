@@ -1,6 +1,6 @@
 import { ArtixDB, getArtixDB } from '../local/db';
 import { LocalDocument, RemoteDocumentSnapshot } from '../local/types';
-import { EntityNotFoundError } from '../local/errors';
+import { EntityNotFoundError, StaleBufferError } from '../local/errors';
 import { DocumentFormat } from '@/components/Editor/languageMap';
 import { OutboxRepository } from './outboxRepository';
 import { SyncMetadataRepository } from './syncMetadataRepository';
@@ -98,30 +98,51 @@ export class DocumentRepository {
         }
       }
 
+      const nextProjectId = snapshot.projectId ?? existing?.projectId ?? null;
+      const nextFolderId = snapshot.folderId !== undefined ? snapshot.folderId : (existing?.folderId ?? null);
+      const nextTitle = snapshot.title ?? existing?.title ?? 'Untitled Document';
+      const nextContent = snapshot.content ?? existing?.content ?? '';
+      const nextFormat = snapshot.format || existing?.format || 'markdown';
+
+      const payloadChanged =
+        !existing ||
+        existing.isDeleted ||
+        existing.projectId !== nextProjectId ||
+        existing.folderId !== nextFolderId ||
+        existing.title !== nextTitle ||
+        existing.content !== nextContent ||
+        existing.format !== nextFormat;
+
       const doc: LocalDocument = {
         id: snapshot.id,
         userId: snapshot.userId,
-        projectId: snapshot.projectId ?? existing?.projectId ?? null,
-        folderId: snapshot.folderId !== undefined ? snapshot.folderId : (existing?.folderId ?? null),
-        title: snapshot.title ?? existing?.title ?? 'Untitled Document',
-        content: snapshot.content ?? existing?.content ?? '',
-        format: snapshot.format || existing?.format || 'markdown',
+        projectId: nextProjectId,
+        folderId: nextFolderId,
+        title: nextTitle,
+        content: nextContent,
+        format: nextFormat,
         createdAt: snapshot.createdAt || existing?.createdAt || now,
         updatedAt: snapshot.updatedAt || now,
-        localRevision: existing ? existing.localRevision : 1,
+        localRevision: !existing ? 1 : payloadChanged ? existing.localRevision + 1 : existing.localRevision,
         isDeleted: false,
         deletedAt: null,
       };
 
       await this.db.documents.put(doc);
 
+      const existingMeta = await this.db.sync_metadata.get(`document:${doc.id}`);
+      const resolvedServerVersion =
+        snapshot.serverVersion !== undefined && snapshot.serverVersion !== null
+          ? String(snapshot.serverVersion)
+          : (existingMeta?.serverVersion ?? null);
+
       await this.syncMetadataRepo.upsertInTx({
         entityType: 'document',
         entityId: doc.id,
         userId: doc.userId,
         syncState: 'synced',
-        serverVersion: snapshot.serverVersion ? String(snapshot.serverVersion) : null,
-        serverUpdatedAt: snapshot.updatedAt ?? null,
+        serverVersion: resolvedServerVersion,
+        serverUpdatedAt: snapshot.updatedAt ?? existingMeta?.serverUpdatedAt ?? null,
         localRevision: doc.localRevision,
         lastSyncedAt: Date.now(),
         baseSnapshot: snapshot,
@@ -191,7 +212,11 @@ export class DocumentRepository {
     });
   }
 
-  async update(id: string, updates: UpdateDocumentDTO, options?: { skipOutbox?: boolean }): Promise<LocalDocument> {
+  async update(
+    id: string,
+    updates: UpdateDocumentDTO,
+    options?: { skipOutbox?: boolean; expectedLocalRevision?: number }
+  ): Promise<LocalDocument> {
     if (options?.skipOutbox) {
       const existing = await this.getByIdIncludeDeleted(id);
       if (!existing) throw new EntityNotFoundError('Document', id);
@@ -210,6 +235,18 @@ export class DocumentRepository {
       const existing = await this.db.documents.get(id);
       if (!existing || existing.isDeleted) {
         throw new EntityNotFoundError('Document', id);
+      }
+
+      if (
+        options?.expectedLocalRevision !== undefined &&
+        existing.localRevision !== options.expectedLocalRevision
+      ) {
+        throw new StaleBufferError(
+          'Document',
+          id,
+          options.expectedLocalRevision,
+          existing.localRevision,
+        );
       }
 
       // Filter out undefined fields to prevent accidental overwrites of existing metadata
@@ -260,10 +297,10 @@ export class DocumentRepository {
     });
   }
 
-  async delete(id: string, options?: { skipOutbox?: boolean }): Promise<void> {
-    await this.db.transaction('rw', [this.db.documents, this.db.outbox, this.db.sync_metadata], async () => {
+  async delete(id: string, options?: { skipOutbox?: boolean }): Promise<number | null> {
+    return await this.db.transaction('rw', [this.db.documents, this.db.outbox, this.db.sync_metadata], async () => {
       const existing = await this.db.documents.get(id);
-      if (!existing) return;
+      if (!existing) return null;
 
       const softDeleted: LocalDocument = {
         ...existing,
@@ -301,6 +338,8 @@ export class DocumentRepository {
         syncState: options?.skipOutbox ? 'synced' : 'pending',
         localRevision: softDeleted.localRevision,
       });
+
+      return softDeleted.localRevision;
     });
   }
 
@@ -325,13 +364,32 @@ export class DocumentRepository {
 
       await this.db.documents.put(restored);
 
+      const existingMeta = await this.db.sync_metadata.get(`document:${id}`);
+      const existingOutbox = await this.db.outbox
+        .where('[userId+entityType+entityId]')
+        .equals([restored.userId, 'document', restored.id])
+        .toArray();
+      const hasPendingDelete = existingOutbox.some(
+        (e) => e.state === 'pending' && e.operation === 'delete'
+      );
+
+      const validServerVersion =
+        existingMeta?.serverVersion && /^[1-9]\d*$/.test(existingMeta.serverVersion)
+          ? existingMeta.serverVersion
+          : null;
+
+      const mustReCreate =
+        !validServerVersion ||
+        (existingMeta?.syncState === 'deleted_synced' && !hasPendingDelete);
+
       if (this.outboxRepo) {
         await this.outboxRepo.enqueueInTx({
           userId: restored.userId,
           projectId: restored.projectId,
           entityType: 'document',
           entityId: restored.id,
-          operation: 'update',
+          operation: mustReCreate ? 'create' : 'update',
+          baseServerVersion: mustReCreate ? null : validServerVersion,
           payload: {
             title: restored.title,
             content: restored.content,
@@ -347,6 +405,7 @@ export class DocumentRepository {
         entityId: restored.id,
         userId: restored.userId,
         syncState: 'pending',
+        serverVersion: mustReCreate ? null : validServerVersion,
         localRevision: restored.localRevision,
       });
 

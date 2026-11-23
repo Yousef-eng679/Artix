@@ -1,13 +1,26 @@
 import { DocumentFormat } from '@/components/Editor/languageMap';
 import { BoardState } from '@/hooks/useSystemDesigns';
 
-export type EntityType = 'document' | 'system_design' | 'workspace_folder';
+export type EntityType = 'project' | 'document' | 'system_design' | 'workspace_folder';
 
 export type OutboxOperation = 'create' | 'update' | 'delete';
 
 export type OutboxState = 'pending' | 'in_flight' | 'blocked' | 'failed';
 
 export type SyncState = 'synced' | 'pending' | 'syncing' | 'conflict' | 'error' | 'deleted_pending' | 'deleted_synced';
+
+export interface LocalProject {
+  id: string;
+  userId: string;
+  name: string;
+  createdAt: string;
+  updatedAt: string;
+  localRevision: number;
+  isDeleted: boolean;
+  deletedAt?: string | null;
+  cachedDocumentCount?: number;
+  cachedDesignCount?: number;
+}
 
 export interface LocalDocument {
   id: string;
@@ -66,7 +79,10 @@ export interface OutboxEntry {
   attemptCount: number;
   createdAt: number;
   updatedAt: number;
+  dispatched?: boolean;
+  dispatchedAt?: number | null;
   leaseOwner?: string | null;
+  leaseToken?: string | null;
   leaseExpiresAt?: number | null;
   nextRetryAt?: number | null;
   lastError?: {
@@ -86,7 +102,19 @@ export interface SyncMetadata {
   localRevision: number;
   syncState: SyncState;
   lastSyncedAt: number | null;
+  lastAckedMutationId?: string | null;
   baseSnapshot?: unknown | null;
+}
+
+export interface RemoteProjectSnapshot {
+  id: string;
+  userId: string;
+  name: string;
+  serverVersion?: string | null;
+  updatedAt?: string;
+  createdAt?: string;
+  cachedDocumentCount?: number;
+  cachedDesignCount?: number;
 }
 
 export interface RemoteWorkspaceFolderSnapshot {
@@ -125,6 +153,8 @@ export interface RemoteSystemDesignSnapshot {
   createdAt?: string;
 }
 
+export type ConflictReason = 'version_mismatch' | 'remote_deleted' | 'already_exists';
+
 export interface ConflictRecord {
   id: string;
   entityType: EntityType;
@@ -133,6 +163,10 @@ export interface ConflictRecord {
   basePayload: unknown;
   localPayload: unknown;
   remotePayload: unknown;
+  /** Why the server/pull rejected local intent (S-03). Absent on legacy rows. */
+  reason?: ConflictReason | string | null;
+  /** Authoritative server version at detection time, used as the CAS base when keeping local. */
+  remoteVersion?: string | null;
   detectedAt: number;
   resolvedAt?: number | null;
 }
@@ -150,6 +184,7 @@ export interface ServerSyncChange {
   entityId: string;
   operation: 'create' | 'update' | 'delete';
   entityVersion: number;
+  mutationId?: string | null;
   payload: unknown;
   changedAt: string;
 }

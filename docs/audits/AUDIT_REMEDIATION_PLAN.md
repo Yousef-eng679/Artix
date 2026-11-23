@@ -1,5 +1,7 @@
 # Artix — Engineering Audit Remediation & Atomic Implementation Plan
 
+> **Historical Record Notice**: This document records the point-in-time October 2026 remediation plan executed in PR #12 (`fix/audit-remediation-plan`, merged at `717ef57`). Subsequent `v2.5.0` productionization (`fix/productionize-billing-cas-sync`) completed strict CAS contraction (`20261101100100`), `projects` local-first Outbox sync, `sync_changes` retention floor & `resnapshotAll`, atomic `reconcile_stripe_subscription` & `manual_grants`, local Monaco & self-hosted font bundling, Layer 3 real PostgreSQL 17 tests, and Layer 4 production Workbox PWA E2E verification. For current canonical specifications, see [`docs/README.md`](../README.md).
+
 **Source Audit:** [`2026-10-12_REPOSITORY_AUDIT.md`](./2026-10-12_REPOSITORY_AUDIT.md) (Reviewed revision: `main` at `0e5ab3549ef26ef34b1ffdff4b937378d2b1afdb`)  
 **Target Branch:** `fix/audit-remediation-plan` (branched directly from `origin/main` without modifying `main`)  
 **Execution Strategy:** Step-by-step atomic tasks with isolated verification and granular local commits before pushing to a new Pull Request.
