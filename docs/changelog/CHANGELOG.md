@@ -4,6 +4,34 @@ All notable changes to the Artix platform are documented below.
 
 ---
 
+## [v2.5.0] — 2026-11-07
+
+### Unified Billing, Strict CAS & True Offline-First Productionization (`fix/productionize-billing-cas-sync`)
+- **Expand/Contract Sync Protocol & `projects` Local-First Sync**: Added `projects.version` + `projects.deleted_at` + replication triggers (`20261101100000_expand_sync_protocol_and_projects.sql`), `sync_changes.mutation_id` + `'project'` in `entity_type`, `ArtixDB` v2/v3 `projects` table, `ProjectRepository`, `ProjectPushAdapter`, self-echo `lastAckedMutationId` correlation, and contracted strict server CAS (`p_base_version >= 1` required on `update` and `delete` via `20261101100100_contract_strict_cas_base_version.sql`).
+- **Bounded `sync_changes` Retention & Snapshot Hydration**: Added `public.sync_retention_state`, `public.get_sync_feed_bounds()`, and `public.prune_sync_changes()` (`20261101100200_sync_changes_retention_and_floor.sql`), paired with `PullEngine` `bootstrapHydrateAll()` on cold start and `resnapshotAll()` whenever a client cursor falls behind `min_retained_sequence`.
+- **Outbox Fencing, Causal Barrier & Atomic Push Finalization**: Added `dispatched` immutability, per-entity causal barrier ordering in `OutboxRepository.getPending({ readyOnly: true })`, `leaseToken` fencing (`markInFlight`), atomic `[outbox, sync_metadata, conflicts]` Dexie finalization in `SyncEngine`, and `retryBlocked` recovery in `SyncStatusBanner`.
+- **Error Taxonomy & Conflict Resolution UX**: Expanded `src/lib/sync/errorTaxonomy.ts` to 17 `SyncErrorCode` values, HTTP `429` `Retry-After` parsing capped at `MAX_SYNC_BACKOFF_MS = 300_000`, `TIER_LIMIT_EXCEEDED` trigger mapping, strict `DOMException` `STORAGE_QUOTA` detection, structured conflict reasons (`version_mismatch`, `remote_deleted`, `already_exists`), and side-by-side resolution in `ConflictResolutionModal`.
+- **Editor & Board Stale-Buffer Protection**: Added `expectedLocalRevision` / `StaleBufferError` checks and a non-destructive `stale-buffer-banner` (`Load remote`, `Keep mine`, `Save mine as copy`) in `Editor.tsx` and `SystemArchitect.tsx`, plus mid-drag auto-save deferral on the architecture canvas.
+- **Atomic Stripe Reconciliation, Strict `past_due` Fail-Closed Policy & `manual_grants`**: Added `public.reconcile_stripe_subscription()` (`reconciliation_version`, `last_stripe_event_created`), RLS-protected `public.manual_grants` (superseding legacy hardcoded admin grant triggers), `public.user_has_active_pro_entitlement()`, and Free-tier monthly AI generation quota enforcement (`5/month`) inside `public.check_plan_tier_limit()` (`20261101100300_atomic_billing_reconciliation_and_manual_grants.sql`). `stripe-webhook` now verifies live subscriptions via `stripe.subscriptions.retrieve()` against the Pro price allowlist (`$8/mo`, `$72/yr`), enforces `GRACE_PERIOD_DAYS = 0` (`past_due` immediately downgrades `plan_tier` to `'free'`), and caches offline entitlements/quotas in `ArtixDB.database_meta` (`'cached_subscription'`, `'cached_ai_generations'`).
+- **True Offline Cold-Start & Zero External CDNs**: Added `recoverOfflineSessionFromStorage()` (`src/lib/auth/offlineSession.ts`) and non-destructive `reauth-sync-banner` (`useAuth.tsx`), bundled `monaco-editor` + local web worker (`src/components/Editor/monacoSetup.ts`), self-hosted `@fontsource/inter` and `@fontsource/jetbrains-mono`, Workbox `skipWaiting`/`clientsClaim` with a 5 MiB precache ceiling, `navigator.storage.persist()`, and user-scoped `localStorage` keys/singleton eviction on sign-out.
+- **4-Layer Verification Matrix**: Expanded Vitest to `107` files / `698` passing unit & fault-injection tests, added real PostgreSQL 17 / PGlite concurrency & RLS verification (`npm run test:pg`, `6/6` passing), and verified the production PWA build under Playwright Chromium E2E (`18` specs passing on `http://localhost:8080`).
+
+---
+
+## [v2.4.0] — 2026-10-24
+
+### PR #12 Repository Audit Remediation (`fix/audit-remediation-plan`)
+- **Commit-Ordered Change Feed (`F-001`)**: Serialized `public.record_sync_change()` sequence allocation with `pg_advisory_xact_lock` so `sync_changes.sequence` strictly matches transaction commit visibility (`20261020100000_commit_ordered_sync_changes.sql`).
+- **True 3-Way `diff3` Merge & Conflict Guard (`F-002`)**: Replaced ad-hoc text merging with a full Myers LCS + `diff3` 3-way line merge (`src/lib/sync/merge.ts`), persisted `SyncMetadata.baseSnapshot`, and blocked accidental pushes containing unresolved conflict markers (`UNRESOLVED_CONFLICT_MARKERS`).
+- **Server-Side Atomic Idempotent CAS RPC (`F-003`)**: Introduced `public.apply_sync_mutation` (`20261020110000_atomic_idempotent_mutation_rpc.sql`) executing idempotency ledger lookup, optimistic CAS write, and `processed_mutations` recording inside one transaction.
+- **PWA Cache Hardening (`F-004`)**: Removed Workbox `runtimeCaching` on authenticated Supabase REST endpoints and added `clearSensitiveBrowserCaches()` (`src/lib/pwa/cacheCleanup.ts`) on startup and sign-out.
+- **Dead Beacon Removal (`F-005`)**: Removed dead `/api/save` `navigator.sendBeacon` network calls from `src/lib/cache/tabCloseGuard.ts`, keeping unload persistence strictly local via `draftCache.ts`.
+- **Serialized Tier-Limit Trigger (`F-006`)**: Added per-user `pg_advisory_xact_lock` serialization in `public.check_plan_tier_limit()` (`20261020120000_serialize_tier_limits_trigger.sql`).
+- **OWASP PBKDF2 Hardening (`F-007`)**: Upgraded BYOK AES-256-GCM key derivation to `v: 2` (`600,000` PBKDF2-SHA256 iterations) with transparent `v: 1` (`250,000` iterations) read compatibility (`src/lib/ai/crypto.ts`).
+- **Security Definer & Markdown XSS Hardening (`SS-01`, `SS-08`)**: Locked `search_path = public` and revoked public `EXECUTE` across `SECURITY DEFINER` functions (`20261020130000_harden_security_definer_advisors.sql`), added `sanitizeMarkdownUrl()` URI scheme allowlisting in `MarkdownPreview.tsx`, and added CI `build` + Playwright E2E gates in `.github/workflows/ci.yml`.
+
+---
+
 ## [v2.3.0] — 2026-09-30
 
 ### Canonical Documentation System & Recovery Plan V2

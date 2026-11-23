@@ -55,9 +55,9 @@ Encrypted Payload Serialized to localStorage:
 ## 3. Storage Sanitization & Key Obfuscation (`storage.ts`)
 
 When passphrase encryption is not enabled by the user:
-1. `sanitizeSettingsForStorage()` encodes stored keys with an `obf:` Base64 prefix (`obf:${btoa(key)}`) as a casual-inspection guard only.
+1. `sanitizeSettingsForStorage()` encodes `primary.apiKey` with an `obf:` Base64 prefix (`obf:${btoa(key)}`) as a casual-inspection guard only (whereas Encrypted Mode AES-GCM encrypts the entire `AISettings` JSON payload including both `primary` and `backup` credentials).
 2. When passphrase encryption is enabled (`enableEncryption`), plaintext `localStorage` keys are removed and only `artix.ai.settings.enc.v1` persists.
-3. On `signOut()`, `lock()` increments `stateEpoch` and wipes `memoryCache` and `memoryPassphrase` from RAM.
+3. Invoking `lock()` (via `useAISettings().lock()`, `clearSettings()`, or page reload) increments `stateEpoch`—invalidating any queued in-flight async save operations via `OperationInvalidatedError`—and wipes `memoryCache` and `memoryPassphrase` from RAM.
 
 ---
 

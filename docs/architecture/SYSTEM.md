@@ -1,7 +1,7 @@
 # Artix System Architecture & Runtime Structure
 
 > **Status**: `IMPLEMENTED`  
-> **Verified Against**: Post-C12 Synchronization Hardening (`a48c979`)
+> **Verified Against**: Productionized Billing, Strict CAS & True Offline-First Architecture (`v2.5.0`)
 
 ---
 
@@ -32,24 +32,24 @@ Artix is built upon a **Local-First, Cloud-Synchronized** architectural foundati
 │   ┌─────────────────────────────────────────────────────────────────────────┐   │
 │   │                      Unidirectional Hooks & Context                     │   │
 │   │                                                                         │   │
-│   │  [useDocuments]   [useSystemDesigns]   [useWorkspaceFolders]   [Auth]   │   │
+│   │ [useProjects] [useDocuments] [useSystemDesigns] [useWorkspaceFolders]   │   │
 │   └────────────────────────────────────┬────────────────────────────────────┘   │
 │                                        │ Local Repository API                   │
 │                                        ▼                                        │
 │   ┌─────────────────────────────────────────────────────────────────────────┐   │
 │   │                         Local Repository Layer                          │   │
 │   │                                                                         │   │
-│   │   DocumentRepo    SystemDesignRepo    FolderRepo    ConflictRepo        │   │
+│   │  ProjectRepo   DocumentRepo   SystemDesignRepo   FolderRepo   Conflict  │   │
 │   └────────────────────────────────────┬────────────────────────────────────┘   │
 │                                        │ Atomic Dexie Transaction               │
 │                                        ▼                                        │
 │   ┌─────────────────────────────────────────────────────────────────────────┐   │
-│   │                     User-Scoped Dexie IndexedDB                         │   │
+│   │                   User-Scoped Dexie IndexedDB (v3, 8 Tables)            │   │
 │   │                     (`ArtixDB_v2_<user_hash>`)                          │   │
 │   │                                                                         │   │
 │   │   ┌───────────────┐     ┌───────────────────┐    ┌──────────────────┐   │   │
-│   │   │ Entity Tables │     │  Outbox Mutations │    │  Sync Metadata   │   │   │
-│   │   │ docs/designs  │     │  leases / DAG     │    │  revisions / CAS │   │   │
+│   │   │ Entity Tables │     │  Outbox Mutations │    │ Meta & Conflicts │   │   │
+│   │   │ 4 Synced Types│     │  leaseToken / DAG │    │ cursor/hydration │   │   │
 │   │   └───────────────┘     └─────────┬─────────┘    └──────────────────┘   │   │
 │   └───────────────────────────────────┼─────────────────────────────────────┘   │
 │                                       │ Drain / Catchup                         │
@@ -59,16 +59,16 @@ Artix is built upon a **Local-First, Cloud-Synchronized** architectural foundati
 │   │                                                                         │   │
 │   │   ┌───────────────────────────┐       ┌─────────────────────────────┐   │   │
 │   │   │        SyncEngine         │       │         PullEngine          │   │   │
-│   │   │  - Outbox Draining        │       │  - Cursor Range Queries     │   │   │
-│   │   │  - Topological DAG Sort   │       │  - Pending-State Guard      │   │   │
-│   │   │  - Exponential Backoff    │       │  - 3-Way Conflict Capture   │   │   │
+│   │   │  - Outbox Draining        │       │  - Bootstrap / Resnapshot   │   │   │
+│   │   │  - Topological DAG Sort   │       │  - Cursor Range Queries     │   │   │
+│   │   │  - Lease-Token Fencing    │       │  - Self-Echo & Pending Guard│   │   │
 │   │   └─────────────┬─────────────┘       └──────────────▲──────────────┘   │   │
 │   │                 │ Push                               │ Pull             │   │
 │   │                 ▼                                    │                  │   │
 │   │   ┌───────────────────────────┐       ┌──────────────┴──────────────┐   │   │
 │   │   │       Push Adapters       │       │     RealtimeSyncManager     │   │   │
-│   │   │  - CAS Version Verification│      │  - 150ms Burst Debouncing   │   │   │
-│   │   │  - Idempotency Ledger     │       │  - Reconnect Catchup Trigger│   │   │
+│   │   │  - apply_sync_mutation RPC│       │  - 50ms Burst Debouncing    │   │   │
+│   │   │  - Strict CAS & Ledger    │       │  - Reconnect Catchup Trigger│   │   │
 │   │   └─────────────┬─────────────┘       └──────────────▲──────────────┘   │   │
 │   └─────────────────┼────────────────────────────────────┼──────────────────┘   │
 │                     │ Web Locks Single-Leader Gate       │                      │
@@ -81,16 +81,17 @@ Artix is built upon a **Local-First, Cloud-Synchronized** architectural foundati
                                       │ HTTPS / WebSocket (TLS)
                                       ▼
 ┌─────────────────────────────────────────────────────────────────────────────────┐
-│                                 SUPABASE CLOUD                                  │
+│                             SUPABASE CLOUD (PostgreSQL 17)                      │
 │                                                                                 │
 │   ┌────────────────────────────┐    ┌───────────────────────────────────────┐   │
-│   │    Entity Tables (CAS)     │    │        Append-Only Replication        │   │
+│   │    Entity Tables (CAS)     │    │   Atomic RPC, Change Feed & Billing   │   │
 │   │                            │    │                                       │   │
-│   │  - public.documents        │    │  - public.sync_changes                │   │
-│   │  - public.system_designs   │    │    (BIGINT sequence identity)         │   │
-│   │  - public.workspace_folders│    │                                       │   │
-│   │  - version INTEGER trigger │    │  - public.processed_mutations         │   │
-│   │  - Row Level Security (UID)│    │    (mutation_id idempotency ledger)   │   │
+│   │  - public.projects         │    │  - public.apply_sync_mutation()       │   │
+│   │  - public.documents        │    │  - public.sync_changes (commit-order) │   │
+│   │  - public.system_designs   │    │  - public.processed_mutations         │   │
+│   │  - public.workspace_folders│    │  - public.sync_retention_state        │   │
+│   │  - version INTEGER trigger │    │  - public.reconcile_stripe_sub...()   │   │
+│   │  - Row Level Security (UID)│    │  - public.manual_grants               │   │
 │   └────────────────────────────┘    └───────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -100,19 +101,20 @@ Artix is built upon a **Local-First, Cloud-Synchronized** architectural foundati
 ## 3. Subsystem Breakdown
 
 ### 3.1 Unidirectional Presentation Layer
-The presentation layer (React components in `src/components/` and `src/pages/`) adheres to one invariant:
-- **No Direct Cloud Imports**: Components never import `@/integrations/supabase/client` or perform remote fetches.
-- **Hook Data Source**: Components consume custom React hooks (`useDocuments`, `useSystemDesigns`, `useWorkspaceFolders`, `useWorkspaceTabs`).
-- **Optimistic Rendering**: State is read directly from IndexedDB via live queries and cached React state.
+The presentation layer (React components in `src/components/` and `src/pages/`) adheres to strict boundaries:
+- **No Direct Cloud Mutations on Synced Entities**: Workspace components never mutate `projects`, `documents`, `system_designs`, or `workspace_folders` via Supabase REST; all changes flow through local repositories.
+- **Hook Data Source**: Components consume custom React hooks (`useProjects`, `useDocuments`, `useSystemDesigns`, `useWorkspaceFolders`, `useWorkspaceTabs`).
+- **Stale-Buffer & Conflict UX**: `Editor.tsx` and `SystemArchitect.tsx` pass `expectedLocalRevision` on save to guard against stale-buffer overwrites (`StaleBufferError`), while `Dashboard.tsx` and `ProjectWorkspaceLayout.tsx` mount `ConflictResolutionCenter` and `SyncStatusBanner`.
 
 ### 3.2 Repository Layer (`src/lib/repositories/`)
 Repositories abstract all persistent operations into strongly typed domains:
-- `DocumentRepository`: Handles document creation, updates, soft-deletions, and project listings.
-- `SystemDesignRepository`: Handles canvas node/edge state serialization and updates.
-- `WorkspaceFolderRepository`: Manages hierarchical folder trees, moves, and cascading deletes.
-- `OutboxRepository`: Manages pending mutation queueing, in-flight leases, and outbox compaction.
-- `SyncMetadataRepository`: Tracks entity synchronization status (`synced`, `pending`, `syncing`, `conflict`, `error`) and baseline server versions.
-- `ConflictRepository`: Stores structured 3-way conflict records (`base`, `local`, `remote`).
+- `ProjectRepository` (`projectRepository.ts`): Handles project creation, rename/update, and 6-table cascading soft-deletes.
+- `DocumentRepository` (`documentRepository.ts`): Handles document creation, `expectedLocalRevision`-guarded updates, soft-deletions, and project listings.
+- `SystemDesignRepository` (`systemDesignRepository.ts`): Handles canvas node/edge/stroke state serialization and `expectedLocalRevision`-guarded updates.
+- `FolderRepository` (`folderRepository.ts`): Manages hierarchical folder trees, moves, and 5-table cascading deletes.
+- `OutboxRepository` (`outboxRepository.ts`): Manages pending mutation queueing, 30s `leaseToken` fencing, `dispatched` immutability, per-entity causal barrier, and 7-case compaction.
+- `SyncMetadataRepository` (`syncMetadataRepository.ts`): Tracks entity synchronization status (`synced`, `pending`, `syncing`, `conflict`, `error`, `deleted_pending`, `deleted_synced`), `serverVersion`, and `lastAckedMutationId`.
+- `ConflictRepository` (`conflictRepository.ts`): Stores structured 3-way conflict records (`basePayload`, `localPayload`, `remotePayload`, `reason`, `remoteVersion`) and executes atomic resolution transactions.
 
 Every state mutation executes as an **atomic 3-table Dexie transaction**:
 ```typescript
@@ -155,11 +157,9 @@ await db.transaction('rw', [db.documents, db.outbox, db.sync_metadata], async ()
 - **Filter**: 3000ms recent-event deduplication cache prevents echo storms.
 
 ### 4.3 Client to Cloud (Network Boundary)
-- **Transport**: HTTPS REST queries via Supabase client, and WSS for Realtime channels.
-- **Push Payload**: Outbox entry payload + `baseServerVersion` + `mutationId`.
-- **Pull Payload**: Array of change events from `public.sync_changes` (`sequence`, `entity_type`, `entity_id`, `operation`, `entity_version`, `payload`).
-- **Idempotency Check**: Look up `processed_mutations` using UUID v4 `mutationId`.
-- **Concurrency Check**: Optimistic SQL filter `WHERE id = :id AND version = :baseServerVersion`.
+- **Transport**: HTTPS RPC/REST queries via Supabase client (wrapped in 30s `withTimeout`), and WSS for Realtime channels (50ms debounce).
+- **Push Protocol**: Single-transaction `public.apply_sync_mutation` RPC carrying `p_mutation_id`, `p_entity_type`, `p_entity_id`, `p_operation`, `p_payload`, and `p_base_version` (`>= 1` required on `update` and `delete`). Atomically checks/inserts `public.processed_mutations`, executes `WHERE id = p_entity_id AND user_id = p_user_id AND version = p_base_version`, and stamps `mutation_id` onto `public.sync_changes`.
+- **Pull Protocol**: Queries `public.get_sync_feed_bounds()` (`min_retained_sequence`, `max_sequence`) and streams batches of 50 from `public.sync_changes` (`sequence`, `entity_type`, `entity_id`, `operation`, `entity_version`, `mutation_id`, `payload`), automatically executing `bootstrapHydrateAll()` on cold start or `resnapshotAll()` when behind the retention floor.
 
 ---
 
@@ -172,7 +172,7 @@ await db.transaction('rw', [db.documents, db.outbox, db.sync_metadata], async ()
 │  User A Session               User B Session           │
 │  ┌──────────────────────┐     ┌──────────────────────┐ │
 │  │ ArtixDB_v2_<hash_A>  │     │ ArtixDB_v2_<hash_B>  │ │
-│  │ Local Outbox / State │     │ Local Outbox / State │ │
+│  │ Scoped Drafts & Tabs │     │ Scoped Drafts & Tabs │ │
 │  └──────────────────────┘     └──────────────────────┘ │
 └───────────────────────────┬────────────────────────────┘
                             │ Authorization: Bearer <JWT>
@@ -181,11 +181,11 @@ await db.transaction('rw', [db.documents, db.outbox, db.sync_metadata], async ()
 │                 PostgreSQL RLS Engine                  │
 │                                                        │
 │  POLICY: auth.uid() = user_id                          │
-│  - documents, system_designs, workspace_folders        │
-│  - sync_changes, processed_mutations                   │
+│  - projects, documents, system_designs, folders        │
+│  - sync_changes, processed_mutations, manual_grants    │
 └────────────────────────────────────────────────────────┘
 ```
 
-1. **Storage Separation**: User sessions access disjoint IndexedDB databases. Logging out completely closes and disposes of the active database instance.
-2. **PostgreSQL RLS**: Cloud queries enforce `auth.uid() = user_id`. Even if a client crafts a malicious REST call, Supabase database policies reject cross-tenant reads and writes.
-3. **Client Key Encryption**: User-supplied third-party AI keys are encrypted in `localStorage` with AES-GCM 256-bit and a PBKDF2-derived key (600,000 iterations v:2; legacy v:1 250,000). Plaintext keys are never sent to Artix servers.
+1. **Storage & Cache Separation**: User sessions access disjoint IndexedDB databases (`ArtixDB_v2_<hash>`) and user-scoped `localStorage` draft/tab keys. Logging out or switching accounts closes the database, evicts `TabCoordinator` and `SyncEngine` singletons, clears `QueryClient` and `dirtyTracker`, and runs `clearSensitiveBrowserCaches()`.
+2. **PostgreSQL RLS**: All 14 `public` tables enforce RLS (`auth.uid() = user_id` on user-owned tables; `service_role`-only writes on `subscriptions`, `stripe_events`, `manual_grants`, and `sync_retention_state`).
+3. **Client Key Encryption**: User-supplied third-party AI keys are encrypted in `localStorage` with AES-GCM 256-bit and a PBKDF2-derived key (600,000 iterations `v: 2`; legacy `v: 1` 250,000 supported for decryption). Plaintext keys are never sent to Artix servers.

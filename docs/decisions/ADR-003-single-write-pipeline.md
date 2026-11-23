@@ -15,13 +15,13 @@ In early prototypes, mutations occurred through disparate pathways: some compone
 
 ## Decision
 
-We instituted a **Single Unidirectional Write Pipeline**:
+We instituted a **Single Unidirectional Write Pipeline** across all 4 synced entity types (`project`, `workspace_folder`, `document`, `system_design`):
 1. All entity mutations MUST pass through domain repository methods (`create`, `update`, `delete`).
-2. Every repository mutation MUST execute inside an **atomic 3-table Dexie transaction**:
+2. Every repository mutation MUST execute inside an **atomic multi-table Dexie transaction** (`3-table` `[entity, outbox, sync_metadata]` for standard CRUD, `5-table` for `FolderRepository.delete`, and `6-table` `[projects, documents, system_designs, workspace_folders, outbox, sync_metadata]` for `ProjectRepository.delete`):
    ```typescript
    await db.transaction('rw', [db.entities, db.outbox, db.sync_metadata], async () => { ... });
    ```
-3. Direct cloud writes from UI components or hooks are strictly prohibited.
+3. Direct cloud writes from UI components or hooks (including legacy `/api/save` or `navigator.sendBeacon` unload calls) are strictly prohibited (`tabCloseGuard.ts` flushes strictly to local user-scoped `localStorage`).
 
 ---
 
@@ -48,7 +48,9 @@ We instituted a **Single Unidirectional Write Pipeline**:
 
 ## Current Implementation
 
+- `src/lib/repositories/projectRepository.ts`
 - `src/lib/repositories/documentRepository.ts`
 - `src/lib/repositories/systemDesignRepository.ts`
 - `src/lib/repositories/folderRepository.ts`
-- Verified by `src/test/repositories/atomicMutation.test.ts`.
+- `src/lib/cache/tabCloseGuard.ts`
+- Verified by `src/test/repositories/atomicMutation.test.ts` and `src/test/architecture/networkBoundary.test.ts`.

@@ -1,7 +1,7 @@
 # Artix Dependency Boundaries & Isolation Invariants
 
 > **Status**: `IMPLEMENTED`  
-> **Verified Against**: `src/test/architecture/networkBoundary.test.ts` (Phase C4)
+> **Verified Against**: `src/test/architecture/networkBoundary.test.ts`, `src/test/sync/circularImportsDiff3AndCryptoV2.test.ts`
 
 ---
 
@@ -31,8 +31,10 @@ Artix enforces strict, test-verified isolation boundaries between:
 ┌────────────────────────────────────────────────────────┐
 │                    REPOSITORY BOUNDARY                 │
 │                                                        │
-│  Repositories ──► Local Dexie IndexedDB                │
-│  Constraint: Atomic 3-table Dexie transactions         │
+│  Repositories ──► Local Dexie IndexedDB (`ArtixDB` v3) │
+│  Constraint: Atomic multi-table Dexie transactions     │
+│              (3-table CRUD, 5-table folder delete,     │
+│               6-table project cascade delete)          │
 │              ZERO direct push/pull network calls       │
 └───────────────────────────┬────────────────────────────┘
                             │ Outbox Mutation Enqueue
@@ -44,14 +46,14 @@ Artix enforces strict, test-verified isolation boundaries between:
 │  Constraint: Only elected leader tab communicates      │
 │              with Supabase cloud                       │
 └───────────────────────────┬────────────────────────────┘
-                            │ HTTPS REST / WSS
+                            │ HTTPS RPC / REST / WSS
                             ▼
 ┌────────────────────────────────────────────────────────┐
 │                     NETWORK BOUNDARY                   │
 │                                                        │
-│  Supabase Cloud (PostgreSQL RLS, sync_changes)         │
-│  Constraint: CAS version verification on all updates   │
-│              Idempotency check via processed_mutations │
+│  Supabase Cloud (`apply_sync_mutation`, `sync_changes`)│
+│  Constraint: Strict CAS (`p_base_version >= 1`) &      │
+│              atomic `processed_mutations` in 1 DB tx   │
 └────────────────────────────────────────────────────────┘
 ```
 
@@ -85,12 +87,16 @@ Artix enforces strict, test-verified isolation boundaries between:
 
 ## 4. Automated Architecture Boundary Tests
 
-These invariants are continuously guarded by automated Vitest suites:
+These invariants are continuously guarded by automated Vitest suites (`src/test/architecture/networkBoundary.test.ts` and `src/test/sync/circularImportsDiff3AndCryptoV2.test.ts`):
 
 ```text
 src/test/architecture/networkBoundary.test.ts
-✓ useDocuments does not import or invoke supabase client directly
-✓ useSystemDesigns does not import or invoke supabase client directly
-✓ useWorkspaceFolders does not import or invoke supabase client directly
-✓ Workspace components do not perform direct cloud mutations
+✓ Prohibits direct Supabase .from(table).(insert|update|delete|upsert) on projects, documents, system_designs, workspace_folders outside src/lib/sync/adapters/
+✓ Prohibits .rpc('apply_sync_mutation') anywhere outside src/lib/sync/adapters/idempotency.ts
+✓ Prohibits dead /api/save endpoints and navigator.sendBeacon draft leaks across all of src/ (tabCloseGuard flushes strictly locally)
+✓ Verifies all 4 push adapters (project, document, systemDesign, folder) + idempotency.ts + syncEngine.ts enforce withTimeout (TRANSPORT_TIMEOUT_MS), invoke executeAtomicMutation, and contain zero .upsert() calls
+✓ Prohibits direct Supabase client imports/queries in useDocuments.tsx, useSystemDesigns.tsx, and useWorkspaceFolders.tsx
+
+src/test/sync/circularImportsDiff3AndCryptoV2.test.ts
+✓ Verifies zero circular imports between syncEngine.ts and pullEngine.ts (shared transportTimeout.ts)
 ```

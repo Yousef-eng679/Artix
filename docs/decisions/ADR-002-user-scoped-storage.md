@@ -3,7 +3,7 @@
 - **Status**: `ACCEPTED` / `IMPLEMENTED`
 - **Date**: 2026-09-25
 - **Deciders**: Architecture Team
-- **Related Files**: `src/lib/local/db.ts`, `src/lib/sync/userSyncRuntime.ts`, `src/test/local/userScopedDb.test.ts`
+- **Related Files**: `src/lib/local/db.ts`, `src/lib/sync/userSyncRuntime.ts`, `src/lib/workspace/tabPersistence.ts`, `src/lib/cache/draftRecovery.ts`, `src/test/local/userScopedDb.test.ts`, `src/test/sync/multiAccountEvictionAndStorageScope.test.tsx`
 
 ---
 
@@ -18,9 +18,10 @@ When multiple user accounts share the same physical computer or browser profile 
 
 ## Decision
 
-We decided to partition IndexedDB physical databases by user identity:
-- Each user account receives a dedicated database named `ArtixDB_v2_<hash>`, where `<hash>` is an 8-character hex string derived from a deterministic 32-bit FNV-1a hash of the user's UUID.
-- When an account switch occurs, the previous user's database is cleanly closed and evicted from memory before the new user's database is opened.
+We decided to partition IndexedDB physical databases, runtime singletons, and client `localStorage` keys by user identity:
+- Each user account receives a dedicated database named `ArtixDB_v2_<hash>`, where `<hash>` is an 8-character hex string derived from a deterministic 32-bit FNV-1a hash of the user's UUID (`getUserScopeHash(userId)`).
+- Client `localStorage` keys for workspace tabs (`artix.workspace.tabs.<hash>.<projectId>`) and crash-recovery drafts (`artix.draft.<hash>.<id>`) are partitioned by the same `<hash>`.
+- When an account switch or sign-out occurs, the previous user's database is closed and evicted (`closeUserArtixDB`), `TabCoordinator` (`evictTabCoordinator`) and `SyncEngine` singletons are evicted, TanStack `QueryClient` and `dirtyTracker` are cleared, and `clearSensitiveBrowserCaches()` purges any legacy caches before the new user's workspace is opened.
 
 ---
 
@@ -47,5 +48,6 @@ We decided to partition IndexedDB physical databases by user identity:
 
 ## Current Implementation
 
-- `src/lib/local/db.ts`: `getUserScopeHash(userId)` and `getUserArtixDB(userId)`.
-- Verified in `src/test/local/userScopedDb.test.ts` and `src/test/sync/correctnessMatrix.test.ts` (Scenario H).
+- `src/lib/local/db.ts`: `getUserScopeHash(userId)`, `getUserArtixDB(userId)`, and `closeUserArtixDB(userId)`.
+- `src/lib/sync/userSyncRuntime.ts` & `src/hooks/useAuth.tsx`: Runtime teardown, singleton eviction, `queryClient.clear()`, `dirtyTracker.clearAll()`, and `clearSensitiveBrowserCaches()`.
+- Verified in `src/test/local/userScopedDb.test.ts`, `src/test/sync/multiAccountEvictionAndStorageScope.test.tsx`, `src/test/sync/correctnessMatrix.test.ts` (Scenario H), and `tests/e2e/offlineColdStartAndSyncMatrix.spec.ts`.

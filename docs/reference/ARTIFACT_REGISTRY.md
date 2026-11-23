@@ -21,7 +21,7 @@ LOCAL DESIGN NOTES / HISTORICAL ARTIFACTS
 OLD PLANS / AI EXECUTION SCRATCHPADS (Lowest Authority)
 ```
 
-No local artifact is considered current truth simply because of its length or detail. Every claim has been cross-referenced against the post-C12 implementation in `c:\Fenix-main`.
+No local artifact is considered current truth simply because of its length or detail. Every claim has been cross-referenced against the verified `v2.5.0` codebase, migrations, and test suites.
 
 ---
 
@@ -64,6 +64,8 @@ No local artifact is considered current truth simply because of its length or de
 | **33** | `docs/ARCHITECTURE.md` | Architecture Overview | Legacy | System components overview | Legacy Architecture | `SUPERSEDED` | Across `src/` | Early architectural overview prior to C0–C12 correctness hardening. | Superseded by `docs/architecture/SYSTEM.md` |
 | **34** | `docs/CHALLENGES_AND_SOLUTIONS.md` | Case Studies | Legacy | Engineering challenges and fixes | Engineering Notes | `HISTORICAL` | Various | Multi-tab sync, CAS versioning, XSS sanitization, and state hydration issues. | Merged into `docs/engineering/OBSERVABILITY.md` & `docs/decisions/` |
 | **35** | `PR_DESCRIPTION_OFFLINE_SYNC.md` | PR Release Notes | Sep 28, 2026 | PR #7 / PR #8 Offline sync release notes | Release Notes | `HISTORICAL` | Sync subsystem | Historical 10-phase hardening release notes. | Archive to `docs/archive/historical/` |
+| **36** | `docs/audits/2026-10-12_REPOSITORY_AUDIT.md` | External Audit Report | Oct 12, 2026 | Sync, Billing, PWA, Auth & CI audit (`F-001..F-007`) | Point-in-Time Audit | `HISTORICAL RECORD` | `src/lib/sync/`, `supabase/` | Cataloged commit-order, atomic RPC, price allowlist, SW cache, and CI E2E gaps. | Retained in `docs/audits/2026-10-12_REPOSITORY_AUDIT.md` |
+| **37** | `docs/audits/AUDIT_REMEDIATION_PLAN.md` | Audit Execution Record | Oct 20–24, 2026 | PR #12 remediation execution plan | Point-in-Time Record | `HISTORICAL RECORD` | `src/`, `supabase/`, `.github/workflows/ci.yml` | Recorded atomic task execution for PR #12 (`717ef57`), later extended by `v2.5.0`. | Retained in `docs/audits/AUDIT_REMEDIATION_PLAN.md` |
 
 ---
 
@@ -117,6 +119,7 @@ No local artifact is considered current truth simply because of its length or de
    ├── docs/reference/ENVIRONMENT.md
    ├── docs/reference/NETWORK_INVENTORY.md
    ├── docs/reference/PROJECT_STATUS.md
+   ├── docs/reference/TRUTH_RECONCILIATION.md
    └── docs/reference/ARTIFACT_REGISTRY.md (This File)
 
 8. ARCHITECTURAL DECISION RECORDS (ADRs)
@@ -128,7 +131,8 @@ No local artifact is considered current truth simply because of its length or de
    ├── docs/decisions/ADR-006-web-locks-multi-tab-coordination.md
    └── docs/decisions/ADR-007-realtime-as-wakeup-accelerator.md
 
-9. HISTORICAL & ARCHIVED MATERIAL
+9. AUDITS, HISTORICAL & ARCHIVED MATERIAL
+   ├── docs/audits/ (2026-10-12_REPOSITORY_AUDIT.md, AUDIT_REMEDIATION_PLAN.md)
    ├── docs/archive/historical/ (Artifacts 01, 02, 03, 10, 12, 13, PR descriptions)
    └── docs/archive/plans/ (Artifacts 04, 06, 07, 08, 11, 14, 15)
 ```

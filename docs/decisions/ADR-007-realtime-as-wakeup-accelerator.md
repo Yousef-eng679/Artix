@@ -22,9 +22,9 @@ However, WebSocket transports are inherently unreliable over public mobile netwo
 
 We decided to establish that **Realtime is strictly a Latency Optimizer and Wakeup Signal**:
 - Realtime events NEVER write directly into IndexedDB entity tables.
-- Instead, incoming Realtime events simply wake up the `PullEngine` by calling `syncEngine.triggerSync(userId, { reason: 'realtime' })`.
-- The `PullEngine` queries the durable PostgreSQL change feed (`public.sync_changes`) using its persistent sequence cursor.
-- If Realtime is disconnected, blocked, or fails entirely, the system continues to synchronize correctly via background cursor polling.
+- Instead, incoming Realtime events across watched tables (`projects`, `documents`, `system_designs`, `workspace_folders`, `sync_changes`) are coalesced with a 50ms leading + trailing-edge debounce and, on the elected leader tab (`if (coordinator.getIsLeader())`), wake up synchronization via `syncEngine.triggerSync(userId)`.
+- On channel `SUBSCRIBED` reconnects, `RealtimeSyncManager` binds the runtime `userId` and triggers a catch-up pull from `public.sync_changes` using the durable sequence cursor.
+- If Realtime is disconnected, blocked, or fails entirely, the system continues to synchronize correctly via background cursor polling, outbox-enqueue wakeups, and scheduled retry timers.
 
 ---
 
@@ -41,7 +41,7 @@ We decided to establish that **Realtime is strictly a Latency Optimizer and Wake
 
 ### Positive
 - Complete network resilience: synchronization correctness is completely independent of WebSocket connection stability.
-- Rapid burst events are easily debounced (150ms leading-edge trigger) without risking data loss.
+- Rapid burst events are easily debounced (50ms leading + trailing-edge trigger) without risking data loss.
 - Zero data loss during network reconnects (Scenario I verified).
 
 ### Negative / Tradeoffs

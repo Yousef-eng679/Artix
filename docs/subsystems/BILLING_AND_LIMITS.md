@@ -1,32 +1,32 @@
 # Stripe Billing & Resource Tier Enforcement
 
 > **Status**: `IMPLEMENTED`  
-> **Verified Against**: `supabase/functions/`, `src/lib/plans.ts`, `src/hooks/useSubscription.ts`, `src/test/billing.test.ts`
+> **Verified Against**: `supabase/functions/`, `supabase/functions/_shared/billingPolicy.ts`, `supabase/migrations/20261101100300_atomic_billing_reconciliation_and_manual_grants.sql`, `src/lib/plans.ts`, `src/hooks/useSubscription.tsx`, `src/hooks/useUsageLimits.tsx`, `src/test/billing.test.ts`, `src/test/billing/stripeWebhookAndEntitlementPolicy.test.tsx`, `src/test/billing/offlineEntitlementAndQuota.test.tsx`
 
 ---
 
 ## 1. Overview
 
-Artix provides subscription tiers (`Free` and `Pro`) using Stripe integration. Resource limits are enforced both **client-side** (via React hooks and UI upgrade prompts) and **server-side** (via PostgreSQL triggers and RLS policies).
+Artix provides subscription tiers (`Free` and `Pro`) using Stripe integration and RLS-protected administrative overrides (`public.manual_grants`). Resource limits are enforced both **client-side** (online via Supabase count queries and offline via local Dexie repository counts and cached entitlements in `ArtixDB.database_meta`) and **server-side** (via the serialized PostgreSQL trigger `public.check_plan_tier_limit()`).
 
 ---
 
 ## 2. Subscription Tiers & Feature Matrix
 
-Defined in `src/lib/plans.ts`:
+Defined in `src/lib/plans.ts` (`GRACE_PERIOD_DAYS = 0`):
 
-| Resource / Capability | Free Tier | Pro Tier ($8/mo or $72/yr) |
+| Resource / Capability | Free Tier | Pro Tier (\$8/mo or \$72/yr — 2 months free) |
 |---|---|---|
-| **Active Projects** | 3 projects | Unlimited |
-| **Documents per Project**| 10 documents | Unlimited |
-| **System Designs** | 3 canvases | Unlimited |
-| **AI Generations** | 5 generations / month | Unlimited |
+| **Active Projects** | 3 projects (`deleted_at IS NULL`) | 100 projects (abuse cap) |
+| **Total Active Documents** | 10 documents across all projects | Unlimited |
+| **Total Active System Designs** | 3 canvases across all projects | Unlimited |
+| **AI Generations** | 5 generations / UTC calendar month | Unlimited |
 | **Storage / Sync** | Local-First + Full Cloud Sync | Local-First + Full Cloud Sync |
-| **Export Formats** | Markdown, HTML, PDF, PNG, SVG | Markdown, HTML, PDF, PNG, SVG |
+| **Document Export Formats** | Native (`.md`, `.xml`, `.txt`) | Native + Styled `.html` & Print-ready `.pdf` |
 
 ---
 
-## 3. Stripe Architecture (Supabase Edge Functions)
+## 3. Stripe Architecture & Atomic Webhook Reconciliation (`supabase/functions/`)
 
 ```text
 User Clicks "Upgrade to Pro"
@@ -34,7 +34,9 @@ User Clicks "Upgrade to Pro"
             ▼
 ┌────────────────────────────────────────────────────────┐
 │      `create-checkout-session` Edge Function           │
-│  - Verifies Supabase JWT                               │
+│  - Verifies Supabase JWT & `isOriginAllowed(origin)`   │
+│  - Validates `priceId` / `billingCycle` against        │
+│    server allowlist (`resolveAllowedCheckoutPrice`)    │
 │  - Finds or creates Stripe Customer ID                 │
 │  - Generates Stripe Checkout Session URL               │
 └───────────────────────────┬────────────────────────────┘
@@ -42,79 +44,118 @@ User Clicks "Upgrade to Pro"
                             ▼
 ┌────────────────────────────────────────────────────────┐
 │               Stripe Hosted Checkout Page              │
-│                 (Card / Apple Pay / GPay)              │
 └───────────────────────────┬────────────────────────────┘
                             │ Webhook POST
                             ▼
 ┌────────────────────────────────────────────────────────┐
 │            `stripe-webhook` Edge Function              │
-│  - Cryptographically verifies stripe-signature header  │
-│  - Idempotency check via `stripe_events` table         │
-│  - Handles events:                                     │
-│    * checkout.session.completed ──► plan_tier = 'pro'  │
-│    * customer.subscription.updated ──► updates status  │
-│    * customer.subscription.deleted ──► plan_tier='free'│
-│    * invoice.payment_failed ──► status = 'past_due'    │
+│  - Verifies `Stripe-Signature` (`constructEventAsync`) │
+│  - Handles 7 events (`checkout.session.completed`,     │
+│    `customer.subscription.created/updated/deleted`,    │
+│    `invoice.paid`, `invoice.payment_succeeded/failed`) │
+│  - Calls live `stripe.subscriptions.retrieve(subId)`   │
+│  - Evaluates `validateSubscriptionEntitlement()`       │
+│    (strict fail-closed: only `active`/`trialing` with  │
+│     allowlisted Pro price grant `'pro'`; `past_due`    │
+│     immediately downgrades `plan_tier` to `'free'`)    │
 └───────────────────────────┬────────────────────────────┘
-                            │ Service Role Update
+                            │ Single-Transaction RPC
                             ▼
 ┌────────────────────────────────────────────────────────┐
-│             public.subscriptions Table                 │
-│            (user_id, plan_tier, status)                │
+│     `public.reconcile_stripe_subscription(...)`        │
+│  - `pg_advisory_xact_lock('artix.billing:' || subject)`│
+│  - Checks/inserts `public.stripe_events` inside lock   │
+│  - Fences stale events via `last_stripe_event_created` │
+│  - Upserts `public.subscriptions` + increments         │
+│    `reconciliation_version` in ONE PostgreSQL tx       │
 └────────────────────────────────────────────────────────┘
 ```
 
+### Non-Stripe Administrative Overrides (`public.manual_grants`)
+Non-Stripe administrative Pro grants are stored in `public.manual_grants` (`user_id UNIQUE`, `plan_tier`, `reason`, `granted_by`, `starts_at`, `expires_at`, `revoked_at`). Users can `SELECT` only their own grant row under RLS, while writes are restricted exclusively to `service_role`. Both `public.user_has_active_pro_entitlement(p_user_id)` in PostgreSQL and `useSubscription.tsx` on the client evaluate active `manual_grants` alongside `public.subscriptions`.
+
 ---
 
-## 4. Server-Side Database Trigger Enforcement
+## 4. Server-Side Database Trigger Enforcement (`check_plan_tier_limit`)
 
-Even if a malicious user bypasses client UI checks, PostgreSQL enforces resource limits on insert:
+Defined in `supabase/migrations/20261101100300_atomic_billing_reconciliation_and_manual_grants.sql`:
 
-In `supabase/migrations/20260723120000_enforce_tier_limits_trigger.sql`:
 ```sql
-CREATE OR REPLACE FUNCTION public.check_user_tier_limits()
-RETURNS TRIGGER AS $$
+CREATE OR REPLACE FUNCTION public.check_plan_tier_limit()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
 DECLARE
-  v_plan_tier TEXT;
-  v_count INTEGER;
+  v_is_pro      BOOLEAN;
+  current_count INT;
+  v_month_start TIMESTAMPTZ;
 BEGIN
-  -- 1. Query user's active subscription tier
-  SELECT plan_tier INTO v_plan_tier
-  FROM public.subscriptions
-  WHERE user_id = NEW.user_id AND status = 'active';
+  -- Serialize concurrent inserts for the same user until transaction end (Audit F-005)
+  PERFORM pg_advisory_xact_lock(
+    hashtextextended('artix.tier_limit:' || NEW.user_id::TEXT, 0)
+  );
 
-  IF v_plan_tier IS NULL THEN
-    v_plan_tier := 'free';
-  END IF;
+  v_is_pro := public.user_has_active_pro_entitlement(NEW.user_id);
 
-  -- 2. Pro tier has no limits
-  IF v_plan_tier = 'pro' THEN
+  -- Pro tier: 100 active projects cap; unlimited documents, designs, and AI generations
+  IF v_is_pro THEN
+    IF TG_TABLE_NAME = 'projects' THEN
+      SELECT COUNT(*) INTO current_count
+        FROM public.projects AS p
+       WHERE p.user_id = NEW.user_id AND p.deleted_at IS NULL;
+      IF current_count >= 100 THEN
+        RAISE EXCEPTION 'Pro tier project limit (100) reached.';
+      END IF;
+    END IF;
     RETURN NEW;
   END IF;
 
-  -- 3. Free tier checks
+  -- Free tier limits (also enforced when subscription status is past_due / canceled)
   IF TG_TABLE_NAME = 'projects' THEN
-    SELECT COUNT(*) INTO v_count FROM public.projects WHERE user_id = NEW.user_id;
-    IF v_count >= 3 THEN
-      RAISE EXCEPTION 'Free plan limit reached: maximum 3 projects allowed';
+    SELECT COUNT(*) INTO current_count
+      FROM public.projects AS p
+     WHERE p.user_id = NEW.user_id AND p.deleted_at IS NULL;
+    IF current_count >= 3 THEN
+      RAISE EXCEPTION 'Free tier project limit (3) reached. Upgrade to Pro for more.';
     END IF;
   ELSIF TG_TABLE_NAME = 'documents' THEN
-    SELECT COUNT(*) INTO v_count FROM public.documents WHERE project_id = NEW.project_id AND deleted_at IS NULL;
-    IF v_count >= 10 THEN
-      RAISE EXCEPTION 'Free plan limit reached: maximum 10 documents per project';
+    SELECT COUNT(*) INTO current_count
+      FROM public.documents AS d
+     WHERE d.user_id = NEW.user_id AND d.deleted_at IS NULL;
+    IF current_count >= 10 THEN
+      RAISE EXCEPTION 'Free tier document limit (10) reached. Upgrade to Pro for unlimited documents.';
+    END IF;
+  ELSIF TG_TABLE_NAME = 'system_designs' THEN
+    SELECT COUNT(*) INTO current_count
+      FROM public.system_designs AS sd
+     WHERE sd.user_id = NEW.user_id AND sd.deleted_at IS NULL;
+    IF current_count >= 3 THEN
+      RAISE EXCEPTION 'Free tier system design limit (3) reached. Upgrade to Pro for unlimited designs.';
+    END IF;
+  ELSIF TG_TABLE_NAME IN ('prd_generations', 'vibe_generations', 'agentic_workflows') THEN
+    v_month_start := date_trunc('month', now());
+    SELECT
+      (SELECT COUNT(*) FROM public.prd_generations WHERE user_id = NEW.user_id AND created_at >= v_month_start) +
+      (SELECT COUNT(*) FROM public.vibe_generations WHERE user_id = NEW.user_id AND created_at >= v_month_start) +
+      (SELECT COUNT(*) FROM public.agentic_workflows WHERE user_id = NEW.user_id AND created_at >= v_month_start)
+      INTO current_count;
+    IF current_count >= 5 THEN
+      RAISE EXCEPTION 'Free tier monthly AI generation limit (5) reached. Upgrade to Pro for unlimited AI generations.';
     END IF;
   END IF;
 
   RETURN NEW;
 END;
-$$ LANGUAGE plpgsql;
+$$;
 ```
 
 ---
 
-## 5. Client-Side Limit Hooks & Upgrade Modals
+## 5. Client-Side Limit Hooks, Offline Caching & Upgrade UX
 
-- **`useSubscription` (`src/hooks/useSubscription.ts`)**: Subscribes to the user's `subscriptions` record in Supabase, caching tier state.
-- **`useUsageLimits` (`src/hooks/useUsageLimits.ts`)**: Pre-checks resource counts before rendering the create button or modal.
-- **`UpgradePrompt` (`src/components/UpgradePrompt.tsx`)**: Renders a dark-themed glassmorphism dialog when a user reaches a tier boundary, allowing one-click redirection to Stripe Checkout.
-- **`CheckoutSuccess` (`src/pages/CheckoutSuccess.tsx`)**: Polling listener that confirms the webhook has activated the Pro tier before celebrating and redirecting back to the dashboard.
+- **`useSubscription` (`src/hooks/useSubscription.tsx`)**: Queries `public.subscriptions` and `public.manual_grants` when online (`networkMode: 'always'`), persists the resolved entitlement snapshot to `ArtixDB.database_meta` under `key = 'cached_subscription'`, and serves the cached Pro entitlement offline while failing closed if `currentPeriodEnd` or `manual_grants.expires_at` has elapsed.
+- **`useUsageLimits` (`src/hooks/useUsageLimits.tsx`)**: Counts active `projects`, `documents`, and `system_designs` from local Dexie repositories when offline (and caches monthly AI generation usage in `database_meta['cached_ai_generations']`), ensuring offline Free-tier users see accurate remaining quotas and cannot bypass limits locally.
+- **`SyncEngine` & `SyncStatusBanner` (`src/components/SyncStatusBanner.tsx`)**: If an offline-created entity exceeds the server quota upon reconnection, `classifySyncError` maps the `check_plan_tier_limit()` rejection to non-retryable `TIER_LIMIT_EXCEEDED`, parking the outbox entry in `blocked` and displaying an **Upgrade to Pro** + **Retry Blocked** action banner.
+- **`UpgradePrompt` (`src/components/UpgradePrompt.tsx`) & `CheckoutSuccess` (`src/pages/CheckoutSuccess.tsx`)**: Trigger server-validated Stripe Checkout sessions and confirm Pro activation upon return.
